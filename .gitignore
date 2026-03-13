@@ -1,0 +1,15 @@
+# Node modules
+node_modules/
+
+# Environment variables
+.env
+.env.test
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+
+# IDEs
+.vscode/
