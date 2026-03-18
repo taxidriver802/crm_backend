@@ -1,4 +1,3 @@
--- Make it safe to run multiple times
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- USERS
@@ -7,11 +6,33 @@ CREATE TABLE IF NOT EXISTS users (
   first_name TEXT NOT NULL,
   last_name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+  -- nullable so invited users can exist before setting a password
+  password_hash TEXT,
+
+  role TEXT NOT NULL DEFAULT 'agent',
+  status TEXT NOT NULL DEFAULT 'active',
+
+  invite_token_hash TEXT,
+  invite_expires_at TIMESTAMPTZ,
+  invited_at TIMESTAMPTZ,
+  password_set_at TIMESTAMPTZ,
+  last_login_at TIMESTAMPTZ,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  CONSTRAINT users_role_check
+    CHECK (role IN ('owner', 'admin', 'agent')),
+
+  CONSTRAINT users_status_check
+    CHECK (status IN ('invited', 'active', 'disabled'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users (role);
+CREATE INDEX IF NOT EXISTS idx_users_status ON users (status);
+CREATE INDEX IF NOT EXISTS idx_users_invite_expires_at ON users (invite_expires_at);
 
 -- LEADS
 CREATE TABLE IF NOT EXISTS leads (
@@ -39,7 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_leads_user_id ON leads (user_id);
 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status);
 CREATE INDEX IF NOT EXISTS idx_leads_created_at ON leads (created_at);
 
--- Optional: quick search (simple)
+-- search
 CREATE INDEX IF NOT EXISTS idx_leads_name ON leads (last_name, first_name);
 
 -- TASKS
@@ -50,12 +71,10 @@ CREATE TABLE IF NOT EXISTS tasks (
 
   title TEXT NOT NULL,
   description TEXT,
-
   due_date TIMESTAMPTZ,
-
   status TEXT NOT NULL DEFAULT 'Pending',
 
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -63,3 +82,88 @@ CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks (user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_lead_id ON tasks (lead_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks (due_date);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+-- SUPPLIER CONNECTIONS
+CREATE TABLE IF NOT EXISTS supplier_connections (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL, -- 'abc_supply'
+  status TEXT NOT NULL DEFAULT 'disconnected',
+  api_base_url TEXT,
+  account_identifier TEXT,
+  encrypted_access_token TEXT,
+  encrypted_refresh_token TEXT,
+  token_expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- SUPPLIER ACCOUNTS
+CREATE TABLE IF NOT EXISTS supplier_accounts (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  external_account_id TEXT NOT NULL,
+  sold_to_number TEXT,
+  bill_to_number TEXT,
+  ship_to_number TEXT,
+  raw_json JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- SUPPLIER ORDERS
+CREATE TABLE IF NOT EXISTS supplier_orders (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+  provider TEXT NOT NULL,
+  external_order_id TEXT,
+  external_order_status TEXT,
+  request_payload JSONB,
+  response_payload JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- SUPPLIER WEBHOOK EVENTS
+CREATE TABLE IF NOT EXISTS supplier_webhook_events (
+  id SERIAL PRIMARY KEY,
+  provider TEXT NOT NULL,
+  event_type TEXT,
+  external_event_id TEXT,
+  payload JSONB NOT NULL,
+  processed BOOLEAN NOT NULL DEFAULT FALSE,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+/* Supplier Connections */
+CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_connections_user_provider
+ON supplier_connections (user_id, provider);
+
+/* Supplier Accounts */
+CREATE INDEX IF NOT EXISTS idx_supplier_accounts_user_id
+ON supplier_accounts (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_supplier_accounts_provider
+ON supplier_accounts (provider);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_accounts_provider_external
+ON supplier_accounts (provider, external_account_id);
+
+/* Supplier Orders */
+CREATE INDEX IF NOT EXISTS idx_supplier_orders_user_id
+ON supplier_orders (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_supplier_orders_lead_id
+ON supplier_orders (lead_id);
+
+CREATE INDEX IF NOT EXISTS idx_supplier_orders_provider
+ON supplier_orders (provider);
+
+/* Supplier Webhook Events */
+CREATE INDEX IF NOT EXISTS idx_supplier_webhook_events_provider
+ON supplier_webhook_events (provider);
+
+CREATE INDEX IF NOT EXISTS idx_supplier_webhook_events_processed
+ON supplier_webhook_events (processed);

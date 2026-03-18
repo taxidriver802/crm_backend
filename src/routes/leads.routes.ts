@@ -1,8 +1,11 @@
-import { Router } from "express";
-import { pool } from "../db";
-import { requireAuth } from "../middleware/auth";
-import { asyncHandler } from "../utils/asyncHandler";
-import { createLeadSchema, updateLeadSchema } from "../validators/leads.schemas";
+import { Router } from 'express';
+import { pool } from '../db';
+import { requireAuth } from '../middleware/auth';
+import { asyncHandler } from '../utils/asyncHandler';
+import {
+  createLeadSchema,
+  updateLeadSchema,
+} from '../validators/leads.schemas';
 
 export const leadsRouter = Router();
 
@@ -10,7 +13,7 @@ leadsRouter.use(requireAuth);
 
 // GET /leads/summary
 leadsRouter.get(
-  "/summary",
+  '/summary',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
 
@@ -40,37 +43,40 @@ leadsRouter.get(
 
 // GET /leads?status=New&q=john&limit=50&offset=0
 leadsRouter.get(
-  "/",
+  '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
 
-    const status = typeof req.query.status === "string" ? req.query.status : undefined;
-    const q = typeof req.query.q === "string" ? req.query.q : undefined;
+    const status =
+      typeof req.query.status === 'string' ? req.query.status : undefined;
+    const q = typeof req.query.q === 'string' ? req.query.q : undefined;
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Number(req.query.offset || 0);
 
     const params: any[] = [userId];
-    const where: string[] = ["user_id = $1"];
+    const where: string[] = ['t.user_id = $1'];
 
     if (status) {
       params.push(status);
-      where.push(`status = $${params.length}`);
+      where.push(`t.status = $${params.length}`);
     }
 
     if (q) {
       params.push(`%${q}%`);
       const p = `$${params.length}`;
-      where.push(`(first_name ILIKE ${p} OR last_name ILIKE ${p} OR email ILIKE ${p} OR phone ILIKE ${p})`);
+      where.push(
+        `(t.first_name ILIKE ${p} OR t.last_name ILIKE ${p} OR t.email ILIKE ${p} OR t.phone ILIKE ${p})`
+      );
     }
 
     params.push(limit);
     params.push(offset);
 
     const sql = `
-      SELECT *
-      FROM leads
-      WHERE ${where.join(" AND ")}
-      ORDER BY created_at DESC
+      SELECT t.*
+      FROM leads t
+      WHERE ${where.join(' AND ')}
+      ORDER BY t.created_at DESC
       LIMIT $${params.length - 1}
       OFFSET $${params.length};
     `;
@@ -82,32 +88,33 @@ leadsRouter.get(
 
 // GET /leads/:id
 leadsRouter.get(
-  "/:id",
+  '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
-      return res.status(400).json({ ok: false, error: "Invalid id" });
-    } 
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
 
     const result = await pool.query(
       `SELECT * FROM leads WHERE user_id = $1 AND id = $2`,
       [userId, id]
     );
 
-    if (result.rowCount === 0) return res.status(404).json({ ok: false, error: "Lead not found" });
+    if (result.rowCount === 0)
+      return res.status(404).json({ ok: false, error: 'Lead not found' });
     res.json({ ok: true, lead: result.rows[0] });
   })
 );
 
 // DELETE /leads/:id
 leadsRouter.delete(
-  "/:id",
+  '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
-      return res.status(400).json({ ok: false, error: "Invalid id" });
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
     }
 
     const result = await pool.query(
@@ -115,7 +122,8 @@ leadsRouter.delete(
       [userId, id]
     );
 
-    if (result.rowCount === 0) return res.status(404).json({ ok: false, error: "Lead not found" });
+    if (result.rowCount === 0)
+      return res.status(404).json({ ok: false, error: 'Lead not found' });
 
     res.json({ ok: true, deletedId: result.rows[0].id });
   })
@@ -123,12 +131,13 @@ leadsRouter.delete(
 
 // POST /leads
 leadsRouter.post(
-  "/",
+  '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
 
     const parsed = createLeadSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    if (!parsed.success)
+      return res.status(400).json({ ok: false, error: parsed.error.flatten() });
 
     const d = parsed.data;
 
@@ -148,7 +157,7 @@ leadsRouter.post(
         d.email ?? null,
         d.phone ?? null,
         d.source ?? null,
-        d.status ?? "New",
+        d.status ?? 'New',
         d.budget_min ?? null,
         d.budget_max ?? null,
         d.notes ?? null,
@@ -161,21 +170,23 @@ leadsRouter.post(
 
 // PATCH /leads/:id
 leadsRouter.patch(
-  "/:id",
+  '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
-      return res.status(400).json({ ok: false, error: "Invalid id" });
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
     }
 
     const parsed = updateLeadSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    if (!parsed.success)
+      return res.status(400).json({ ok: false, error: parsed.error.flatten() });
 
     const updates = parsed.data;
     const keys = Object.keys(updates) as (keyof typeof updates)[];
 
-    if (keys.length === 0) return res.status(400).json({ ok: false, error: "No fields to update" });
+    if (keys.length === 0)
+      return res.status(400).json({ ok: false, error: 'No fields to update' });
 
     const setParts: string[] = [];
     const values: any[] = [userId, id];
@@ -190,13 +201,14 @@ leadsRouter.patch(
 
     const sql = `
       UPDATE leads
-      SET ${setParts.join(", ")}
+      SET ${setParts.join(', ')}
       WHERE user_id = $1 AND id = $2
       RETURNING *;
     `;
 
     const result = await pool.query(sql, values);
-    if (result.rowCount === 0) return res.status(404).json({ ok: false, error: "Lead not found" });
+    if (result.rowCount === 0)
+      return res.status(404).json({ ok: false, error: 'Lead not found' });
 
     res.json({ ok: true, lead: result.rows[0] });
   })

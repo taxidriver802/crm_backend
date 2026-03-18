@@ -1,8 +1,11 @@
-import { Router } from "express";
-import { pool } from "../db";
-import { requireAuth } from "../middleware/auth";
-import { asyncHandler } from "../utils/asyncHandler";
-import { createTaskSchema, updateTaskSchema } from "../validators/tasks.schemas";
+import { Router } from 'express';
+import { pool } from '../db';
+import { requireAuth } from '../middleware/auth';
+import { asyncHandler } from '../utils/asyncHandler';
+import {
+  createTaskSchema,
+  updateTaskSchema,
+} from '../validators/tasks.schemas';
 
 export const tasksRouter = Router();
 
@@ -10,7 +13,7 @@ tasksRouter.use(requireAuth);
 
 // GET /tasks/summary
 tasksRouter.get(
-  "/summary",
+  '/summary',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
 
@@ -101,50 +104,62 @@ tasksRouter.get(
 
 // GET /tasks?status=Pending&dueBefore=2026-03-10T00:00:00.000Z&leadId=2&limit=50&offset=0
 tasksRouter.get(
-  "/",
+  '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const q = typeof req.query.q === 'string' ? req.query.q : undefined;
 
-    const status = typeof req.query.status === "string" ? req.query.status : undefined;
-    const dueBefore = typeof req.query.dueBefore === "string" ? req.query.dueBefore : undefined;
-    const leadId = typeof req.query.leadId === "string" ? Number(req.query.leadId) : undefined;
+    const status =
+      typeof req.query.status === 'string' ? req.query.status : undefined;
+    const dueBefore =
+      typeof req.query.dueBefore === 'string' ? req.query.dueBefore : undefined;
+    const leadId =
+      typeof req.query.leadId === 'string'
+        ? Number(req.query.leadId)
+        : undefined;
 
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Number(req.query.offset || 0);
 
     const params: any[] = [userId];
-    const where: string[] = ["user_id = $1"];
+    const where: string[] = ['t.user_id = $1'];
 
     if (status) {
       params.push(status);
-      where.push(`status = $${params.length}`);
+      where.push(`t.status = $${params.length}`);
     }
 
     if (Number.isFinite(leadId)) {
       params.push(leadId);
-      where.push(`lead_id = $${params.length}`);
+      where.push(`t.lead_id = $${params.length}`);
     }
 
     if (dueBefore) {
       params.push(dueBefore);
-      where.push(`due_date <= $${params.length}`);
+      where.push(`t.due_date <= $${params.length}`);
+    }
+
+    if (q) {
+      params.push(`%${q}%`);
+      const p = `$${params.length}`;
+      where.push(`(t.title ILIKE ${p} OR t.description ILIKE ${p})`);
     }
 
     params.push(limit);
     params.push(offset);
 
     const sql = `
-      SELECT
-        t.*,
-        l.first_name AS lead_first_name,
-        l.last_name  AS lead_last_name
-      FROM tasks t
-      LEFT JOIN leads l ON l.id = t.lead_id
-      WHERE t.user_id = $1
-      ORDER BY (due_date IS NULL) ASC, due_date ASC, created_at DESC
-      LIMIT $${params.length - 1}
-      OFFSET $${params.length};
-    `;
+  SELECT
+    t.*,
+    l.first_name AS lead_first_name,
+    l.last_name AS lead_last_name
+  FROM tasks t
+  LEFT JOIN leads l ON l.id = t.lead_id
+  WHERE ${where.join(' AND ')}
+  ORDER BY (t.due_date IS NULL) ASC, t.due_date ASC, t.created_at DESC
+  LIMIT $${params.length - 1}
+  OFFSET $${params.length};
+`;
 
     const result = await pool.query(sql, params);
     res.json({ ok: true, tasks: result.rows });
@@ -153,12 +168,13 @@ tasksRouter.get(
 
 // POST /tasks
 tasksRouter.post(
-  "/",
+  '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
 
     const parsed = createTaskSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    if (!parsed.success)
+      return res.status(400).json({ ok: false, error: parsed.error.flatten() });
 
     const d = parsed.data;
 
@@ -168,7 +184,7 @@ tasksRouter.post(
       [d.lead_id, userId]
     );
     if (leadCheck.rowCount === 0) {
-      return res.status(404).json({ ok: false, error: "Lead not found" });
+      return res.status(404).json({ ok: false, error: 'Lead not found' });
     }
 
     const result = await pool.query(
@@ -183,7 +199,7 @@ tasksRouter.post(
         d.title,
         d.description ?? null,
         d.due_date ? new Date(d.due_date).toISOString() : null,
-        d.status ?? "Pending",
+        d.status ?? 'Pending',
       ]
     );
 
@@ -193,13 +209,13 @@ tasksRouter.post(
 
 // GET /tasks/:id
 tasksRouter.get(
-  "/:id",
+  '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
-      return res.status(400).json({ ok: false, error: "Invalid id" });
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
     }
 
     const result = await pool.query(
@@ -217,7 +233,7 @@ tasksRouter.get(
     );
 
     if (result.rowCount === 0) {
-      return res.status(404).json({ ok: false, error: "Task not found" });
+      return res.status(404).json({ ok: false, error: 'Task not found' });
     }
 
     res.json({ ok: true, task: result.rows[0] });
@@ -226,22 +242,24 @@ tasksRouter.get(
 
 // PATCH /tasks/:id
 tasksRouter.patch(
-  "/:id",
+  '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
 
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
-      return res.status(400).json({ ok: false, error: "Invalid id" });
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
     }
 
     const parsed = updateTaskSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    if (!parsed.success)
+      return res.status(400).json({ ok: false, error: parsed.error.flatten() });
 
     const updates = parsed.data;
     const keys = Object.keys(updates) as (keyof typeof updates)[];
 
-    if (keys.length === 0) return res.status(400).json({ ok: false, error: "No fields to update" });
+    if (keys.length === 0)
+      return res.status(400).json({ ok: false, error: 'No fields to update' });
 
     const setParts: string[] = [];
     const values: any[] = [userId, id];
@@ -249,12 +267,20 @@ tasksRouter.patch(
     for (const key of keys) {
       let value: any = (updates as any)[key];
 
-      if (key === "due_date") {
+      if (key === 'due_date') {
         value = value ? new Date(value as string).toISOString() : null;
       }
 
-      // If you allow lead_id updates, you should validate it belongs to the user
-      // (optional, but recommended)
+      if (key === 'lead_id') {
+        const check = await pool.query(
+          `SELECT id FROM leads WHERE id = $1 AND user_id = $2`,
+          [value, userId]
+        );
+        if (check.rowCount === 0) {
+          return res.status(404).json({ ok: false, error: 'Lead not found' });
+        }
+      }
+
       values.push(value ?? null);
       setParts.push(`${key} = $${values.length}`);
     }
@@ -264,13 +290,14 @@ tasksRouter.patch(
 
     const sql = `
       UPDATE tasks
-      SET ${setParts.join(", ")}
+      SET ${setParts.join(', ')}
       WHERE user_id = $1 AND id = $2
       RETURNING *;
     `;
 
     const result = await pool.query(sql, values);
-    if (result.rowCount === 0) return res.status(404).json({ ok: false, error: "Task not found" });
+    if (result.rowCount === 0)
+      return res.status(404).json({ ok: false, error: 'Task not found' });
 
     res.json({ ok: true, task: result.rows[0] });
   })
@@ -278,12 +305,12 @@ tasksRouter.patch(
 
 // DELETE /tasks/:id
 tasksRouter.delete(
-  "/:id",
+  '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
-      return res.status(400).json({ ok: false, error: "Invalid id" });
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
     }
 
     const result = await pool.query(
@@ -291,7 +318,8 @@ tasksRouter.delete(
       [userId, id]
     );
 
-    if (result.rowCount === 0) return res.status(404).json({ ok: false, error: "Task not found" });
+    if (result.rowCount === 0)
+      return res.status(404).json({ ok: false, error: 'Task not found' });
 
     res.json({ ok: true, deletedId: result.rows[0].id });
   })
