@@ -9,6 +9,7 @@ import { inviteUserSchema } from '../validators/users.schemas';
 import requireOwnerOrAdmin from '../middleware/utils';
 import { buildInviteEmail } from '../lib/invite-email';
 import { sendMail } from '../lib/mailer';
+import { getAppBaseUrl } from '../utils/appBase';
 
 export const usersRouter = Router();
 
@@ -16,9 +17,11 @@ function sha256(value: string) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
+// POST /users/invite
 usersRouter.post(
   '/invite',
   requireAuth,
+  requireOwnerOrAdmin,
   asyncHandler(async (req, res) => {
     const parsed = inviteUserSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -81,6 +84,17 @@ usersRouter.post(
 
     let user;
 
+    await pool.query(
+      `
+  UPDATE users
+  SET invite_superseded_at = NOW()
+  WHERE LOWER(email) = LOWER($1)
+    AND status = 'invited'
+    AND invite_token_hash IS NOT NULL
+`,
+      [email]
+    );
+
     if (existingUserResult.rowCount) {
       const updateResult = await pool.query(
         `
@@ -93,6 +107,9 @@ usersRouter.post(
           invite_token_hash = $4,
           invite_expires_at = $5,
           invited_at = NOW(),
+          invite_revoked_at = NULL,
+          invite_superseded_at = NULL,
+          password_set_at = NULL,
           updated_at = NOW()
         WHERE id = $6
         RETURNING id, first_name, last_name, email, role, status, invite_expires_at
@@ -179,6 +196,142 @@ usersRouter.post(
   })
 );
 
+// GET /users/invites/validate
+usersRouter.get(
+  '/invites/validate',
+  asyncHandler(async (req, res) => {
+    const token = req.query.token as string;
+
+    if (!token) {
+      return res.status(400).json({ ok: false, error: 'Missing token' });
+    }
+
+    const tokenHash = sha256(token);
+
+    const result = await pool.query(
+      `
+      SELECT id, email, role, status, invite_expires_at,
+             invite_revoked_at, invite_superseded_at
+      FROM users
+      WHERE invite_token_hash = $1
+      `,
+      [tokenHash]
+    );
+
+    const user = result.rows[0];
+
+    if (!user) {
+      return res.json({ ok: false, status: 'invalid' });
+    }
+
+    if (user.status === 'active') {
+      return res.json({ ok: false, status: 'already_used' });
+    }
+
+    if (user.invite_revoked_at) {
+      return res.json({ ok: false, status: 'revoked' });
+    }
+
+    if (user.invite_superseded_at) {
+      return res.json({ ok: false, status: 'superseded' });
+    }
+
+    if (!user.invite_expires_at) {
+      return res.json({ ok: false, status: 'invalid' });
+    }
+
+    if (new Date(user.invite_expires_at) < new Date()) {
+      return res.json({ ok: false, status: 'expired' });
+    }
+
+    return res.json({
+      ok: true,
+      email: user.email,
+      role: user.role,
+      expires_at: user.invite_expires_at,
+      status: 'valid',
+    });
+  })
+);
+
+// POST /users/invite/:id/resend
+usersRouter.post(
+  '/invite/:id/resend',
+  requireAuth,
+  requireOwnerOrAdmin,
+  asyncHandler(async (req, res) => {
+    const userId = Number(req.params.id);
+
+    const userResult = await pool.query(
+      `
+      SELECT *
+      FROM users
+      WHERE LOWER(email) = LOWER($1)
+      AND status = 'invited'
+      AND invite_token_hash IS NOT NULL
+      `,
+      [userId]
+    );
+
+    const user = userResult.rows[0];
+
+    if (!user) {
+      return res.status(404).json({ ok: false, error: 'User not found' });
+    }
+
+    if (user.status === 'active') {
+      return res.status(400).json({ ok: false, error: 'User already active' });
+    }
+
+    // invalidate old invite
+    await pool.query(
+      `
+      UPDATE users
+      SET invite_superseded_at = NOW()
+      WHERE id = $1
+      `,
+      [userId]
+    );
+
+    const inviteToken = crypto.randomBytes(32).toString('hex');
+    const inviteTokenHash = sha256(inviteToken);
+
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    const updateResult = await pool.query(
+      `
+      UPDATE users
+      SET
+        invite_token_hash = $1,
+        invite_expires_at = $2,
+        invited_at = NOW(),
+        invite_superseded_at = NULL,
+        invite_revoked_at = NULL,
+        updated_at = NOW()
+      WHERE id = $3
+      RETURNING *
+      `,
+      [inviteTokenHash, expiresAt, userId]
+    );
+
+    const updatedUser = updateResult.rows[0];
+
+    const inviteUrl = `${getAppBaseUrl(req)}/accept-invite?token=${inviteToken}`;
+
+    /* await sendMail({
+      to: updatedUser.email,
+      subject: 'You’ve been invited',
+      html: `<a href="${inviteUrl}">Accept Invite</a>`,
+    }); */
+
+    return res.json({
+      ok: true,
+      user: updatedUser,
+      invite_url: inviteUrl,
+    });
+  })
+);
+
 // GET /users
 usersRouter.get(
   '/',
@@ -198,7 +351,8 @@ usersRouter.get(
         invited_at,
         password_set_at,
         last_login_at,
-        invite_expires_at
+        invite_revoked_at,
+        invite_superseded_at
       FROM users
       ORDER BY created_at DESC, id DESC
       `

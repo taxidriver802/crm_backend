@@ -6,6 +6,7 @@ import {
   createTaskSchema,
   updateTaskSchema,
 } from '../validators/tasks.schemas';
+import { createNotification } from '../lib/notifications';
 
 export const tasksRouter = Router();
 
@@ -203,7 +204,21 @@ tasksRouter.post(
       ]
     );
 
-    res.status(201).json({ ok: true, task: result.rows[0] });
+    const task = result.rows[0];
+
+    // 🔔 Create notification (only if assigned to a user)
+    if (task.user_id) {
+      await createNotification({
+        userId: task.user_id,
+        type: 'TASK_ASSIGNED',
+        title: 'New task assigned',
+        message: `You were assigned: ${task.title}`,
+        entityType: 'task',
+        entityId: task.id,
+      });
+    }
+
+    res.status(201).json({ ok: true, task });
   })
 );
 
@@ -221,15 +236,20 @@ tasksRouter.get(
     const result = await pool.query(
       `
       SELECT
-        t.*,
+        t.id,
+        t.lead_id,
+        t.title,
+        t.description,
+        t.due_date,
+        t.status,
         l.first_name AS lead_first_name,
-        l.last_name  AS lead_last_name
+        l.last_name AS lead_last_name
       FROM tasks t
       LEFT JOIN leads l ON l.id = t.lead_id
-      WHERE t.user_id = $1 AND t.id = $2
-      LIMIT 1;
-      `,
-      [userId, id]
+      WHERE t.id = $1
+      LIMIT 1
+    `,
+      [id]
     );
 
     if (result.rowCount === 0) {
@@ -252,8 +272,11 @@ tasksRouter.patch(
     }
 
     const parsed = updateTaskSchema.safeParse(req.body);
-    if (!parsed.success)
+
+    if (!parsed.success) {
+      console.log('PATCH /tasks/:id validation error:', parsed.error.flatten());
       return res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    }
 
     const updates = parsed.data;
     const keys = Object.keys(updates) as (keyof typeof updates)[];
@@ -285,6 +308,17 @@ tasksRouter.patch(
       setParts.push(`${key} = $${values.length}`);
     }
 
+    const existingTaskResult = await pool.query(
+      `SELECT user_id, title FROM tasks WHERE id = $1`,
+      [id]
+    );
+
+    if (existingTaskResult.rowCount === 0) {
+      return res.status(404).json({ ok: false, error: 'Task not found' });
+    }
+
+    const existingTask = existingTaskResult.rows[0];
+
     // bump updated_at once (ONLY if column exists)
     setParts.push(`updated_at = CURRENT_TIMESTAMP`);
 
@@ -296,10 +330,21 @@ tasksRouter.patch(
     `;
 
     const result = await pool.query(sql, values);
-    if (result.rowCount === 0)
-      return res.status(404).json({ ok: false, error: 'Task not found' });
+    const updatedTask = result.rows[0];
 
-    res.json({ ok: true, task: result.rows[0] });
+    // 🔔 Notify if assignment changed
+    if (updatedTask.user_id && updatedTask.user_id !== existingTask.user_id) {
+      await createNotification({
+        userId: updatedTask.user_id,
+        type: 'TASK_ASSIGNED',
+        title: 'New task assigned',
+        message: `You were assigned: ${updatedTask.title}`,
+        entityType: 'task',
+        entityId: updatedTask.id,
+      });
+    }
+
+    res.json({ ok: true, task: updatedTask });
   })
 );
 

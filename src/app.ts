@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import cookieParser from 'cookie-parser';
+import path from 'path';
 
 import { env } from './config/env';
 
@@ -13,6 +14,9 @@ import { dashboardRouter } from './routes/dashboard.routes';
 import { usersRouter } from './routes/users.routes';
 import { integrationsRouter } from './routes/integrations.routes';
 import { errorHandler } from './middleware/error';
+import { filesRouter } from './routes/files.routes';
+import { notificationRouter } from './routes/notification.routes';
+import { runTaskNotificationJob } from './jobs/taskNotifications';
 
 export const app = express();
 
@@ -37,6 +41,17 @@ app.use('/tasks', tasksRouter);
 app.use('/dashboard', dashboardRouter);
 app.use('/integrations', integrationsRouter);
 app.use('/users', usersRouter);
+app.use('/files', filesRouter);
+app.use('/notifications', notificationRouter);
+
+setInterval(
+  () => {
+    runTaskNotificationJob().catch(console.error);
+  },
+  1000 * 60 * 5
+); // every 5 minutes
+
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 app.get('/health', (_req, res) => {
   res.json({

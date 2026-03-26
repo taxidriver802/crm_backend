@@ -22,8 +22,6 @@ export default async function requireOwnerOrAdmin(
 
     const role = result.rows[0]?.role;
 
-    console.log('db role', role);
-
     if (role !== 'owner' && role !== 'admin') {
       return res.status(403).json({
         ok: false,

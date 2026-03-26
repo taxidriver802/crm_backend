@@ -1,9 +1,11 @@
-import { AbcClient } from "./abc.client";
-import { abcConfig } from "./abc.config";
+import { AbcClient } from './abc.client';
+import { abcConfig } from './abc.config';
 
 function requireAbcBaseUrl() {
   if (!abcConfig.baseUrl) {
-    throw new Error("ABC integration is not configured: missing ABC_API_BASE_URL");
+    throw new Error(
+      'ABC integration is not configured: missing ABC_API_BASE_URL'
+    );
   }
   return abcConfig.baseUrl;
 }
@@ -14,7 +16,7 @@ export function createAbcClient() {
 
 export function getAbcIntegrationStatus() {
   return {
-    provider: "abc_supply",
+    provider: 'ABC Supply',
     configured: Boolean(abcConfig.baseUrl),
     hasAccessToken: Boolean(abcConfig.accessToken),
     hasClientId: Boolean(abcConfig.clientId),

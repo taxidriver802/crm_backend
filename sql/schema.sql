@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS users (
     CHECK (status IN ('invited', 'active', 'disabled'))
 );
 
+ALTER TABLE users
+ADD COLUMN IF NOT EXISTS invite_revoked_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS invite_superseded_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users (role);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users (status);
@@ -167,3 +171,71 @@ ON supplier_webhook_events (provider);
 
 CREATE INDEX IF NOT EXISTS idx_supplier_webhook_events_processed
 ON supplier_webhook_events (processed);
+
+/* FIles */
+CREATE TABLE files (
+  id SERIAL PRIMARY KEY,
+  uploaded_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+
+  original_name TEXT NOT NULL,
+  storage_key TEXT NOT NULL,
+  mime_type TEXT,
+  size_bytes INTEGER,
+
+  lead_id INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+  task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+-- NOTIFICATIONS
+CREATE TABLE IF NOT EXISTS notifications (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+
+  entity_type TEXT,
+  entity_id INTEGER,
+
+  metadata JSONB,
+
+  read_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id
+ON notifications (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user_created_at
+ON notifications (user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user_read_at
+ON notifications (user_id, read_at);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_type
+ON notifications (type);
+
+ALTER TABLE notifications
+ADD CONSTRAINT notifications_type_check
+CHECK (type IN (
+  'TASK_DUE_SOON',
+  'TASK_OVERDUE',
+  'TASK_ASSIGNED',
+  'INVITE_ACCEPTED'
+));
+
+ALTER TABLE notifications
+ADD CONSTRAINT notifications_entity_type_check
+CHECK (
+  entity_type IS NULL OR entity_type IN ('task', 'lead', 'invite')
+);
+
+ALTER TABLE notifications
+ADD COLUMN IF NOT EXISTS dedupe_key TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe_key
+ON notifications (dedupe_key)
+WHERE dedupe_key IS NOT NULL;
