@@ -82,10 +82,32 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE tasks
+ADD COLUMN IF NOT EXISTS job_id INTEGER REFERENCES jobs(id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_tasks_job_id ON tasks (job_id);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks (user_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_lead_id ON tasks (lead_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks (due_date);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+-- JOBS
+CREATE TABLE IF NOT EXISTS jobs (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'New',
+  address TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
+CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at);
+
 
 -- SUPPLIER CONNECTIONS
 CREATE TABLE IF NOT EXISTS supplier_connections (
@@ -172,8 +194,8 @@ ON supplier_webhook_events (provider);
 CREATE INDEX IF NOT EXISTS idx_supplier_webhook_events_processed
 ON supplier_webhook_events (processed);
 
-/* FIles */
-CREATE TABLE files (
+-- Files
+CREATE TABLE IF NOT EXISTS files (
   id SERIAL PRIMARY KEY,
   uploaded_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
 

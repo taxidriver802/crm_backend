@@ -1,10 +1,8 @@
 import { Router } from 'express';
-import { pool } from '../db';
 import { asyncHandler } from '../utils/asyncHandler';
 import { requireAuth } from '../middleware/auth';
 import { upload } from '../lib/upload';
-import fs from 'fs';
-import path from 'path';
+import * as filesService from '../services/files.service';
 
 export const filesRouter = Router();
 
@@ -50,46 +48,30 @@ filesRouter.post(
       });
     }
 
-    if (leadId != null) {
-      const leadResult = await pool.query(
-        `
-        SELECT id
-        FROM leads
-        WHERE id = $1
-        `,
-        [leadId]
-      );
+    try {
+      const file = await filesService.createFile({
+        uploadedByUserId: req.user.userId,
+        originalName: req.file.originalname,
+        storageKey: req.file.filename,
+        mimeType: req.file.mimetype,
+        sizeBytes: req.file.size,
+        leadId,
+      });
 
-      if (!leadResult.rowCount) {
+      res.status(201).json({
+        ok: true,
+        file,
+      });
+    } catch (error) {
+      if (error instanceof filesService.LeadNotFoundError) {
         return res.status(404).json({
           ok: false,
-          error: 'Lead not found',
+          error: error.message,
         });
       }
+
+      throw error;
     }
-
-    const { originalname, filename, mimetype, size } = req.file;
-
-    const result = await pool.query(
-      `
-      INSERT INTO files (
-        uploaded_by_user_id,
-        original_name,
-        storage_key,
-        mime_type,
-        size_bytes,
-        lead_id
-      )
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING *
-      `,
-      [req.user.userId, originalname, filename, mimetype, size, leadId]
-    );
-
-    res.status(201).json({
-      ok: true,
-      file: result.rows[0],
-    });
   })
 );
 
@@ -110,32 +92,23 @@ filesRouter.get(
       });
     }
 
-    const params: any[] = [];
-    let whereClause = '';
+    try {
+      const files = await filesService.getFiles(leadId);
 
-    if (leadId != null) {
-      params.push(leadId);
-      whereClause = `WHERE f.lead_id = $1`;
+      res.json({
+        ok: true,
+        files,
+      });
+    } catch (error) {
+      if (error instanceof filesService.LeadNotFoundError) {
+        return res.status(404).json({
+          ok: false,
+          error: error.message,
+        });
+      }
+
+      throw error;
     }
-
-    const result = await pool.query(
-      `
-      SELECT
-        f.*,
-        u.first_name,
-        u.last_name
-      FROM files f
-      LEFT JOIN users u ON u.id = f.uploaded_by_user_id
-      ${whereClause}
-      ORDER BY f.created_at DESC
-      `,
-      params
-    );
-
-    res.json({
-      ok: true,
-      files: result.rows,
-    });
   })
 );
 
@@ -159,20 +132,15 @@ filesRouter.delete(
       return res.status(400).json({ ok: false, error: 'Invalid file id' });
     }
 
-    const result = await pool.query(`SELECT * FROM files WHERE id = $1`, [id]);
-    const file = result.rows[0];
+    try {
+      await filesService.deleteFile(id);
+      res.json({ ok: true });
+    } catch (error) {
+      if (error instanceof filesService.FileNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
 
-    if (!file) {
-      return res.status(404).json({ ok: false, error: 'File not found' });
+      throw error;
     }
-
-    const filePath = path.join(process.cwd(), 'uploads', file.storage_key);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-
-    await pool.query(`DELETE FROM files WHERE id = $1`, [id]);
-
-    res.json({ ok: true });
   })
 );

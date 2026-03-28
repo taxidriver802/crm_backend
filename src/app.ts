@@ -17,6 +17,7 @@ import { errorHandler } from './middleware/error';
 import { filesRouter } from './routes/files.routes';
 import { notificationRouter } from './routes/notification.routes';
 import { runTaskNotificationJob } from './jobs/taskNotifications';
+import { jobsRouter } from './routes/jobs.routes';
 
 export const app = express();
 
@@ -43,6 +44,7 @@ app.use('/integrations', integrationsRouter);
 app.use('/users', usersRouter);
 app.use('/files', filesRouter);
 app.use('/notifications', notificationRouter);
+app.use('/jobs', jobsRouter);
 
 setInterval(
   () => {

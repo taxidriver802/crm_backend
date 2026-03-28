@@ -1,11 +1,11 @@
 import { Router } from 'express';
-import { pool } from '../db';
 import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import {
   listNotificationsSchema,
   markNotificationReadParamsSchema,
 } from '../validators/notification.schemas';
+import * as notificationService from '../services/notification.service';
 
 export const notificationRouter = Router();
 
@@ -24,25 +24,11 @@ notificationRouter.get(
 
     const { limit, unreadOnly } = parsed.data;
     const userId = req.user!.userId;
-
-    const values = [userId, limit];
-    let sql = `
-      SELECT id, type, title, message, entity_type, entity_id, metadata, read_at, created_at
-      FROM notifications
-      WHERE user_id = $1
-    `;
-
-    if (unreadOnly) {
-      sql += ` AND read_at IS NULL`;
-    }
-
-    sql += `
-      ORDER BY created_at DESC
-      LIMIT $2
-    `;
-
-    const { rows } = await pool.query(sql, values);
-
+    const rows = await notificationService.getNotifications(
+      userId,
+      limit,
+      unreadOnly
+    );
     res.json({ notifications: rows });
   })
 );
@@ -52,18 +38,8 @@ notificationRouter.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
-
-    const { rows } = await pool.query(
-      `
-      SELECT COUNT(*)::int AS count
-      FROM notifications
-      WHERE user_id = $1
-        AND read_at IS NULL
-      `,
-      [userId]
-    );
-
-    res.json({ count: rows[0]?.count ?? 0 });
+    const rows = await notificationService.getUnreadCount(userId);
+    res.json({ count: rows });
   })
 );
 
@@ -83,22 +59,9 @@ notificationRouter.patch(
     const { id } = parsed.data;
     const userId = req.user!.userId;
 
-    const { rows } = await pool.query(
-      `
-      UPDATE notifications
-      SET read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
-      WHERE id = $1
-        AND user_id = $2
-      RETURNING id, read_at
-      `,
-      [id, userId]
-    );
+    const rows = await notificationService.readNotification(id, userId);
 
-    if (!rows.length) {
-      return res.status(404).json({ error: 'Notification not found' });
-    }
-
-    res.json({ notification: rows[0] });
+    res.json({ notification: rows });
   })
 );
 
@@ -107,18 +70,8 @@ notificationRouter.patch(
   requireAuth,
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
-
-    const { rowCount } = await pool.query(
-      `
-      UPDATE notifications
-      SET read_at = CURRENT_TIMESTAMP
-      WHERE user_id = $1
-        AND read_at IS NULL
-      `,
-      [userId]
-    );
-
-    res.json({ updated: rowCount ?? 0 });
+    const rowCount = await notificationService.readAll(userId);
+    res.json({ updated: rowCount });
   })
 );
 
@@ -127,17 +80,8 @@ notificationRouter.delete(
   requireAuth,
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
-
-    const { rowCount } = await pool.query(
-      `
-      DELETE FROM notifications
-      WHERE user_id = $1
-        AND read_at IS NOT NULL
-      `,
-      [userId]
-    );
-
-    res.json({ deleted: rowCount ?? 0 });
+    const rowCount = await notificationService.deleteAllRead(userId);
+    res.json({ deleted: rowCount });
   })
 );
 
@@ -156,21 +100,7 @@ notificationRouter.delete(
 
     const userId = req.user!.userId;
     const { id } = parsed.data;
-
-    const { rows } = await pool.query(
-      `
-      DELETE FROM notifications
-      WHERE id = $1
-        AND user_id = $2
-      RETURNING id
-      `,
-      [id, userId]
-    );
-
-    if (!rows.length) {
-      return res.status(404).json({ error: 'Notification not found' });
-    }
-
-    res.json({ deletedId: rows[0].id });
+    const rows = await notificationService.deleteNotification(userId, id);
+    res.json({ deletedId: rows });
   })
 );
