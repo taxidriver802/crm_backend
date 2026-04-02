@@ -13,3 +13,6 @@ build/
 
 # IDEs
 .vscode/
+
+# uploads
+uploads/

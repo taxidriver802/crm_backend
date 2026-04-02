@@ -33,6 +33,7 @@ filesRouter.post(
     }
 
     const leadId = parseOptionalInt(req.body.lead_id);
+    const jobId = parseOptionalInt(req.body.job_id);
 
     if (req.user?.role === 'agent') {
       return res.status(403).json({
@@ -56,6 +57,7 @@ filesRouter.post(
         mimeType: req.file.mimetype,
         sizeBytes: req.file.size,
         leadId,
+        jobId,
       });
 
       res.status(201).json({
@@ -63,7 +65,10 @@ filesRouter.post(
         file,
       });
     } catch (error) {
-      if (error instanceof filesService.LeadNotFoundError) {
+      if (
+        error instanceof filesService.LeadNotFoundError ||
+        error instanceof filesService.JobNotFoundError
+      ) {
         return res.status(404).json({
           ok: false,
           error: error.message,
@@ -84,6 +89,7 @@ filesRouter.get(
   requireAuth,
   asyncHandler(async (req, res) => {
     const leadId = parseOptionalInt(req.query.lead_id);
+    const jobId = parseOptionalInt(req.query.job_id);
 
     if (req.query.lead_id != null && leadId == null) {
       return res.status(400).json({
@@ -93,14 +99,17 @@ filesRouter.get(
     }
 
     try {
-      const files = await filesService.getFiles(leadId);
+      const files = await filesService.getFiles(leadId, jobId);
 
       res.json({
         ok: true,
         files,
       });
     } catch (error) {
-      if (error instanceof filesService.LeadNotFoundError) {
+      if (
+        error instanceof filesService.LeadNotFoundError ||
+        error instanceof filesService.JobNotFoundError
+      ) {
         return res.status(404).json({
           ok: false,
           error: error.message,

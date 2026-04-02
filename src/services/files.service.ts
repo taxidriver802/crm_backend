@@ -16,6 +16,13 @@ export class LeadNotFoundError extends Error {
   }
 }
 
+export class JobNotFoundError extends Error {
+  constructor(message = 'Job not found') {
+    super(message);
+    this.name = 'JobNotFoundError';
+  }
+}
+
 export type CreateFileInput = {
   uploadedByUserId: number;
   originalName: string;
@@ -23,6 +30,7 @@ export type CreateFileInput = {
   mimeType: string;
   sizeBytes: number;
   leadId?: number | null;
+  jobId?: number | null;
 };
 
 async function ensureLeadExists(leadId: number) {
@@ -40,9 +48,21 @@ async function ensureLeadExists(leadId: number) {
   }
 }
 
+async function ensureJobExists(jobId: number) {
+  const result = await pool.query(`SELECT id FROM jobs WHERE id = $1`, [jobId]);
+
+  if (result.rowCount === 0) {
+    throw new JobNotFoundError();
+  }
+}
+
 export async function createFile(input: CreateFileInput) {
   if (input.leadId != null) {
     await ensureLeadExists(input.leadId);
+  }
+
+  if (input.jobId != null) {
+    await ensureJobExists(input.jobId);
   }
 
   const result = await pool.query(
@@ -53,9 +73,10 @@ export async function createFile(input: CreateFileInput) {
       storage_key,
       mime_type,
       size_bytes,
-      lead_id
+      lead_id,
+      job_id
     )
-    VALUES ($1, $2, $3, $4, $5, $6)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING *
     `,
     [
@@ -65,15 +86,20 @@ export async function createFile(input: CreateFileInput) {
       input.mimeType,
       input.sizeBytes,
       input.leadId ?? null,
+      input.jobId ?? null,
     ]
   );
 
   return result.rows[0];
 }
 
-export async function getFiles(leadId?: number | null) {
+export async function getFiles(leadId?: number | null, jobId?: number | null) {
   if (leadId != null) {
     await ensureLeadExists(leadId);
+  }
+
+  if (jobId != null) {
+    await ensureJobExists(jobId);
   }
 
   const params: any[] = [];
@@ -82,6 +108,9 @@ export async function getFiles(leadId?: number | null) {
   if (leadId != null) {
     params.push(leadId);
     whereClause = `WHERE f.lead_id = $1`;
+  } else if (jobId != null) {
+    params.push(jobId);
+    whereClause = `WHERE f.job_id = $1`;
   }
 
   const result = await pool.query(
