@@ -1,7 +1,7 @@
 import { pool } from '../db';
 import { getTaskSummary } from './tasks.service';
 
-export async function getDashboardData(userId: number) {
+export async function getDashboardData(userId: string) {
   const [leadsTotalResult, leadsByStatusResult, taskSummary] =
     await Promise.all([
       pool.query(

@@ -8,6 +8,13 @@ export class TaskNotFoundError extends Error {
   }
 }
 
+export class TaskOwnershipError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TaskOwnershipError';
+  }
+}
+
 export class LeadNotFoundError extends Error {
   constructor(message = 'Lead not found') {
     super(message);
@@ -22,7 +29,7 @@ export class JobNotFoundError extends Error {
   }
 }
 
-async function ensureJobBelongsToUser(jobId: number, userId: number) {
+async function ensureJobBelongsToUser(jobId: number, userId: string) {
   const result = await pool.query(
     `SELECT id FROM jobs WHERE id = $1 AND user_id = $2`,
     [jobId, userId]
@@ -30,6 +37,17 @@ async function ensureJobBelongsToUser(jobId: number, userId: number) {
 
   if (result.rowCount === 0) {
     throw new JobNotFoundError();
+  }
+}
+
+async function ensureLeadBelongsToUser(leadId: number, userId: string) {
+  const result = await pool.query(
+    `SELECT id FROM leads WHERE id = $1 AND user_id = $2`,
+    [leadId, userId]
+  );
+
+  if (result.rowCount === 0) {
+    throw new LeadNotFoundError();
   }
 }
 
@@ -54,18 +72,102 @@ export type CreateTaskInput = {
 
 export type UpdateTaskInput = Partial<CreateTaskInput>;
 
-async function ensureLeadBelongsToUser(leadId: number, userId: number) {
-  const result = await pool.query(
-    `SELECT id FROM leads WHERE id = $1 AND user_id = $2`,
-    [leadId, userId]
-  );
+const TASK_SELECT = `
+  SELECT
+    t.id,
+    t.user_id,
+    t.lead_id,
+    t.job_id,
+    t.title,
+    t.description,
+    t.due_date,
+    t.status,
+    t.created_at,
+    t.updated_at,
 
-  if (result.rowCount === 0) {
-    throw new LeadNotFoundError();
-  }
+    l.first_name AS lead_first_name,
+    l.last_name AS lead_last_name,
+    jl.id AS job_lead_id,
+    jl.first_name AS job_lead_first_name,
+    jl.last_name AS job_lead_last_name,
+
+    j.title AS job_title,
+    j.status AS job_status,
+    j.address AS job_address
+  FROM tasks t
+  LEFT JOIN leads l ON l.id = t.lead_id
+LEFT JOIN jobs j ON j.id = t.job_id
+LEFT JOIN leads jl ON jl.id = j.lead_id
+`;
+
+function buildLeadName(row: any) {
+  const first = String(row.lead_first_name || '').trim();
+  const last = String(row.lead_last_name || '').trim();
+  const full = `${first} ${last}`.trim();
+
+  if (full) return full;
+  if (row.lead_id != null) return `Lead #${row.lead_id}`;
+  return null;
 }
 
-export async function getTaskSummary(userId: number) {
+function normalizeTask(row: any) {
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    lead_id: row.lead_id,
+    job_id: row.job_id,
+    title: row.title,
+    description: row.description,
+    due_date: row.due_date,
+    status: row.status,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+
+    // keep legacy fields for current UI so you do not break pages immediately
+    lead_first_name: row.lead_first_name,
+    lead_last_name: row.lead_last_name,
+    job_title: row.job_title,
+    job_status: row.job_status,
+    job_address: row.job_address,
+
+    // new normalized relationship fields
+    lead:
+      row.lead_id != null
+        ? {
+            id: row.lead_id,
+            name: buildLeadName(row),
+            first_name: row.lead_first_name ?? null,
+            last_name: row.lead_last_name ?? null,
+          }
+        : null,
+
+    job_lead:
+      row.job_lead_id != null
+        ? {
+            id: row.job_lead_id,
+            name: `${row.job_lead_first_name || ''} ${row.job_lead_last_name || ''}`.trim(),
+            first_name: row.job_lead_first_name ?? null,
+            last_name: row.job_lead_last_name ?? null,
+          }
+        : null,
+
+    job:
+      row.job_id != null
+        ? {
+            id: row.job_id,
+            title: row.job_title ?? `Job #${row.job_id}`,
+            status: row.job_status ?? null,
+            address: row.job_address ?? null,
+          }
+        : null,
+  };
+}
+
+function normalizeTasks(rows: any[]) {
+  return rows.map(normalizeTask);
+}
+
+export async function getTaskSummary(userId: string) {
   const [countsResult, overdueTasks, dueTodayTasks, upcomingResult] =
     await Promise.all([
       pool.query(
@@ -89,12 +191,7 @@ export async function getTaskSummary(userId: number) {
       ),
       pool.query(
         `
-        SELECT
-          t.*,
-          l.first_name AS lead_first_name,
-          l.last_name AS lead_last_name
-        FROM tasks t
-        JOIN leads l ON l.id = t.lead_id
+        ${TASK_SELECT}
         WHERE t.user_id = $1
           AND t.status <> 'Completed'
           AND t.due_date IS NOT NULL
@@ -106,12 +203,7 @@ export async function getTaskSummary(userId: number) {
       ),
       pool.query(
         `
-        SELECT
-          t.*,
-          l.first_name AS lead_first_name,
-          l.last_name AS lead_last_name
-        FROM tasks t
-        JOIN leads l ON l.id = t.lead_id
+        ${TASK_SELECT}
         WHERE t.user_id = $1
           AND t.status <> 'Completed'
           AND t.due_date IS NOT NULL
@@ -124,12 +216,7 @@ export async function getTaskSummary(userId: number) {
       ),
       pool.query(
         `
-        SELECT
-          t.*,
-          l.first_name AS lead_first_name,
-          l.last_name AS lead_last_name
-        FROM tasks t
-        JOIN leads l ON l.id = t.lead_id
+        ${TASK_SELECT}
         WHERE t.user_id = $1
           AND t.status <> 'Completed'
           AND t.due_date IS NOT NULL
@@ -143,13 +230,13 @@ export async function getTaskSummary(userId: number) {
 
   return {
     counts: countsResult.rows[0],
-    overdueTasks: overdueTasks.rows,
-    dueTodayTasks: dueTodayTasks.rows,
-    nextUp: upcomingResult.rows,
+    overdueTasks: normalizeTasks(overdueTasks.rows),
+    dueTodayTasks: normalizeTasks(dueTodayTasks.rows),
+    nextUp: normalizeTasks(upcomingResult.rows),
   };
 }
 
-export async function getTasks(userId: number, filters: GetTasksFilters) {
+export async function getTasks(userId: string, filters: GetTasksFilters) {
   const params: any[] = [userId];
   const where: string[] = ['t.user_id = $1'];
 
@@ -183,12 +270,7 @@ export async function getTasks(userId: number, filters: GetTasksFilters) {
   params.push(filters.offset ?? 0);
 
   const sql = `
-    SELECT
-      t.*,
-      l.first_name AS lead_first_name,
-      l.last_name AS lead_last_name
-    FROM tasks t
-    LEFT JOIN leads l ON l.id = t.lead_id
+    ${TASK_SELECT}
     WHERE ${where.join(' AND ')}
     ORDER BY (t.due_date IS NULL) ASC, t.due_date ASC, t.created_at DESC
     LIMIT $${params.length - 1}
@@ -196,16 +278,34 @@ export async function getTasks(userId: number, filters: GetTasksFilters) {
   `;
 
   const result = await pool.query(sql, params);
-  return result.rows;
+  return normalizeTasks(result.rows);
 }
 
-export async function createTask(userId: number, input: CreateTaskInput) {
+export async function createTask(userId: string, input: CreateTaskInput) {
   if (input.lead_id != null) {
     await ensureLeadBelongsToUser(input.lead_id, userId);
   }
 
   if (input.job_id != null) {
     await ensureJobBelongsToUser(input.job_id, userId);
+  }
+
+  if (!input.lead_id && !input.job_id) {
+    throw new TaskOwnershipError('Task must be attached to a lead or a job');
+  }
+
+  if (input.lead_id && input.job_id) {
+    throw new TaskOwnershipError('Task cannot belong to both a lead and a job');
+  }
+
+  let dueDateValue: string | null = null;
+
+  if (input.due_date) {
+    const d = new Date(input.due_date);
+    if (isNaN(d.getTime())) {
+      throw new Error('Invalid due_date');
+    }
+    dueDateValue = d.toISOString();
   }
 
   const result = await pool.query(
@@ -220,7 +320,7 @@ export async function createTask(userId: number, input: CreateTaskInput) {
       input.job_id ?? null,
       input.title,
       input.description ?? null,
-      input.due_date ? new Date(input.due_date).toISOString() : null,
+      dueDateValue,
       input.status ?? 'Pending',
     ]
   );
@@ -238,27 +338,13 @@ export async function createTask(userId: number, input: CreateTaskInput) {
     });
   }
 
-  return task;
+  return getTaskById(userId, task.id);
 }
 
-export async function getTaskById(userId: number, id: number) {
+export async function getTaskById(userId: string, id: number) {
   const result = await pool.query(
     `
-    SELECT
-      t.id,
-      t.user_id,
-      t.lead_id,
-      t.job_id,
-      t.title,
-      t.description,
-      t.due_date,
-      t.status,
-      t.created_at,
-      t.updated_at,
-      l.first_name AS lead_first_name,
-      l.last_name AS lead_last_name
-    FROM tasks t
-    LEFT JOIN leads l ON l.id = t.lead_id
+    ${TASK_SELECT}
     WHERE t.user_id = $1 AND t.id = $2
     LIMIT 1
     `,
@@ -269,31 +355,26 @@ export async function getTaskById(userId: number, id: number) {
     throw new TaskNotFoundError();
   }
 
-  return result.rows[0];
+  return normalizeTask(result.rows[0]);
 }
 
-export async function getTasksByJobId(userId: number, jobId: number) {
+export async function getTasksByJobId(userId: string, jobId: number) {
   await ensureJobBelongsToUser(jobId, userId);
 
   const result = await pool.query(
     `
-    SELECT
-      t.*,
-      l.first_name AS lead_first_name,
-      l.last_name AS lead_last_name
-    FROM tasks t
-    LEFT JOIN leads l ON l.id = t.lead_id
+    ${TASK_SELECT}
     WHERE t.user_id = $1 AND t.job_id = $2
     ORDER BY (t.due_date IS NULL) ASC, t.due_date ASC, t.created_at DESC
     `,
     [userId, jobId]
   );
 
-  return result.rows;
+  return normalizeTasks(result.rows);
 }
 
 export async function updateTask(
-  userId: number,
+  userId: string,
   id: number,
   updates: UpdateTaskInput
 ) {
@@ -303,6 +384,10 @@ export async function updateTask(
     throw new Error('No fields to update');
   }
 
+  if ('lead_id' in updates || 'job_id' in updates) {
+    throw new Error('Task ownership cannot be changed after creation');
+  }
+
   if (updates.lead_id != null) {
     await ensureLeadBelongsToUser(updates.lead_id, userId);
   }
@@ -310,7 +395,8 @@ export async function updateTask(
   if (updates.job_id != null) {
     await ensureJobBelongsToUser(updates.job_id, userId);
   }
-  const existingTaskResult = await pool.query(
+
+  /*   const existingTaskResult = await pool.query(
     `SELECT user_id, title FROM tasks WHERE user_id = $1 AND id = $2`,
     [userId, id]
   );
@@ -319,7 +405,7 @@ export async function updateTask(
     throw new TaskNotFoundError();
   }
 
-  const existingTask = existingTaskResult.rows[0];
+  const existingTask = existingTaskResult.rows[0]; */
 
   const setParts: string[] = [];
   const values: any[] = [userId, id];
@@ -328,7 +414,15 @@ export async function updateTask(
     let value = updates[key];
 
     if (key === 'due_date') {
-      value = value ? new Date(value).toISOString() : null;
+      if (value) {
+        const d = new Date(value);
+        if (isNaN(d.getTime())) {
+          throw new Error('Invalid due_date');
+        }
+        value = d.toISOString();
+      } else {
+        value = null;
+      }
     }
 
     values.push(value ?? null);
@@ -345,23 +439,28 @@ export async function updateTask(
   `;
 
   const result = await pool.query(sql, values);
+
+  if (result.rowCount === 0) {
+    throw new TaskNotFoundError();
+  }
+
   const updatedTask = result.rows[0];
 
-  if (updatedTask.user_id && updatedTask.user_id !== existingTask.user_id) {
+  if (updates.status === 'Completed') {
     await createNotification({
-      userId: updatedTask.user_id,
-      type: 'TASK_ASSIGNED',
-      title: 'New task assigned',
-      message: `You were assigned: ${updatedTask.title}`,
+      userId,
+      type: 'TASK_COMPLETED',
+      title: 'Task completed',
+      message: `Task completed: ${updatedTask.title}`,
       entityType: 'task',
       entityId: updatedTask.id,
     });
   }
 
-  return updatedTask;
+  return getTaskById(userId, updatedTask.id);
 }
 
-export async function deleteTask(userId: number, id: number) {
+export async function deleteTask(userId: string, id: number) {
   const result = await pool.query(
     `DELETE FROM tasks WHERE user_id = $1 AND id = $2 RETURNING id`,
     [userId, id]

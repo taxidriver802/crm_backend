@@ -28,7 +28,7 @@ export type CreateLeadInput = {
 
 export type UpdateLeadInput = Partial<CreateLeadInput>;
 
-export async function getLeadSummary(userId: number) {
+export async function getLeadSummary(userId: string) {
   const [totalResult, byStatusResult] = await Promise.all([
     pool.query(`SELECT COUNT(*)::int AS total FROM leads WHERE user_id = $1`, [
       userId,
@@ -51,7 +51,7 @@ export async function getLeadSummary(userId: number) {
   };
 }
 
-export async function getLeads(userId: number, filters: GetLeadsFilters) {
+export async function getLeads(userId: string, filters: GetLeadsFilters) {
   const params: any[] = [userId];
   const where: string[] = ['t.user_id = $1'];
 
@@ -84,7 +84,7 @@ export async function getLeads(userId: number, filters: GetLeadsFilters) {
   return result.rows;
 }
 
-export async function getLeadById(userId: number, id: number) {
+export async function getLeadById(userId: string, id: number) {
   const result = await pool.query(
     `SELECT * FROM leads WHERE user_id = $1 AND id = $2`,
     [userId, id]
@@ -97,7 +97,7 @@ export async function getLeadById(userId: number, id: number) {
   return result.rows[0];
 }
 
-export async function createLead(userId: number, input: CreateLeadInput) {
+export async function createLead(userId: string, input: CreateLeadInput) {
   const result = await pool.query(
     `
     INSERT INTO leads (
@@ -125,7 +125,7 @@ export async function createLead(userId: number, input: CreateLeadInput) {
 }
 
 export async function updateLead(
-  userId: number,
+  userId: string,
   id: number,
   updates: UpdateLeadInput
 ) {
@@ -161,7 +161,7 @@ export async function updateLead(
   return result.rows[0];
 }
 
-export async function deleteLead(userId: number, id: number) {
+export async function deleteLead(userId: string, id: number) {
   const result = await pool.query(
     `DELETE FROM leads WHERE user_id = $1 AND id = $2 RETURNING id`,
     [userId, id]

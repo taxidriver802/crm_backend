@@ -23,8 +23,22 @@ export class JobNotFoundError extends Error {
   }
 }
 
+export class UserNotProvidedError extends Error {
+  constructor(message = 'User not provided') {
+    super(message);
+    this.name = 'UserNotProvidedError';
+  }
+}
+
+export class FileOwnershipError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FileOwnershipError';
+  }
+}
+
 export type CreateFileInput = {
-  uploadedByUserId: number;
+  uploadedByUserId: string;
   originalName: string;
   storageKey: string;
   mimeType: string;
@@ -33,14 +47,14 @@ export type CreateFileInput = {
   jobId?: number | null;
 };
 
-async function ensureLeadExists(leadId: number) {
+async function ensureLeadBelongsToUser(leadId: number, userId: string) {
   const result = await pool.query(
     `
     SELECT id
     FROM leads
-    WHERE id = $1
+    WHERE id = $1 AND user_id = $2
     `,
-    [leadId]
+    [leadId, userId]
   );
 
   if (result.rowCount === 0) {
@@ -48,8 +62,15 @@ async function ensureLeadExists(leadId: number) {
   }
 }
 
-async function ensureJobExists(jobId: number) {
-  const result = await pool.query(`SELECT id FROM jobs WHERE id = $1`, [jobId]);
+async function ensureJobBelongsToUser(jobId: number, userId: string) {
+  const result = await pool.query(
+    `
+    SELECT id
+    FROM jobs
+    WHERE id = $1 AND user_id = $2
+    `,
+    [jobId, userId]
+  );
 
   if (result.rowCount === 0) {
     throw new JobNotFoundError();
@@ -57,12 +78,22 @@ async function ensureJobExists(jobId: number) {
 }
 
 export async function createFile(input: CreateFileInput) {
-  if (input.leadId != null) {
-    await ensureLeadExists(input.leadId);
+  const { uploadedByUserId, leadId = null, jobId = null } = input;
+
+  if (!uploadedByUserId) {
+    throw new UserNotProvidedError();
   }
 
-  if (input.jobId != null) {
-    await ensureJobExists(input.jobId);
+  if (leadId != null && jobId != null) {
+    throw new FileOwnershipError('File cannot belong to both a lead and a job');
+  }
+
+  if (leadId != null) {
+    await ensureLeadBelongsToUser(leadId, uploadedByUserId);
+  }
+
+  if (jobId != null) {
+    await ensureJobBelongsToUser(jobId, uploadedByUserId);
   }
 
   const result = await pool.query(
@@ -77,40 +108,54 @@ export async function createFile(input: CreateFileInput) {
       job_id
     )
     VALUES ($1, $2, $3, $4, $5, $6, $7)
-    RETURNING *
+    RETURNING *;
     `,
     [
-      input.uploadedByUserId,
+      uploadedByUserId,
       input.originalName,
       input.storageKey,
       input.mimeType,
       input.sizeBytes,
-      input.leadId ?? null,
-      input.jobId ?? null,
+      leadId,
+      jobId,
     ]
   );
 
   return result.rows[0];
 }
 
-export async function getFiles(leadId?: number | null, jobId?: number | null) {
+export async function getFiles(
+  userId: string,
+  leadId?: number | null,
+  jobId?: number | null
+) {
+  if (!userId) {
+    throw new UserNotProvidedError();
+  }
+
+  if (leadId != null && jobId != null) {
+    throw new FileOwnershipError(
+      'Files cannot be requested for both a lead and a job'
+    );
+  }
+
   if (leadId != null) {
-    await ensureLeadExists(leadId);
+    await ensureLeadBelongsToUser(leadId, userId);
   }
 
   if (jobId != null) {
-    await ensureJobExists(jobId);
+    await ensureJobBelongsToUser(jobId, userId);
   }
 
-  const params: any[] = [];
-  let whereClause = '';
+  const params: any[] = [userId];
+  const where: string[] = ['f.uploaded_by_user_id = $1'];
 
   if (leadId != null) {
     params.push(leadId);
-    whereClause = `WHERE f.lead_id = $1`;
+    where.push(`f.lead_id = $${params.length}`);
   } else if (jobId != null) {
     params.push(jobId);
-    whereClause = `WHERE f.job_id = $1`;
+    where.push(`f.job_id = $${params.length}`);
   }
 
   const result = await pool.query(
@@ -121,7 +166,7 @@ export async function getFiles(leadId?: number | null, jobId?: number | null) {
       u.last_name
     FROM files f
     LEFT JOIN users u ON u.id = f.uploaded_by_user_id
-    ${whereClause}
+    WHERE ${where.join(' AND ')}
     ORDER BY f.created_at DESC
     `,
     params
@@ -130,8 +175,20 @@ export async function getFiles(leadId?: number | null, jobId?: number | null) {
   return result.rows;
 }
 
-export async function deleteFile(id: number) {
-  const result = await pool.query(`SELECT * FROM files WHERE id = $1`, [id]);
+export async function deleteFile(userId: string, id: number) {
+  if (!userId) {
+    throw new UserNotProvidedError();
+  }
+
+  const result = await pool.query(
+    `
+    SELECT *
+    FROM files
+    WHERE id = $1 AND uploaded_by_user_id = $2
+    `,
+    [id, userId]
+  );
+
   const file = result.rows[0];
 
   if (!file) {

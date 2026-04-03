@@ -4,12 +4,13 @@ export type NotificationType =
   | 'TASK_DUE_SOON'
   | 'TASK_OVERDUE'
   | 'TASK_ASSIGNED'
+  | 'TASK_COMPLETED'
   | 'INVITE_ACCEPTED';
 
 export type NotificationEntityType = 'task' | 'lead' | 'invite';
 
 type CreateNotificationInput = {
-  userId: number;
+  userId: string;
   type: NotificationType;
   title: string;
   message: string;

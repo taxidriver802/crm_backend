@@ -7,6 +7,20 @@ export class JobNotFoundError extends Error {
   }
 }
 
+export class LeadNotFoundError extends Error {
+  constructor(message = 'Lead not found') {
+    super(message);
+    this.name = 'LeadNotFoundError';
+  }
+}
+
+export class JobOwnershipError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'JobOwnershipError';
+  }
+}
+
 export type GetJobsFilters = {
   status?: string;
   q?: string;
@@ -15,15 +29,62 @@ export type GetJobsFilters = {
 };
 
 export type CreateJobInput = {
+  lead_id: number;
   title: string;
   description?: string | null;
   status?: string | null;
   address?: string | null;
 };
 
-export type UpdateJobInput = Partial<CreateJobInput>;
+export type UpdateJobInput = Partial<Omit<CreateJobInput, 'lead_id'>>;
 
-export async function getJobs(userId: number, filters: GetJobsFilters = {}) {
+async function ensureLeadBelongsToUser(leadId: number, userId: string) {
+  const result = await pool.query(
+    `SELECT id FROM leads WHERE id = $1 AND user_id = $2`,
+    [leadId, userId]
+  );
+
+  if (result.rowCount === 0) {
+    throw new LeadNotFoundError();
+  }
+}
+
+function normalizeJob(row: any) {
+  const leadName =
+    `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim();
+
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    lead_id: row.lead_id,
+    title: row.title,
+    description: row.description,
+    status: row.status,
+    address: row.address,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    lead:
+      row.lead_id != null
+        ? {
+            id: row.lead_id,
+            name: leadName || `Lead #${row.lead_id}`,
+            first_name: row.lead_first_name ?? null,
+            last_name: row.lead_last_name ?? null,
+          }
+        : null,
+  };
+}
+
+const JOB_SELECT = `
+  SELECT
+    j.*,
+    l.first_name AS lead_first_name,
+    l.last_name AS lead_last_name
+  FROM jobs j
+  LEFT JOIN leads l ON l.id = j.lead_id
+`;
+
+export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
   const params: any[] = [userId];
   const where: string[] = ['j.user_id = $1'];
 
@@ -44,8 +105,7 @@ export async function getJobs(userId: number, filters: GetJobsFilters = {}) {
   params.push(filters.offset ?? 0);
 
   const sql = `
-    SELECT j.*
-    FROM jobs j
+    ${JOB_SELECT}
     WHERE ${where.join(' AND ')}
     ORDER BY j.created_at DESC
     LIMIT $${params.length - 1}
@@ -53,12 +113,16 @@ export async function getJobs(userId: number, filters: GetJobsFilters = {}) {
   `;
 
   const result = await pool.query(sql, params);
-  return result.rows;
+  return result.rows.map(normalizeJob);
 }
 
-export async function getJobById(userId: number, id: number) {
+export async function getJobById(userId: string, id: number) {
   const result = await pool.query(
-    `SELECT * FROM jobs WHERE user_id = $1 AND id = $2`,
+    `
+    ${JOB_SELECT}
+    WHERE j.user_id = $1 AND j.id = $2
+    LIMIT 1
+    `,
     [userId, id]
   );
 
@@ -66,18 +130,21 @@ export async function getJobById(userId: number, id: number) {
     throw new JobNotFoundError();
   }
 
-  return result.rows[0];
+  return normalizeJob(result.rows[0]);
 }
 
-export async function createJob(userId: number, input: CreateJobInput) {
+export async function createJob(userId: string, input: CreateJobInput) {
+  await ensureLeadBelongsToUser(input.lead_id, userId);
+
   const result = await pool.query(
     `
-    INSERT INTO jobs (user_id, title, description, status, address)
-    VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO jobs (user_id, lead_id, title, description, status, address)
+    VALUES ($1, $2, $3, $4, $5, $6)
     RETURNING *;
     `,
     [
       userId,
+      input.lead_id,
       input.title,
       input.description ?? null,
       input.status ?? 'New',
@@ -85,19 +152,26 @@ export async function createJob(userId: number, input: CreateJobInput) {
     ]
   );
 
-  return result.rows[0];
+  return getJobById(userId, result.rows[0].id);
 }
 
 export async function updateJob(
-  userId: number,
+  userId: string,
   id: number,
   updates: UpdateJobInput
 ) {
+  if ('lead_id' in updates) {
+    throw new JobOwnershipError(
+      'Job ownership cannot be changed after creation'
+    );
+  }
+
   const keys = Object.keys(updates) as (keyof UpdateJobInput)[];
 
   if (keys.length === 0) {
     throw new Error('No fields to update');
   }
+
   const setParts: string[] = [];
   const values: any[] = [userId, id];
 
@@ -121,10 +195,10 @@ export async function updateJob(
     throw new JobNotFoundError();
   }
 
-  return result.rows[0];
+  return getJobById(userId, result.rows[0].id);
 }
 
-export async function deleteJob(userId: number, id: number) {
+export async function deleteJob(userId: string, id: number) {
   const result = await pool.query(
     `DELETE FROM jobs WHERE user_id = $1 AND id = $2 RETURNING id`,
     [userId, id]

@@ -15,7 +15,7 @@ import jwt, { type Secret, type SignOptions } from 'jsonwebtoken';
 
 export const authRouter = Router();
 
-function signToken(userId: number, email: string, role: string): string {
+function signToken(userId: string, email: string, role: string): string {
   const secret: Secret = process.env.JWT_SECRET!;
 
   const options: SignOptions = {
@@ -33,17 +33,37 @@ authRouter.post(
     if (!parsed.success)
       return res.status(400).json({ ok: false, error: parsed.error.flatten() });
 
+    const { rows } = await pool.query(
+      'SELECT COUNT(*)::int AS count FROM users'
+    );
+    const isFirstUser = rows[0].count === 0;
+
+    const role = isFirstUser ? 'owner' : 'agent';
+
     const { first_name, last_name, email, password } = parsed.data;
+
+    const normalEmail = email.toLocaleLowerCase();
+
+    const existing = await pool.query('SELECT id FROM users WHERE email = $1', [
+      normalEmail,
+    ]);
+
+    if (existing.rows.length > 0) {
+      return res.status(409).json({
+        ok: false,
+        error: 'Email already in use',
+      });
+    }
 
     const password_hash = await bcrypt.hash(password, 10);
 
     const result = await pool.query(
       `
       INSERT INTO users (first_name, last_name, email, password_hash, role, status)
-      VALUES ($1, $2, $3, $4, 'agent', 'active')
-      RETURNING id, email, first_name, last_name;
+      VALUES ($1, $2, $3, $4, $5, 'active')
+      RETURNING id, email, first_name, last_name, role;
       `,
-      [first_name, last_name, email, password_hash]
+      [first_name, last_name, normalEmail, password_hash, role]
     );
 
     const user = result.rows[0];
@@ -71,9 +91,11 @@ authRouter.post(
 
     const { email, password } = parsed.data;
 
+    const normalEmail = email.toLocaleLowerCase();
+
     const result = await pool.query(
       `SELECT id, email, password_hash, first_name, last_name, role, status FROM users WHERE email = $1`,
-      [email]
+      [normalEmail]
     );
 
     const user = result.rows[0];

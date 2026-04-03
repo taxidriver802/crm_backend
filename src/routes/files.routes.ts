@@ -35,13 +35,6 @@ filesRouter.post(
     const leadId = parseOptionalInt(req.body.lead_id);
     const jobId = parseOptionalInt(req.body.job_id);
 
-    if (req.user?.role === 'agent') {
-      return res.status(403).json({
-        ok: false,
-        error: 'You do not have permission to upload files',
-      });
-    }
-
     if (req.body.lead_id != null && leadId == null) {
       return res.status(400).json({
         ok: false,
@@ -88,6 +81,11 @@ filesRouter.get(
   '/',
   requireAuth,
   asyncHandler(async (req, res) => {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new filesService.UserNotProvidedError();
+    }
+
     const leadId = parseOptionalInt(req.query.lead_id);
     const jobId = parseOptionalInt(req.query.job_id);
 
@@ -99,7 +97,7 @@ filesRouter.get(
     }
 
     try {
-      const files = await filesService.getFiles(leadId, jobId);
+      const files = await filesService.getFiles(userId, leadId, jobId);
 
       res.json({
         ok: true,
@@ -135,14 +133,18 @@ filesRouter.delete(
       });
     }
 
-    const id = Number(req.params.id);
+    const fileId = Number(req.params.id);
+    const userId = String(req.user.userId);
+    if (!userId) {
+      throw new filesService.UserNotProvidedError();
+    }
 
-    if (!Number.isInteger(id)) {
+    if (!Number.isInteger(fileId)) {
       return res.status(400).json({ ok: false, error: 'Invalid file id' });
     }
 
     try {
-      await filesService.deleteFile(id);
+      await filesService.deleteFile(userId, fileId);
       res.json({ ok: true });
     } catch (error) {
       if (error instanceof filesService.FileNotFoundError) {

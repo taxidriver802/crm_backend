@@ -8,7 +8,7 @@ export class NotificationNotFoundError extends Error {
 }
 
 export async function getNotifications(
-  userId: number,
+  userId: string,
   limit: number,
   unreadOnly: boolean
 ) {
@@ -33,7 +33,7 @@ export async function getNotifications(
   return rows;
 }
 
-export async function getUnreadCount(userId: number) {
+export async function getUnreadCount(userId: string) {
   const { rows } = await pool.query(
     `
           SELECT COUNT(*)::int AS count
@@ -46,7 +46,7 @@ export async function getUnreadCount(userId: number) {
   return rows[0]?.count ?? 0;
 }
 
-export async function readNotification(notificationId: number, userId: number) {
+export async function readNotification(notificationId: number, userId: string) {
   const { rows } = await pool.query(
     `
       UPDATE notifications
@@ -65,7 +65,7 @@ export async function readNotification(notificationId: number, userId: number) {
   return rows[0];
 }
 
-export async function readAll(userId: number) {
+export async function readAll(userId: string) {
   const { rowCount } = await pool.query(
     `
           UPDATE notifications
@@ -80,7 +80,7 @@ export async function readAll(userId: number) {
 }
 
 export async function deleteNotification(
-  userId: number,
+  userId: string,
   notificationId: number
 ) {
   const { rows } = await pool.query(
@@ -100,7 +100,7 @@ export async function deleteNotification(
   return rows[0].id;
 }
 
-export async function deleteAllRead(userId: number) {
+export async function deleteAllRead(userId: string) {
   const { rowCount } = await pool.query(
     `
           DELETE FROM notifications
