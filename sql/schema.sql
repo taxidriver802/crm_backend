@@ -115,6 +115,37 @@ CREATE INDEX IF NOT EXISTS idx_jobs_created_at
   ON jobs (created_at);
 
 -- =========================================================
+-- JOBS ACTIVITY
+-- Memory of work
+-- =========================================================
+
+CREATE TABLE IF NOT EXISTS job_activity (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  message TEXT,
+
+  entity_type TEXT,
+  entity_id INTEGER,
+
+  metadata JSONB,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_activity_job_id
+  ON job_activity (job_id);
+
+CREATE INDEX IF NOT EXISTS idx_job_activity_user_id
+  ON job_activity (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_job_activity_created_at
+  ON job_activity (created_at DESC);
+
+-- =========================================================
 -- TASKS
 -- Units of work
 -- Current intended rule:

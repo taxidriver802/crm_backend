@@ -57,6 +57,7 @@ export type GetTasksFilters = {
   jobId?: number;
   dueBefore?: string;
   q?: string;
+  linkedTo?: string;
   limit?: number;
   offset?: number;
 };
@@ -243,6 +244,14 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
   if (filters.status) {
     params.push(filters.status);
     where.push(`t.status = $${params.length}`);
+  }
+
+  if (filters.linkedTo === 'job') {
+    where.push(`t.job_id IS NOT NULL`);
+  }
+
+  if (filters.linkedTo === 'lead') {
+    where.push(`t.lead_id IS NOT NULL`);
   }
 
   if (Number.isFinite(filters.leadId)) {

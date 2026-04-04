@@ -39,6 +39,9 @@ tasksRouter.get(
     const jobId =
       typeof req.query.jobId === 'string' ? Number(req.query.jobId) : undefined;
 
+    const linkedTo =
+      typeof req.query.linkedTo === 'string' ? req.query.linkedTo : undefined;
+
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Number(req.query.offset || 0);
 
@@ -48,6 +51,7 @@ tasksRouter.get(
       jobId,
       dueBefore,
       q,
+      linkedTo,
       limit,
       offset,
     });
