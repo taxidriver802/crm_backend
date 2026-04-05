@@ -1,4 +1,5 @@
 import { pool } from '../db';
+import * as activityService from '../services/jobActivity.service';
 
 export class JobNotFoundError extends Error {
   constructor(message = 'Job not found') {
@@ -193,6 +194,18 @@ export async function updateJob(
 
   if (result.rowCount === 0) {
     throw new JobNotFoundError();
+  }
+
+  if (updates.status) {
+    await activityService.createJobActivity({
+      userId,
+      jobId: id,
+      type: 'JOB_STATUS_CHANGED',
+      title: 'Status updated',
+      message: `Job moved to ${updates.status}`,
+      entityType: 'job',
+      entityId: id,
+    });
   }
 
   return getJobById(userId, result.rows[0].id);

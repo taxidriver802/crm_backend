@@ -1,6 +1,7 @@
 import { pool } from '../db';
 import fs from 'fs';
 import path from 'path';
+import * as activityService from '../services/jobActivity.service';
 
 export class FileNotFoundError extends Error {
   constructor(message = 'File not found') {
@@ -120,6 +121,18 @@ export async function createFile(input: CreateFileInput) {
       jobId,
     ]
   );
+
+  if (jobId) {
+    await activityService.createJobActivity({
+      userId: uploadedByUserId,
+      jobId,
+      type: 'FILE_UPLOADED',
+      title: 'File uploaded',
+      message: input.originalName,
+      entityType: 'file',
+      entityId: result.rows[0].id,
+    });
+  }
 
   return result.rows[0];
 }

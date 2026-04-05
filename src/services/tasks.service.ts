@@ -1,5 +1,6 @@
 import { pool } from '../db';
 import { createNotification } from '../lib/notifications';
+import * as activityService from '../services/jobActivity.service';
 
 export class TaskNotFoundError extends Error {
   constructor(message = 'Task not found') {
@@ -336,6 +337,18 @@ export async function createTask(userId: string, input: CreateTaskInput) {
 
   const task = result.rows[0];
 
+  if (task.job_id) {
+    await activityService.createJobActivity({
+      userId,
+      jobId: task.job_id,
+      type: 'TASK_CREATED',
+      title: 'Task created',
+      message: task.title,
+      entityType: 'task',
+      entityId: task.id,
+    });
+  }
+
   if (task.user_id) {
     await createNotification({
       userId: task.user_id,
@@ -404,18 +417,6 @@ export async function updateTask(
   if (updates.job_id != null) {
     await ensureJobBelongsToUser(updates.job_id, userId);
   }
-
-  /*   const existingTaskResult = await pool.query(
-    `SELECT user_id, title FROM tasks WHERE user_id = $1 AND id = $2`,
-    [userId, id]
-  );
-
-  if (existingTaskResult.rowCount === 0) {
-    throw new TaskNotFoundError();
-  }
-
-  const existingTask = existingTaskResult.rows[0]; */
-
   const setParts: string[] = [];
   const values: any[] = [userId, id];
 
@@ -454,6 +455,18 @@ export async function updateTask(
   }
 
   const updatedTask = result.rows[0];
+
+  if (updates.status === 'Completed' && updatedTask.job_id) {
+    await activityService.createJobActivity({
+      userId,
+      jobId: updatedTask.job_id,
+      type: 'TASK_COMPLETED',
+      title: 'Task completed',
+      message: updatedTask.title,
+      entityType: 'task',
+      entityId: updatedTask.id,
+    });
+  }
 
   if (updates.status === 'Completed') {
     await createNotification({

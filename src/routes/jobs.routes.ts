@@ -4,6 +4,7 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { createJobSchema, updateJobSchema } from '../validators/jobs.schemas';
 import * as jobsService from '../services/jobs.service';
 import * as tasksService from '../services/tasks.service';
+import * as activityService from '../services/jobActivity.service';
 
 export const jobsRouter = Router();
 
@@ -97,6 +98,19 @@ jobsRouter.get(
 
       throw error;
     }
+  })
+);
+
+// GET /jobs/:id/activity
+jobsRouter.get(
+  '/:id/activity',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.userId;
+    const id = Number(req.params.id);
+
+    const activity = await activityService.getJobActivitiesByJob(userId, id);
+
+    res.json({ ok: true, activity });
   })
 );
 
