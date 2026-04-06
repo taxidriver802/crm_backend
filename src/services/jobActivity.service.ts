@@ -1,14 +1,24 @@
 import { pool } from '../db';
 
-export type jobActivityType = {
+export type JobActivityMetadata = Record<string, unknown> | null;
+
+export type CreateJobActivityInput = {
   userId: string;
   jobId: number;
-  type: string;
+  type:
+    | 'JOB_CREATED'
+    | 'JOB_STATUS_CHANGED'
+    | 'TASK_CREATED'
+    | 'TASK_COMPLETED'
+    | 'TASK_REOPENED'
+    | 'TASK_UPDATED'
+    | 'FILE_UPLOADED'
+    | 'FILE_DELETED';
   title: string;
-  message: string;
-  entityType: string | null;
-  entityId: number | null;
-  metadata?: string | null;
+  message?: string | null;
+  entityType?: 'job' | 'task' | 'file' | null;
+  entityId?: number | null;
+  metadata?: JobActivityMetadata;
 };
 
 export async function createJobActivity({
@@ -16,11 +26,11 @@ export async function createJobActivity({
   jobId,
   type,
   title,
-  message,
+  message = null,
   entityType = null,
   entityId = null,
   metadata = null,
-}: jobActivityType) {
+}: CreateJobActivityInput) {
   const { rows } = await pool.query(
     `
     INSERT INTO job_activity (
@@ -33,7 +43,7 @@ export async function createJobActivity({
       entity_id,
       metadata
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
     RETURNING *;
     `,
     [
@@ -48,11 +58,8 @@ export async function createJobActivity({
     ]
   );
 
-  console.log(rows);
-
   return rows[0];
 }
-
 export async function getJobActivitiesByUser(userId: string) {
   const { rows } = await pool.query(
     `

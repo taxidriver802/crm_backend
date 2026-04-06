@@ -260,7 +260,7 @@ usersRouter.post(
   requireAuth,
   requireOwnerOrAdmin,
   asyncHandler(async (req, res) => {
-    const userId = Number(req.params.id);
+    const userId = req.params.id;
 
     const userResult = await pool.query(
       `
@@ -373,9 +373,9 @@ usersRouter.patch(
   asyncHandler(async (req: any, res) => {
     const actorId = req.user?.userId;
     const actorRole = req.user?.role;
-    const targetId = Number(req.params.id);
+    const targetId = req.params.id;
 
-    if (!Number.isInteger(targetId)) {
+    if (!targetId) {
       return res.status(400).json({
         ok: false,
         error: 'Invalid user id',
@@ -535,9 +535,9 @@ usersRouter.delete(
   asyncHandler(async (req: any, res) => {
     const actorId = req.user?.userId;
     const actorRole = req.user?.role;
-    const targetId = Number(req.params.id);
+    const targetId = req.params.id;
 
-    if (!Number.isInteger(targetId)) {
+    if (!targetId) {
       return res.status(400).json({
         ok: false,
         error: 'Invalid user id',

@@ -153,18 +153,42 @@ export async function createJob(userId: string, input: CreateJobInput) {
     ]
   );
 
-  return getJobById(userId, result.rows[0].id);
+  const job = result.rows[0];
+
+  await activityService.createJobActivity({
+    userId,
+    jobId: job.id,
+    type: 'JOB_CREATED',
+    title: 'Job created',
+    message: input.title,
+    entityType: 'job',
+    entityId: job.id,
+    metadata: {
+      jobTitle: input.title,
+      leadId: input.lead_id,
+      status: job.status,
+      address: job.address,
+    },
+  });
+
+  return getJobById(userId, job.id);
 }
 
 export async function updateJob(
   userId: string,
   id: number,
-  updates: UpdateJobInput
+  updates: UpdateJobInput & { lead_id?: number | null }
 ) {
+  const existingJob = await getJobById(userId, id);
+
   if ('lead_id' in updates) {
-    throw new JobOwnershipError(
-      'Job ownership cannot be changed after creation'
-    );
+    if (updates.lead_id !== existingJob.lead_id) {
+      throw new JobOwnershipError(
+        'Job ownership cannot be changed after creation'
+      );
+    }
+
+    delete updates.lead_id;
   }
 
   const keys = Object.keys(updates) as (keyof UpdateJobInput)[];
@@ -196,19 +220,26 @@ export async function updateJob(
     throw new JobNotFoundError();
   }
 
-  if (updates.status) {
+  const updatedJob = result.rows[0];
+
+  if (updates.status && updates.status !== existingJob.status) {
     await activityService.createJobActivity({
       userId,
       jobId: id,
       type: 'JOB_STATUS_CHANGED',
-      title: 'Status updated',
-      message: `Job moved to ${updates.status}`,
+      title: 'Status changed',
+      message: `${existingJob.status} → ${updates.status}`,
       entityType: 'job',
       entityId: id,
+      metadata: {
+        fromStatus: existingJob.status,
+        toStatus: updates.status,
+        jobTitle: existingJob.title,
+      },
     });
   }
 
-  return getJobById(userId, result.rows[0].id);
+  return getJobById(userId, updatedJob.id);
 }
 
 export async function deleteJob(userId: string, id: number) {

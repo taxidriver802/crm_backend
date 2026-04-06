@@ -346,6 +346,11 @@ export async function createTask(userId: string, input: CreateTaskInput) {
       message: task.title,
       entityType: 'task',
       entityId: task.id,
+      metadata: {
+        taskTitle: task.title,
+        status: task.status,
+        dueDate: task.due_date,
+      },
     });
   }
 
@@ -400,8 +405,9 @@ export async function updateTask(
   id: number,
   updates: UpdateTaskInput
 ) {
-  const keys = Object.keys(updates) as (keyof UpdateTaskInput)[];
+  const existingTask = await getTaskById(userId, id);
 
+  const keys = Object.keys(updates) as (keyof UpdateTaskInput)[];
   if (keys.length === 0) {
     throw new Error('No fields to update');
   }
@@ -410,13 +416,6 @@ export async function updateTask(
     throw new Error('Task ownership cannot be changed after creation');
   }
 
-  if (updates.lead_id != null) {
-    await ensureLeadBelongsToUser(updates.lead_id, userId);
-  }
-
-  if (updates.job_id != null) {
-    await ensureJobBelongsToUser(updates.job_id, userId);
-  }
   const setParts: string[] = [];
   const values: any[] = [userId, id];
 
@@ -456,16 +455,57 @@ export async function updateTask(
 
   const updatedTask = result.rows[0];
 
-  if (updates.status === 'Completed' && updatedTask.job_id) {
-    await activityService.createJobActivity({
-      userId,
-      jobId: updatedTask.job_id,
-      type: 'TASK_COMPLETED',
-      title: 'Task completed',
-      message: updatedTask.title,
-      entityType: 'task',
-      entityId: updatedTask.id,
-    });
+  if (updatedTask.job_id) {
+    if (existingTask.status !== updatedTask.status) {
+      if (updatedTask.status === 'Completed') {
+        await activityService.createJobActivity({
+          userId,
+          jobId: updatedTask.job_id,
+          type: 'TASK_COMPLETED',
+          title: 'Task completed',
+          message: updatedTask.title,
+          entityType: 'task',
+          entityId: updatedTask.id,
+          metadata: {
+            taskTitle: updatedTask.title,
+            fromStatus: existingTask.status,
+            toStatus: updatedTask.status,
+          },
+        });
+      } else if (existingTask.status === 'Completed') {
+        await activityService.createJobActivity({
+          userId,
+          jobId: updatedTask.job_id,
+          type: 'TASK_REOPENED',
+          title: 'Task reopened',
+          message: updatedTask.title,
+          entityType: 'task',
+          entityId: updatedTask.id,
+          metadata: {
+            taskTitle: updatedTask.title,
+            fromStatus: existingTask.status,
+            toStatus: updatedTask.status,
+          },
+        });
+      }
+    }
+
+    if (existingTask.due_date !== updatedTask.due_date) {
+      await activityService.createJobActivity({
+        userId,
+        jobId: updatedTask.job_id,
+        type: 'TASK_UPDATED',
+        title: 'Task due date updated',
+        message: updatedTask.title,
+        entityType: 'task',
+        entityId: updatedTask.id,
+        metadata: {
+          taskTitle: updatedTask.title,
+          fromDueDate: existingTask.due_date,
+          toDueDate: updatedTask.due_date,
+        },
+      });
+    }
   }
 
   if (updates.status === 'Completed') {
@@ -483,6 +523,8 @@ export async function updateTask(
 }
 
 export async function deleteTask(userId: string, id: number) {
+  const existingTask = await getTaskById(userId, id);
+
   const result = await pool.query(
     `DELETE FROM tasks WHERE user_id = $1 AND id = $2 RETURNING id`,
     [userId, id]
@@ -490,6 +532,21 @@ export async function deleteTask(userId: string, id: number) {
 
   if (result.rowCount === 0) {
     throw new TaskNotFoundError();
+  }
+
+  if (existingTask.job_id) {
+    await activityService.createJobActivity({
+      userId,
+      jobId: existingTask.job_id,
+      type: 'TASK_UPDATED',
+      title: 'Task deleted',
+      message: existingTask.title,
+      entityType: 'task',
+      entityId: existingTask.id,
+      metadata: {
+        taskTitle: existingTask.title,
+      },
+    });
   }
 
   return result.rows[0].id;

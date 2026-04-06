@@ -216,5 +216,22 @@ export async function deleteFile(userId: string, id: number) {
 
   await pool.query(`DELETE FROM files WHERE id = $1`, [id]);
 
+  if (file.job_id) {
+    await activityService.createJobActivity({
+      userId,
+      jobId: file.job_id,
+      type: 'FILE_DELETED',
+      title: 'File deleted',
+      message: file.original_name,
+      entityType: 'file',
+      entityId: file.id,
+      metadata: {
+        fileName: file.original_name,
+        mimeType: file.mime_type,
+        sizeBytes: file.size_bytes,
+      },
+    });
+  }
+
   return file;
 }
