@@ -5,9 +5,10 @@ export type NotificationType =
   | 'TASK_OVERDUE'
   | 'TASK_ASSIGNED'
   | 'TASK_COMPLETED'
+  | 'FILE_UPLOADED'
   | 'INVITE_ACCEPTED';
 
-export type NotificationEntityType = 'task' | 'lead' | 'invite';
+export type NotificationEntityType = 'task' | 'lead' | 'job' | 'invite';
 
 type CreateNotificationInput = {
   userId: string;

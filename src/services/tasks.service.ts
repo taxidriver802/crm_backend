@@ -112,6 +112,81 @@ function buildLeadName(row: any) {
   return null;
 }
 
+function getTaskContextLabel(task: any) {
+  if (task.job) {
+    if (task.job.address) return task.job.address;
+    if (task.job.title) return task.job.title;
+    return `Job #${task.job.id}`;
+  }
+
+  if (task.lead?.name) {
+    return task.lead.name;
+  }
+
+  if (task.lead_id != null) {
+    return `Lead #${task.lead_id}`;
+  }
+
+  return null;
+}
+
+function getTaskContextType(task: any): 'job' | 'lead' | 'task' {
+  if (task.job) return 'job';
+  if (task.lead) return 'lead';
+  return 'task';
+}
+
+function getTaskContextEntityId(task: any): number {
+  if (task.job?.id) return task.job.id;
+  if (task.lead?.id) return task.lead.id;
+  return task.id;
+}
+
+function buildTaskNotificationMessage(
+  event: 'assigned' | 'completed' | 'dueSoon' | 'overdue',
+  task: any
+) {
+  const context = getTaskContextLabel(task);
+
+  if (event === 'assigned') {
+    return context
+      ? `${task.title} was assigned for ${context}`
+      : `${task.title} was assigned`;
+  }
+
+  if (event === 'completed') {
+    return context
+      ? `${task.title} was completed for ${context}`
+      : `${task.title} was completed`;
+  }
+
+  if (event === 'dueSoon') {
+    return context
+      ? `${task.title} is due soon for ${context}`
+      : `${task.title} is due soon`;
+  }
+
+  return context
+    ? `${task.title} is overdue for ${context}`
+    : `${task.title} is overdue`;
+}
+
+function buildTaskNotificationMetadata(task: any) {
+  return {
+    taskId: task.id,
+    taskTitle: task.title,
+    taskStatus: task.status ?? null,
+    dueDate: task.due_date ?? null,
+    leadId: task.lead?.id ?? task.lead_id ?? null,
+    leadName: task.lead?.name ?? null,
+    jobId: task.job?.id ?? task.job_id ?? null,
+    jobTitle: task.job?.title ?? null,
+    jobAddress: task.job?.address ?? null,
+    jobLeadId: task.job_lead?.id ?? null,
+    jobLeadName: task.job_lead?.name ?? null,
+  };
+}
+
 function normalizeTask(row: any) {
   return {
     id: row.id,
@@ -354,18 +429,21 @@ export async function createTask(userId: string, input: CreateTaskInput) {
     });
   }
 
+  const fullTask = await getTaskById(userId, task.id);
+
   if (task.user_id) {
     await createNotification({
       userId: task.user_id,
       type: 'TASK_ASSIGNED',
       title: 'New task assigned',
-      message: `You were assigned: ${task.title}`,
-      entityType: 'task',
-      entityId: task.id,
+      message: buildTaskNotificationMessage('assigned', fullTask),
+      entityType: getTaskContextType(fullTask),
+      entityId: getTaskContextEntityId(fullTask),
+      metadata: buildTaskNotificationMetadata(fullTask),
     });
   }
 
-  return getTaskById(userId, task.id);
+  return fullTask;
 }
 
 export async function getTaskById(userId: string, id: number) {
@@ -508,18 +586,24 @@ export async function updateTask(
     }
   }
 
-  if (updates.status === 'Completed') {
+  const fullUpdatedTask = await getTaskById(userId, updatedTask.id);
+
+  if (
+    existingTask.status !== fullUpdatedTask.status &&
+    fullUpdatedTask.status === 'Completed'
+  ) {
     await createNotification({
       userId,
       type: 'TASK_COMPLETED',
       title: 'Task completed',
-      message: `Task completed: ${updatedTask.title}`,
-      entityType: 'task',
-      entityId: updatedTask.id,
+      message: buildTaskNotificationMessage('completed', fullUpdatedTask),
+      entityType: getTaskContextType(fullUpdatedTask),
+      entityId: getTaskContextEntityId(fullUpdatedTask),
+      metadata: buildTaskNotificationMetadata(fullUpdatedTask),
     });
   }
 
-  return getTaskById(userId, updatedTask.id);
+  return fullUpdatedTask;
 }
 
 export async function deleteTask(userId: string, id: number) {

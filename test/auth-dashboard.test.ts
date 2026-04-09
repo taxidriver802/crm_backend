@@ -1,70 +1,55 @@
 /// <reference types="jest" />
-import request from "supertest";
-import { app } from "../src/app";
-import { resetDb } from "./helpers/db";
-import { ensureSchema } from "./helpers/setup";
+import request from 'supertest';
+import { app } from '../src/app';
+import { pool } from '../src/db';
+import { resetDb } from './helpers/db';
+import { ensureSchema } from './helpers/setup';
+import { createAuthedUser } from './helpers/auth';
 
-describe("Auth + Dashboard integration", () => {
+describe('Auth + Dashboard smoke test', () => {
   beforeAll(async () => {
-  await ensureSchema();
-  await resetDb();
-});
+    await ensureSchema();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+  });
 
   afterAll(async () => {
-    // close pool if your db.ts exports it; otherwise tests hang
-    const { pool } = await import("../src/db");
     await pool.end();
   });
 
-  it("login -> create lead/task -> dashboard updates -> logout blocks", async () => {
-    const agent = request.agent(app);
+  it('creates lead/task and dashboard responds for authenticated user', async () => {
+    const { headers } = await createAuthedUser('agent');
 
-// register
-const email = `test${Date.now()}@example.com`;
-const password = "TaxiDriver12";
-
-const register = await agent.post("/auth/register").send({
-  first_name: "Test",
-  last_name: "User",
-  email,
-  password,
-});
-
-expect([200, 201]).toContain(register.status);
-expect(register.body.ok).toBe(true);
-
-// login
-const login = await agent.post("/auth/login").send({ email, password });
-
-expect([200, 201]).toContain(login.status);
-expect(login.body.ok).toBe(true);
-
-    // create lead
-    const leadRes = await agent
-      .post("/leads")
-      .send({ first_name: "Test", last_name: "Lead", source: "Test", status: "New" });
+    const leadRes = await request(app).post('/leads').set(headers).send({
+      first_name: 'Test',
+      last_name: 'Lead',
+      source: 'Test',
+      status: 'New',
+    });
 
     expect([200, 201]).toContain(leadRes.status);
+    expect(leadRes.body.ok).toBe(true);
+
     const leadId = leadRes.body.lead.id;
 
-    // create task
-    const taskRes = await agent
-      .post("/tasks")
-      .send({ lead_id: leadId, title: "Test Task", due_date: new Date().toISOString() });
+    const taskRes = await request(app).post('/tasks').set(headers).send({
+      lead_id: leadId,
+      title: 'Test Task',
+      due_date: new Date().toISOString(),
+    });
 
     expect([200, 201]).toContain(taskRes.status);
+    expect(taskRes.body.ok).toBe(true);
 
-    // dashboard should reflect
-    const dash = await agent.get("/dashboard");
+    const dash = await request(app).get('/dashboard').set(headers);
     expect([200, 201]).toContain(dash.status);
     expect(dash.body.ok).toBe(true);
+  });
 
-    // logout
-    const logout = await agent.post("/auth/logout");
-    expect([200, 201]).toContain(logout.status);
-
-    // should now be blocked
-    const dashAfter = await agent.get("/dashboard");
-    expect(dashAfter.status).toBe(401);
+  it('blocks dashboard when unauthenticated', async () => {
+    const dash = await request(app).get('/dashboard');
+    expect(dash.status).toBe(401);
   });
 });

@@ -2,6 +2,7 @@ import { pool } from '../db';
 import fs from 'fs';
 import path from 'path';
 import * as activityService from '../services/jobActivity.service';
+import { createNotification } from '../lib/notifications';
 
 export class FileNotFoundError extends Error {
   constructor(message = 'File not found') {
@@ -47,6 +48,41 @@ export type CreateFileInput = {
   leadId?: number | null;
   jobId?: number | null;
 };
+
+function buildFileNotificationContext(input: {
+  originalName: string;
+  leadId?: number | null;
+  jobId?: number | null;
+}) {
+  if (input.jobId != null) {
+    return {
+      message: `${input.originalName} uploaded to a job`,
+      entityType: 'job' as const,
+      entityId: input.jobId,
+      metadata: {
+        jobId: input.jobId,
+      },
+    };
+  }
+
+  if (input.leadId != null) {
+    return {
+      message: `${input.originalName} uploaded to a lead`,
+      entityType: 'lead' as const,
+      entityId: input.leadId,
+      metadata: {
+        leadId: input.leadId,
+      },
+    };
+  }
+
+  return {
+    message: `${input.originalName} uploaded to files`,
+    entityType: null,
+    entityId: null,
+    metadata: {},
+  };
+}
 
 async function ensureLeadBelongsToUser(leadId: number, userId: string) {
   const result = await pool.query(
@@ -122,6 +158,14 @@ export async function createFile(input: CreateFileInput) {
     ]
   );
 
+  const file = result.rows[0];
+
+  const notificationContext = buildFileNotificationContext({
+    originalName: input.originalName,
+    leadId,
+    jobId,
+  });
+
   if (jobId) {
     await activityService.createJobActivity({
       userId: uploadedByUserId,
@@ -130,9 +174,25 @@ export async function createFile(input: CreateFileInput) {
       title: 'File uploaded',
       message: input.originalName,
       entityType: 'file',
-      entityId: result.rows[0].id,
+      entityId: file.id,
     });
   }
+
+  await createNotification({
+    userId: uploadedByUserId,
+    type: 'FILE_UPLOADED',
+    title: 'File uploaded',
+    message: notificationContext.message,
+    entityType: notificationContext.entityType,
+    entityId: notificationContext.entityId,
+    metadata: {
+      fileId: file.id,
+      fileName: input.originalName,
+      mimeType: input.mimeType,
+      sizeBytes: input.sizeBytes,
+      ...notificationContext.metadata,
+    },
+  });
 
   return result.rows[0];
 }

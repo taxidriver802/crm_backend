@@ -256,6 +256,7 @@ CREATE TABLE IF NOT EXISTS notifications (
       'TASK_OVERDUE',
       'TASK_ASSIGNED',
       'TASK_COMPLETED',
+      'FILE_UPLOADED',
       'INVITE_ACCEPTED'
     )),
 

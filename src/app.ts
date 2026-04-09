@@ -46,12 +46,14 @@ app.use('/files', filesRouter);
 app.use('/notifications', notificationRouter);
 app.use('/jobs', jobsRouter);
 
-setInterval(
-  () => {
-    runTaskNotificationJob().catch(console.error);
-  },
-  1000 * 60 * 5
-); // every 5 minutes
+if (process.env.NODE_ENV !== 'test') {
+  setInterval(
+    () => {
+      runTaskNotificationJob().catch(console.error);
+    },
+    1000 * 60 * 5
+  );
+} // every 5 minutes
 
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
