@@ -7,6 +7,8 @@ export async function resetDb() {
     TRUNCATE TABLE
       job_activity,
       notifications,
+      estimate_line_items,
+      estimates,
       files,
       tasks,
       jobs,
