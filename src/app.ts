@@ -18,6 +18,7 @@ import { filesRouter } from './routes/files.routes';
 import { notificationRouter } from './routes/notification.routes';
 import { runTaskNotificationJob } from './jobs/taskNotifications';
 import { jobsRouter } from './routes/jobs.routes';
+import { estimatesRouter } from './routes/estimates.routes';
 
 export const app = express();
 
@@ -45,6 +46,7 @@ app.use('/users', usersRouter);
 app.use('/files', filesRouter);
 app.use('/notifications', notificationRouter);
 app.use('/jobs', jobsRouter);
+app.use('/estimates', estimatesRouter);
 
 if (process.env.NODE_ENV !== 'test') {
   setInterval(
