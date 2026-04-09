@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS estimate_line_items (
   sort_order INTEGER NOT NULL DEFAULT 0,
   source TEXT NOT NULL DEFAULT 'manual',
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT estimate_line_items_source_check CHECK (source IN ('manual', 'abc_supply')),
   CONSTRAINT estimate_line_items_quantity_check CHECK (quantity >= 0),
   CONSTRAINT estimate_line_items_unit_price_check CHECK (unit_price >= 0),

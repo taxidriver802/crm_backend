@@ -141,6 +141,7 @@ function normalizeEstimateLineItem(row: any) {
     sort_order: row.sort_order,
     source: row.source,
     created_at: row.created_at,
+    updated_at: row.updated_at,
   };
 }
 
@@ -184,7 +185,8 @@ async function getEstimateLineItemsRaw(estimateId: number) {
         line_total,
         sort_order,
         source,
-        created_at
+        created_at,
+        updated_at
       FROM estimate_line_items
       WHERE estimate_id = $1
       ORDER BY sort_order ASC, id ASC
