@@ -1,4 +1,5 @@
 import { pool } from '../db';
+import { createJobActivity } from './jobActivity.service';
 
 export class EstimateNotFoundError extends Error {
   constructor(message = 'Estimate not found') {
@@ -305,7 +306,23 @@ export async function createEstimate(
     ]
   );
 
-  return getEstimateById(userId, result.rows[0].id);
+  const estimate = await getEstimateById(userId, result.rows[0].id);
+
+  await createJobActivity({
+    userId,
+    jobId: estimate.job_id,
+    type: 'ESTIMATE_CREATED',
+    title: 'Estimate created',
+    message: `${estimate.title} was created`,
+    entityType: 'estimate',
+    entityId: estimate.id,
+    metadata: {
+      estimateId: estimate.id,
+      estimateTitle: estimate.title,
+    },
+  });
+
+  return estimate;
 }
 
 export async function updateEstimate(
@@ -352,7 +369,29 @@ export async function updateEstimate(
     throw new EstimateNotFoundError();
   }
 
-  return getEstimateById(userId, id);
+  const updated = await getEstimateById(userId, id);
+
+  const statusChanged =
+    'status' in updates && updates.status !== existing.status;
+
+  await createJobActivity({
+    userId,
+    jobId: updated.job_id,
+    type: statusChanged ? 'ESTIMATE_STATUS_CHANGED' : 'ESTIMATE_UPDATED',
+    title: statusChanged ? 'Estimate status updated' : 'Estimate updated',
+    message: statusChanged
+      ? `${updated.title} changed from ${existing.status} → ${updated.status}`
+      : `${updated.title} was updated`,
+    entityType: 'estimate',
+    entityId: updated.id,
+    metadata: {
+      estimateId: updated.id,
+      previousStatus: existing.status,
+      newStatus: updated.status,
+    },
+  });
+
+  return updated;
 }
 
 export async function deleteEstimate(userId: string, id: number) {

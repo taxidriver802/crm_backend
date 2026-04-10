@@ -8,6 +8,9 @@ export type CreateJobActivityInput = {
   type:
     | 'JOB_CREATED'
     | 'JOB_STATUS_CHANGED'
+    | 'ESTIMATE_CREATED'
+    | 'ESTIMATE_UPDATED'
+    | 'ESTIMATE_STATUS_CHANGED'
     | 'TASK_CREATED'
     | 'TASK_COMPLETED'
     | 'TASK_REOPENED'
@@ -16,7 +19,7 @@ export type CreateJobActivityInput = {
     | 'FILE_DELETED';
   title: string;
   message?: string | null;
-  entityType?: 'job' | 'task' | 'file' | null;
+  entityType?: 'job' | 'task' | 'file' | 'estimate' | null;
   entityId?: number | null;
   metadata?: JobActivityMetadata;
 };
@@ -73,16 +76,23 @@ export async function getJobActivitiesByUser(userId: string) {
   return rows;
 }
 
-export async function getJobActivitiesByJob(userId: string, jobId: number) {
+export async function getJobActivitiesByJob(
+  userId: string,
+  jobId: number,
+  limit: number
+) {
   const { rows } = await pool.query(
     `
     SELECT *
     FROM job_activity
     WHERE user_id = $1 AND job_id = $2
     ORDER BY created_at DESC
+    LIMIT $3
     `,
-    [userId, jobId]
+    [userId, jobId, limit + 1]
   );
+  const hasMore = rows.length > limit;
+  const activity = hasMore ? rows.slice(0, limit) : rows;
 
-  return rows;
+  return { activity, hasMore };
 }

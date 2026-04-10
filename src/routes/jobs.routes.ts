@@ -107,10 +107,18 @@ jobsRouter.get(
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
     const id = Number(req.params.id);
+    let limit = parseInt(req.query.limit as string, 10);
+    if (isNaN(limit) || limit <= 0) {
+      limit = 50;
+    }
 
-    const activity = await activityService.getJobActivitiesByJob(userId, id);
+    const result = await activityService.getJobActivitiesByJob(
+      userId,
+      id,
+      limit
+    );
 
-    res.json({ ok: true, activity });
+    res.json({ ok: true, result });
   })
 );
 

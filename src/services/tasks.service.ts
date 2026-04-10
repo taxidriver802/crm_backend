@@ -491,7 +491,12 @@ export async function updateTask(
   }
 
   if ('lead_id' in updates || 'job_id' in updates) {
-    throw new Error('Task ownership cannot be changed after creation');
+    const sameJob = updates.job_id === existingTask.job_id;
+    const sameLead = updates.lead_id === existingTask.lead_id;
+
+    if (!sameJob && !sameLead) {
+      throw new Error('Task ownership cannot be changed after creation');
+    }
   }
 
   const setParts: string[] = [];
