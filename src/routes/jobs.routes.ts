@@ -118,7 +118,11 @@ jobsRouter.get(
       limit
     );
 
-    res.json({ ok: true, result });
+    res.json({
+      ok: true,
+      activity: result.activity,
+      hasMore: result.hasMore,
+    });
   })
 );
 

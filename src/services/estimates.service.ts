@@ -1,5 +1,10 @@
 import { pool } from '../db';
 import { createJobActivity } from './jobActivity.service';
+import {
+  calculateLineItem,
+  normalizeMoney,
+  calculateEstimateTotals,
+} from './estimateCalculations';
 
 export class EstimateNotFoundError extends Error {
   constructor(message = 'Estimate not found') {
@@ -80,17 +85,6 @@ const ESTIMATE_SELECT = `
   INNER JOIN jobs j ON j.id = e.job_id
   LEFT JOIN leads l ON l.id = j.lead_id
 `;
-
-function toNumber(value: unknown, fallback = 0) {
-  if (value == null || value === '') return fallback;
-  const num = Number(value);
-  if (!Number.isFinite(num)) throw new Error('Invalid numeric value');
-  return num;
-}
-
-function normalizeMoney(value: unknown) {
-  return Number(toNumber(value, 0).toFixed(2));
-}
 
 function buildLeadName(row: any) {
   const first = String(row.lead_first_name || '').trim();
@@ -231,7 +225,12 @@ async function recalculateEstimateTotals(
 
   const taxTotal = normalizeMoney(estimateRes.rows[0].tax_total ?? 0);
   const discountTotal = normalizeMoney(estimateRes.rows[0].discount_total ?? 0);
-  const grandTotal = normalizeMoney(subtotal + taxTotal - discountTotal);
+
+  const totals = calculateEstimateTotals({
+    subtotal,
+    tax_total: taxTotal,
+    discount_total: discountTotal,
+  });
 
   await client.query(
     `
@@ -242,7 +241,7 @@ async function recalculateEstimateTotals(
         updated_at = CURRENT_TIMESTAMP
       WHERE id = $1 AND user_id = $2
     `,
-    [estimateId, userId, subtotal, grandTotal]
+    [estimateId, userId, totals.subtotal, totals.grand_total]
   );
 }
 
@@ -418,9 +417,10 @@ export async function addEstimateLineItem(
 ) {
   await ensureEstimateBelongsToUser(userId, estimateId);
 
-  const quantity = normalizeMoney(toNumber(input.quantity, 1));
-  const unitPrice = normalizeMoney(toNumber(input.unit_price, 0));
-  const lineTotal = normalizeMoney(quantity * unitPrice);
+  const { quantity, unit_price, line_total } = calculateLineItem({
+    quantity: input.quantity,
+    unit_price: input.unit_price,
+  });
 
   const client = await pool.connect();
 
@@ -446,8 +446,8 @@ export async function addEstimateLineItem(
         input.name,
         input.description ?? null,
         quantity,
-        unitPrice,
-        lineTotal,
+        unit_price,
+        line_total,
         input.sort_order ?? 0,
         input.source ?? 'manual',
       ]
@@ -491,16 +491,15 @@ export async function updateEstimateLineItem(
   const existing = existingRes.rows[0];
 
   const nextQuantity =
-    'quantity' in updates
-      ? normalizeMoney(toNumber(updates.quantity, 0))
-      : Number(existing.quantity);
+    'quantity' in updates ? updates.quantity : existing.quantity;
 
   const nextUnitPrice =
-    'unit_price' in updates
-      ? normalizeMoney(toNumber(updates.unit_price, 0))
-      : Number(existing.unit_price);
+    'unit_price' in updates ? updates.unit_price : existing.unit_price;
 
-  const nextLineTotal = normalizeMoney(nextQuantity * nextUnitPrice);
+  const { quantity, unit_price, line_total } = calculateLineItem({
+    quantity: nextQuantity,
+    unit_price: nextUnitPrice,
+  });
 
   const setParts: string[] = [];
   const values: any[] = [lineItemId, estimateId];
@@ -516,12 +515,12 @@ export async function updateEstimateLineItem(
   }
 
   if ('quantity' in updates) {
-    values.push(nextQuantity);
+    values.push(quantity);
     setParts.push(`quantity = $${values.length}`);
   }
 
   if ('unit_price' in updates) {
-    values.push(nextUnitPrice);
+    values.push(unit_price);
     setParts.push(`unit_price = $${values.length}`);
   }
 
@@ -535,7 +534,7 @@ export async function updateEstimateLineItem(
     setParts.push(`source = $${values.length}`);
   }
 
-  values.push(nextLineTotal);
+  values.push(line_total);
   setParts.push(`line_total = $${values.length}`);
 
   const client = await pool.connect();
