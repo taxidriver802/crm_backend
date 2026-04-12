@@ -205,8 +205,8 @@ Jobs become the center of execution
 
 - [x] Leave space/components for:
   - [x] Activity
-  - [ ] Proposals
   - [x] Estimates
+  - [x] Proposals slot *(deferred product — see [Catalog of deferred work](#catalog-of-deferred-work))*
 
 ---
 
@@ -402,7 +402,7 @@ Polish admin experience
 
 ## 📜 Audit
 
-- [ ] Admin activity log *(deferred post-MVP — no `admin_audit_log` table or UI in this release)*
+- [ ] Admin activity log *(deferred — see [Catalog of deferred work](#catalog-of-deferred-work) · Phase 7)*
 
 ---
 
@@ -479,9 +479,7 @@ Work **one sub-phase at a time**; check off only the chunk that ships. Default o
 
 **MVP:** PDF download (authenticated); rotate share token + expiry; public view-only page by token; optional copy link from CRM.
 
-**Deferred:** Full branding studio, e-sign inside PDF.
-
-- [x] **9.1 complete**
+- [x] **9.1 complete** *(deferred scope: [9.1 in catalog](#catalog-of-deferred-work))*
 
 ---
 
@@ -491,19 +489,15 @@ Work **one sub-phase at a time**; check off only the chunk that ships. Default o
 
 **MVP:** Public POST by token updates estimate status + `client_responded_at` / `client_response_note`; agents see status on estimate detail.
 
-**Deferred:** Legally binding e-sign, payment capture.
-
-- [x] **9.2 complete**
+- [x] **9.2 complete** *(deferred scope: [9.2 in catalog](#catalog-of-deferred-work))*
 
 ---
 
 ## 9.3 — Proposals (product scope)
 
-**Decision:** Treat **estimate PDF + narrative notes** as the proposal artifact for MVP; a separate “proposal” product (templates, cover pages) is **deferred** until distinct from 9.1.
+**Decision:** Treat **estimate PDF + narrative notes** as the proposal artifact for MVP; a separate “proposal” product is deferred until distinct from 9.1.
 
-**Deferred:** Standalone proposal builder, template marketplace.
-
-- [x] **9.3 documented** *(scope clarified — no separate proposal UI required for MVP)*
+- [x] **9.3 documented** *(scope clarified — no separate proposal UI required for MVP; product deferrals: [9.3 in catalog](#catalog-of-deferred-work))*
 
 ---
 
@@ -513,9 +507,7 @@ Work **one sub-phase at a time**; check off only the chunk that ships. Default o
 
 **MVP:** Manual rows (label, value, unit); list and edit on job detail.
 
-**Deferred:** Device/API integrations, aerial imports.
-
-- [x] **9.4 complete**
+- [x] **9.4 complete** *(deferred scope: [9.4 in catalog](#catalog-of-deferred-work))*
 
 ---
 
@@ -525,9 +517,33 @@ Work **one sub-phase at a time**; check off only the chunk that ships. Default o
 
 **MVP:** Authenticated endpoint that returns a sample or health-adjacent pricing payload when ABC is configured.
 
-**Deferred:** Full catalog sync, bi-directional orders.
+- [x] **9.5 complete** *(deferred scope: [9.5 in catalog](#catalog-of-deferred-work))*
 
-- [x] **9.5 complete**
+---
+
+# 📦 Catalog of deferred work
+
+Single reference for scope that was **explicitly postponed**. Tags show where the idea originated. This list does not block shipped work.
+
+| Source | Deferred item | Notes |
+|--------|----------------|--------|
+| **Phase 3** | Dedicated **Proposals** UI block on job page | Superseded in practice by **estimates + PDF** (Phases 8–9); a separate proposal product is optional. |
+| **Phase 7** | **Admin activity log** | Persistent audit trail (`admin_audit_log` or equivalent) + UI for invite/role changes; needs schema + retention policy. |
+| **9.1** | Full **branding studio** for PDFs | Custom themes / white-label PDF output. |
+| **9.1** | **E-sign** inside PDF | In-PDF signing; not part of MVP PDF flow. |
+| **9.2** | **Legally binding** e-sign | Distinct from informal client response on shared page. |
+| **9.2** | **Payment capture** at acceptance | Charging card or deposit at “accept.” |
+| **9.3** | Standalone **proposal builder** | Narrative/cover/terms beyond estimate PDF + notes. |
+| **9.3** | **Template marketplace** | Third-party or shared proposal templates. |
+| **9.4** | **Device / API** measurement integrations | Import from tools or APIs. |
+| **9.4** | **Aerial** imports | Measurements from imagery providers. |
+| **9.5** | Full ABC **catalog sync** | Ongoing supplier catalog mirror. |
+| **9.5** | **Bi-directional orders** | Full order automation with ABC (beyond MVP sample lookup). |
+
+### Cross-cutting (not tied to one phase)
+
+- **Observability** — Structured logging, metrics, centralized error tracking (typical production hardening).
+- **Rules → Don’t** — Ongoing discipline (see **Rules While Building** below), not a backlog ticket.
 
 ---
 
@@ -586,4 +602,4 @@ Work **one sub-phase at a time**; check off only the chunk that ships. Default o
 - A dedicated integration test suite now protects the backend workflow foundation.
 - Estimates belong to jobs and line-item totals are calculated on the backend.
 - Dashboard task stats align with `/tasks` via `duePreset` (overdue, due_today, next_7_days); task summary includes `overdue_on_jobs`.
-- Phase 7 team management: resend/revoke/copy-link routes are live; a full admin audit log is deferred until a later milestone (schema + retention policy).
+- Phase 7 team management: resend/revoke/copy-link routes are live; admin audit log remains in the **Catalog of deferred work** (Phase 7).
