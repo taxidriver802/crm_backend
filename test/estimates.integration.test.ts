@@ -66,6 +66,14 @@ describe('Estimates integration', () => {
     expect(res.body.estimate.grand_total).toBe(0);
     expect(Array.isArray(res.body.estimate.line_items)).toBe(true);
     expect(res.body.estimate.line_items).toHaveLength(0);
+
+    const notifRes = await request(app).get('/notifications?limit=20').set(headers);
+    expect(notifRes.status).toBe(200);
+    expect(
+      notifRes.body.notifications.some(
+        (n: { type: string }) => n.type === 'ESTIMATE_CREATED'
+      )
+    ).toBe(true);
   });
 
   it('GET /estimates/job/:jobId returns estimates for that job only', async () => {
@@ -270,5 +278,36 @@ describe('Estimates integration', () => {
 
     expect(res.status).toBe(404);
     expect(res.body.ok).toBe(false);
+  });
+
+  it('PATCH /estimates/:id status change creates ESTIMATE_STATUS_CHANGED notification', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+    const job = await createJob(headers, lead.id);
+
+    const estimateRes = await request(app)
+      .post('/estimates')
+      .set(headers)
+      .send({
+        job_id: job.id,
+        title: 'Status notif test',
+      });
+
+    const estimateId = estimateRes.body.estimate.id;
+
+    const patchRes = await request(app)
+      .patch(`/estimates/${estimateId}`)
+      .set(headers)
+      .send({ status: 'Sent' });
+
+    expect(patchRes.status).toBe(200);
+
+    const notifRes = await request(app).get('/notifications?limit=20').set(headers);
+    expect(notifRes.status).toBe(200);
+    expect(
+      notifRes.body.notifications.some(
+        (n: { type: string }) => n.type === 'ESTIMATE_STATUS_CHANGED'
+      )
+    ).toBe(true);
   });
 });

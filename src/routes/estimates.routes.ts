@@ -162,21 +162,39 @@ estimatesRouter.patch(
       return res.status(400).json({ ok: false, error: 'Invalid estimate id' });
     }
 
-    const status = parseEstimateStatus(req.body.status);
-    if (req.body.status && !status) {
-      return res.status(400).json({ ok: false, error: 'Invalid status' });
+    const updates: estimatesService.UpdateEstimateInput = {};
+
+    if (req.body.title !== undefined) {
+      const t = parseString(req.body.title)?.trim();
+      if (t !== undefined) {
+        updates.title = t;
+      }
+    }
+
+    if (req.body.status !== undefined) {
+      const nextStatus = parseEstimateStatus(req.body.status);
+      if (!nextStatus) {
+        return res.status(400).json({ ok: false, error: 'Invalid status' });
+      }
+      updates.status = nextStatus;
+    }
+
+    if (req.body.notes !== undefined) {
+      updates.notes =
+        req.body.notes === null ? null : (parseString(req.body.notes) ?? null);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, 'job_id')) {
+      updates.job_id =
+        req.body.job_id === null ? null : parseOptionalNumber(req.body.job_id);
     }
 
     try {
-      const estimate = await estimatesService.updateEstimate(userId, id, {
-        title: parseString(req.body.title)?.trim(),
-        status,
-        notes: req.body.notes === null ? null : parseString(req.body.notes),
-        job_id:
-          req.body.job_id === null
-            ? null
-            : parseOptionalNumber(req.body.job_id),
-      });
+      const estimate = await estimatesService.updateEstimate(
+        userId,
+        id,
+        updates
+      );
 
       res.json({ ok: true, estimate });
     } catch (error) {
@@ -215,7 +233,6 @@ estimatesRouter.delete(
     }
   })
 );
-
 
 // POST /estimates/:id/line-items
 estimatesRouter.post(

@@ -6,9 +6,16 @@ export type NotificationType =
   | 'TASK_ASSIGNED'
   | 'TASK_COMPLETED'
   | 'FILE_UPLOADED'
-  | 'INVITE_ACCEPTED';
+  | 'INVITE_ACCEPTED'
+  | 'ESTIMATE_CREATED'
+  | 'ESTIMATE_STATUS_CHANGED';
 
-export type NotificationEntityType = 'task' | 'lead' | 'job' | 'invite';
+export type NotificationEntityType =
+  | 'task'
+  | 'lead'
+  | 'job'
+  | 'invite'
+  | 'estimate';
 
 type CreateNotificationInput = {
   userId: string;

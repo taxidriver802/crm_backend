@@ -349,6 +349,7 @@ usersRouter.get(
         status,
         created_at,
         invited_at,
+        invite_expires_at,
         password_set_at,
         last_login_at,
         invite_revoked_at,

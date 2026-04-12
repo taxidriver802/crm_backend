@@ -257,12 +257,14 @@ CREATE TABLE IF NOT EXISTS notifications (
       'TASK_ASSIGNED',
       'TASK_COMPLETED',
       'FILE_UPLOADED',
-      'INVITE_ACCEPTED'
+      'INVITE_ACCEPTED',
+      'ESTIMATE_CREATED',
+      'ESTIMATE_STATUS_CHANGED'
     )
   ),
   CONSTRAINT notifications_entity_type_check CHECK (
     entity_type IS NULL
-    OR entity_type IN ('task', 'lead', 'job', 'invite')
+    OR entity_type IN ('task', 'lead', 'job', 'invite', 'estimate')
   )
 );
 

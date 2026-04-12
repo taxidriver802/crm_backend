@@ -46,6 +46,12 @@ describe('Auth + Dashboard smoke test', () => {
     const dash = await request(app).get('/dashboard').set(headers);
     expect([200, 201]).toContain(dash.status);
     expect(dash.body.ok).toBe(true);
+    expect(dash.body.jobs).toBeDefined();
+    expect(typeof dash.body.jobs.total).toBe('number');
+    expect(Array.isArray(dash.body.jobs.byStatus)).toBe(true);
+    expect(dash.body.estimates).toBeDefined();
+    expect(typeof dash.body.estimates.total).toBe('number');
+    expect(Array.isArray(dash.body.estimates.byStatus)).toBe(true);
   });
 
   it('blocks dashboard when unauthenticated', async () => {

@@ -1,4 +1,5 @@
 import { pool } from '../db';
+import { createNotification } from '../lib/notifications';
 import { createJobActivity } from './jobActivity.service';
 import {
   calculateLineItem,
@@ -321,6 +322,19 @@ export async function createEstimate(
     },
   });
 
+  await createNotification({
+    userId,
+    type: 'ESTIMATE_CREATED',
+    title: 'New estimate',
+    message: `${estimate.title} was created for ${estimate.job?.title ?? `Job #${estimate.job_id}`}.`,
+    entityType: 'estimate',
+    entityId: estimate.id,
+    metadata: {
+      jobId: estimate.job_id,
+      estimateTitle: estimate.title,
+    },
+  });
+
   return estimate;
 }
 
@@ -389,6 +403,22 @@ export async function updateEstimate(
       newStatus: updated.status,
     },
   });
+
+  if (statusChanged) {
+    await createNotification({
+      userId,
+      type: 'ESTIMATE_STATUS_CHANGED',
+      title: 'Estimate status updated',
+      message: `${updated.title}: ${existing.status} → ${updated.status}`,
+      entityType: 'estimate',
+      entityId: updated.id,
+      metadata: {
+        jobId: updated.job_id,
+        previousStatus: existing.status,
+        newStatus: updated.status,
+      },
+    });
+  }
 
   return updated;
 }
