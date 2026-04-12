@@ -1,6 +1,8 @@
+import crypto from 'crypto';
 import { pool } from '../db';
 import { createNotification } from '../lib/notifications';
 import { createJobActivity } from './jobActivity.service';
+import { buildEstimatePdfBuffer } from '../lib/estimatePdf';
 import {
   calculateLineItem,
   normalizeMoney,
@@ -72,6 +74,9 @@ const ESTIMATE_SELECT = `
     e.discount_total,
     e.grand_total,
     e.notes,
+    e.share_expires_at,
+    e.client_responded_at,
+    e.client_response_note,
     e.created_at,
     e.updated_at,
 
@@ -109,6 +114,9 @@ function normalizeEstimate(row: any, lineItems: any[] = []) {
     discount_total: Number(row.discount_total ?? 0),
     grand_total: Number(row.grand_total ?? 0),
     notes: row.notes,
+    share_expires_at: row.share_expires_at ?? null,
+    client_responded_at: row.client_responded_at ?? null,
+    client_response_note: row.client_response_note ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
 
@@ -630,4 +638,170 @@ export async function deleteEstimateLineItem(
   } finally {
     client.release();
   }
+}
+
+function sha256(value: string) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+export class InvalidShareTokenError extends Error {
+  constructor(message = 'Invalid or expired link') {
+    super(message);
+    this.name = 'InvalidShareTokenError';
+  }
+}
+
+export async function rotateEstimateShareToken(
+  userId: string,
+  estimateId: number
+) {
+  await ensureEstimateBelongsToUser(userId, estimateId);
+  const raw = crypto.randomBytes(32).toString('hex');
+  const hash = sha256(raw);
+  const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  await pool.query(
+    `
+    UPDATE estimates
+    SET share_token_hash = $1, share_expires_at = $2, updated_at = CURRENT_TIMESTAMP
+    WHERE id = $3 AND user_id = $4
+    `,
+    [hash, expires, estimateId, userId]
+  );
+  const estimate = await getEstimateById(userId, estimateId);
+  return { token: raw, share_expires_at: expires, estimate };
+}
+
+export class EstimateResendNotApplicableError extends Error {
+  constructor(message = 'Resend is not available for this estimate') {
+    super(message);
+    this.name = 'EstimateResendNotApplicableError';
+  }
+}
+
+/**
+ * After client declines or asks for revision: clear their response, set status to Sent,
+ * rotate share token so the next link is a fresh round for the client.
+ */
+export async function resendEstimateToClient(
+  userId: string,
+  estimateId: number
+) {
+  const existing = await getEstimateById(userId, estimateId);
+
+  if (!existing.client_responded_at) {
+    throw new EstimateResendNotApplicableError(
+      'There is no client response to clear. Use Copy share link to send a link.'
+    );
+  }
+
+  if (existing.status !== 'Draft' && existing.status !== 'Rejected') {
+    throw new EstimateResendNotApplicableError(
+      'Resend after response is only for estimates that are in Draft (revision requested) or Rejected. Use Copy share link otherwise.'
+    );
+  }
+
+  const raw = crypto.randomBytes(32).toString('hex');
+  const hash = sha256(raw);
+  const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+
+  await pool.query(
+    `
+    UPDATE estimates
+    SET
+      share_token_hash = $1,
+      share_expires_at = $2,
+      client_responded_at = NULL,
+      client_response_note = NULL,
+      status = 'Sent',
+      updated_at = CURRENT_TIMESTAMP
+    WHERE id = $3 AND user_id = $4
+    `,
+    [hash, expires, estimateId, userId]
+  );
+
+  const estimate = await getEstimateById(userId, estimateId);
+  return { token: raw, share_expires_at: expires, estimate };
+}
+
+export async function getEstimateByShareToken(rawToken: string) {
+  const hash = sha256(String(rawToken).trim());
+  const result = await pool.query(
+    `
+    ${ESTIMATE_SELECT}
+    WHERE e.share_token_hash = $1
+      AND (e.share_expires_at IS NULL OR e.share_expires_at > CURRENT_TIMESTAMP)
+    LIMIT 1
+    `,
+    [hash]
+  );
+  if (result.rowCount === 0) {
+    throw new InvalidShareTokenError();
+  }
+  const id = result.rows[0].id;
+  const lineItems = await getEstimateLineItemsRaw(id);
+  return normalizeEstimate(result.rows[0], lineItems);
+}
+
+export async function respondToEstimateShare(
+  rawToken: string,
+  decision: 'approve' | 'reject' | 'revision',
+  note: string | null
+) {
+  await getEstimateByShareToken(rawToken);
+  const hash = sha256(String(rawToken).trim());
+
+  let status: 'Approved' | 'Rejected' | 'Draft';
+  if (decision === 'approve') status = 'Approved';
+  else if (decision === 'reject') status = 'Rejected';
+  else status = 'Draft';
+
+  await pool.query(
+    `
+    UPDATE estimates
+    SET
+      status = $2,
+      client_responded_at = CURRENT_TIMESTAMP,
+      client_response_note = $3,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE share_token_hash = $1
+    `,
+    [hash, status, note?.trim() || null]
+  );
+
+  return getEstimateByShareToken(rawToken);
+}
+
+function toPdfPayload(estimate: ReturnType<typeof normalizeEstimate>) {
+  return {
+    title: estimate.title,
+    status: estimate.status,
+    notes: estimate.notes,
+    subtotal: estimate.subtotal,
+    tax_total: estimate.tax_total,
+    discount_total: estimate.discount_total,
+    grand_total: estimate.grand_total,
+    job_title: estimate.job.title,
+    job_address: estimate.job.address,
+    lead_name: estimate.job.lead_name,
+    line_items: estimate.line_items.map((li: any) => ({
+      name: li.name,
+      description: li.description,
+      quantity: li.quantity,
+      unit_price: li.unit_price,
+      line_total: li.line_total,
+    })),
+  };
+}
+
+export async function renderEstimatePdfForUser(
+  userId: string,
+  estimateId: number
+) {
+  const estimate = await getEstimateById(userId, estimateId);
+  return buildEstimatePdfBuffer(toPdfPayload(estimate));
+}
+
+export async function renderEstimatePdfByShareToken(rawToken: string) {
+  const estimate = await getEstimateByShareToken(rawToken);
+  return buildEstimatePdfBuffer(toPdfPayload(estimate));
 }

@@ -17,6 +17,13 @@ function sha256(value: string) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isValidUuid(value: string | undefined): boolean {
+  return Boolean(value && UUID_RE.test(value));
+}
+
 // POST /users/invite
 usersRouter.post(
   '/invite',
@@ -260,17 +267,21 @@ usersRouter.post(
   requireAuth,
   requireOwnerOrAdmin,
   asyncHandler(async (req, res) => {
-    const userId = req.params.id;
+    const rawId = Array.isArray(req.params.id)
+      ? req.params.id[0]
+      : req.params.id;
+    if (!isValidUuid(rawId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid user id' });
+    }
 
     const userResult = await pool.query(
       `
       SELECT *
       FROM users
-      WHERE LOWER(email) = LOWER($1)
-      AND status = 'invited'
-      AND invite_token_hash IS NOT NULL
+      WHERE id = $1::uuid
+        AND status = 'invited'
       `,
-      [userId]
+      [rawId]
     );
 
     const user = userResult.rows[0];
@@ -279,9 +290,7 @@ usersRouter.post(
       return res.status(404).json({ ok: false, error: 'User not found' });
     }
 
-    if (user.status === 'active') {
-      return res.status(400).json({ ok: false, error: 'User already active' });
-    }
+    const userId = user.id;
 
     // invalidate old invite
     await pool.query(
@@ -329,6 +338,45 @@ usersRouter.post(
       user: updatedUser,
       invite_url: inviteUrl,
     });
+  })
+);
+
+// POST /users/invite/:id/revoke
+usersRouter.post(
+  '/invite/:id/revoke',
+  requireAuth,
+  requireOwnerOrAdmin,
+  asyncHandler(async (req, res) => {
+    const rawId = Array.isArray(req.params.id)
+      ? req.params.id[0]
+      : req.params.id;
+    if (!isValidUuid(rawId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid user id' });
+    }
+
+    const result = await pool.query(
+      `
+      UPDATE users
+      SET
+        invite_revoked_at = NOW(),
+        invite_token_hash = NULL,
+        invite_expires_at = NULL,
+        updated_at = NOW()
+      WHERE id = $1::uuid
+        AND status = 'invited'
+        AND invite_revoked_at IS NULL
+      RETURNING id
+      `,
+      [rawId]
+    );
+
+    if (result.rowCount === 0) {
+      return res
+        .status(404)
+        .json({ ok: false, error: 'Invite not found or already processed' });
+    }
+
+    return res.json({ ok: true });
   })
 );
 

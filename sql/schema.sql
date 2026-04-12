@@ -191,6 +191,10 @@ CREATE TABLE IF NOT EXISTS estimates (
   discount_total NUMERIC NOT NULL DEFAULT 0,
   grand_total NUMERIC NOT NULL DEFAULT 0,
   notes TEXT,
+  share_token_hash TEXT,
+  share_expires_at TIMESTAMPTZ,
+  client_responded_at TIMESTAMPTZ,
+  client_response_note TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT estimates_status_check CHECK (
@@ -234,6 +238,22 @@ CREATE TABLE IF NOT EXISTS estimate_line_items (
 CREATE INDEX IF NOT EXISTS idx_estimate_line_items_estimate_id ON estimate_line_items (estimate_id);
 
 CREATE INDEX IF NOT EXISTS idx_estimate_line_items_sort_order ON estimate_line_items (estimate_id, sort_order);
+
+-- =========================================================
+-- JOB_MEASUREMENTS (Phase 9 — manual scope / quantities)
+-- =========================================================
+CREATE TABLE IF NOT EXISTS job_measurements (
+  id SERIAL PRIMARY KEY,
+  job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  value NUMERIC NOT NULL,
+  unit TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_measurements_job_id ON job_measurements (job_id);
 
 -- =========================================================
 -- NOTIFICATIONS

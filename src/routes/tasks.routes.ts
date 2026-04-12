@@ -6,8 +6,27 @@ import {
   updateTaskSchema,
 } from '../validators/tasks.schemas';
 import * as tasksService from '../services/tasks.service';
+import type { TaskDuePreset } from '../services/tasks.service';
 
 export const tasksRouter = Router();
+
+function parseDuePresetQuery(
+  query: Record<string, unknown>
+): TaskDuePreset | undefined {
+  const raw = typeof query.duePreset === 'string' ? query.duePreset.trim() : '';
+  if (raw === 'overdue' || raw === 'due_today' || raw === 'next_7_days') {
+    return raw;
+  }
+
+  const due = typeof query.due === 'string' ? query.due.trim() : '';
+  if (due === 'overdue') return 'overdue';
+  if (due === 'today') return 'due_today';
+
+  const range = typeof query.range === 'string' ? query.range.trim() : '';
+  if (range === '7') return 'next_7_days';
+
+  return undefined;
+}
 
 tasksRouter.use(requireAuth);
 
@@ -22,7 +41,7 @@ tasksRouter.get(
   })
 );
 
-// GET /tasks?status=Pending&dueBefore=...&leadId=2&limit=50&offset=0
+// GET /tasks?status=Pending&dueBefore=...&duePreset=overdue|due_today|next_7_days&due=today&range=7&leadId=2&limit=50&offset=0
 tasksRouter.get(
   '/',
   asyncHandler(async (req, res) => {
@@ -42,6 +61,8 @@ tasksRouter.get(
     const linkedTo =
       typeof req.query.linkedTo === 'string' ? req.query.linkedTo : undefined;
 
+    const duePreset = parseDuePresetQuery(req.query as Record<string, unknown>);
+
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Number(req.query.offset || 0);
 
@@ -50,6 +71,7 @@ tasksRouter.get(
       leadId,
       jobId,
       dueBefore,
+      duePreset,
       q,
       linkedTo,
       limit,

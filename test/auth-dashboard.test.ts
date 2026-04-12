@@ -52,6 +52,8 @@ describe('Auth + Dashboard smoke test', () => {
     expect(dash.body.estimates).toBeDefined();
     expect(typeof dash.body.estimates.total).toBe('number');
     expect(Array.isArray(dash.body.estimates.byStatus)).toBe(true);
+    expect(dash.body.tasks?.counts?.overdue_on_jobs).toBeDefined();
+    expect(typeof dash.body.tasks.counts.overdue_on_jobs).toBe('number');
   });
 
   it('blocks dashboard when unauthenticated', async () => {

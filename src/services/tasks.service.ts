@@ -52,11 +52,15 @@ async function ensureLeadBelongsToUser(leadId: number, userId: string) {
   }
 }
 
+export type TaskDuePreset = 'overdue' | 'due_today' | 'next_7_days';
+
 export type GetTasksFilters = {
   status?: string;
   leadId?: number;
   jobId?: number;
   dueBefore?: string;
+  /** Matches windows used in getTaskSummary list queries */
+  duePreset?: TaskDuePreset;
   q?: string;
   linkedTo?: string;
   limit?: number;
@@ -253,6 +257,12 @@ export async function getTaskSummary(userId: string) {
           COUNT(*) FILTER (WHERE status <> 'Completed' AND due_date < NOW())::int AS overdue,
           COUNT(*) FILTER (
             WHERE status <> 'Completed'
+              AND job_id IS NOT NULL
+              AND due_date IS NOT NULL
+              AND due_date < NOW()
+          )::int AS overdue_on_jobs,
+          COUNT(*) FILTER (
+            WHERE status <> 'Completed'
               AND due_date >= date_trunc('day', NOW())
               AND due_date < date_trunc('day', NOW()) + INTERVAL '1 day'
           )::int AS due_today,
@@ -340,9 +350,25 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
     where.push(`t.job_id = $${params.length}`);
   }
 
-  if (filters.dueBefore) {
+  if (!filters.duePreset && filters.dueBefore) {
     params.push(filters.dueBefore);
     where.push(`t.due_date <= $${params.length}`);
+  }
+
+  if (filters.duePreset) {
+    where.push(`t.status <> 'Completed'`);
+    if (filters.duePreset === 'overdue') {
+      where.push(`t.due_date IS NOT NULL`);
+      where.push(`t.due_date < NOW()`);
+    } else if (filters.duePreset === 'due_today') {
+      where.push(`t.due_date IS NOT NULL`);
+      where.push(`t.due_date >= date_trunc('day', NOW())`);
+      where.push(`t.due_date < date_trunc('day', NOW()) + INTERVAL '1 day'`);
+    } else if (filters.duePreset === 'next_7_days') {
+      where.push(`t.due_date IS NOT NULL`);
+      where.push(`t.due_date >= NOW()`);
+      where.push(`t.due_date <= NOW() + INTERVAL '7 days'`);
+    }
   }
 
   if (filters.q) {

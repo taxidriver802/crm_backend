@@ -29,6 +29,26 @@ abcRouter.get(
   })
 );
 
+/** Sample item search for pricing connectivity (Phase 9.5 MVP). */
+abcRouter.get(
+  '/pricing-sample',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const q =
+      typeof req.query.q === 'string' && req.query.q.trim()
+        ? req.query.q.trim()
+        : 'roof';
+    try {
+      const data = await searchAbcItems({ query: q });
+      res.json({ ok: true, query: q, data });
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : 'ABC pricing request failed';
+      res.status(502).json({ ok: false, error: message });
+    }
+  })
+);
+
 abcRouter.post(
   '/search/accounts',
   requireAuth,

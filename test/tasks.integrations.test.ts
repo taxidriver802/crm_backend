@@ -214,4 +214,142 @@ describe('Tasks integration', () => {
     expect(jobTasks.body.tasks[0].job_id).toBe(job.id);
     expect(jobTasks.body.tasks[0].lead_id).toBeNull();
   });
+
+  it('GET /tasks/summary includes overdue_on_jobs count', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+    const job = await createJob(headers, lead.id);
+
+    const past = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+
+    await request(app).post('/tasks').set(headers).send({
+      job_id: job.id,
+      title: 'Overdue on job',
+      due_date: past,
+      status: 'Pending',
+    });
+
+    await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'Overdue on lead only',
+      due_date: past,
+      status: 'Pending',
+    });
+
+    const sum = await request(app).get('/tasks/summary').set(headers);
+
+    expect(sum.status).toBe(200);
+    expect(sum.body.counts.overdue_on_jobs).toBe(1);
+    expect(sum.body.counts.overdue).toBe(2);
+  });
+
+  it('GET /tasks?duePreset=overdue returns only overdue incomplete tasks', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'Late',
+      due_date: past,
+      status: 'Pending',
+    });
+
+    await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'Future',
+      due_date: future,
+      status: 'Pending',
+    });
+
+    const res = await request(app)
+      .get('/tasks')
+      .query({ duePreset: 'overdue' })
+      .set(headers);
+
+    expect(res.status).toBe(200);
+    expect(res.body.tasks).toHaveLength(1);
+    expect(res.body.tasks[0].title).toBe('Late');
+  });
+
+  it('GET /tasks accepts due=today and range=7 aliases', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+
+    const today = new Date();
+    today.setUTCHours(15, 0, 0, 0);
+
+    await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'Due today task',
+      due_date: today.toISOString(),
+      status: 'Pending',
+    });
+
+    const aliasToday = await request(app)
+      .get('/tasks')
+      .query({ due: 'today' })
+      .set(headers);
+
+    expect(aliasToday.status).toBe(200);
+    expect(aliasToday.body.tasks.length).toBeGreaterThanOrEqual(1);
+    expect(
+      aliasToday.body.tasks.some(
+        (t: { title: string }) => t.title === 'Due today task'
+      )
+    ).toBe(true);
+
+    const in7 = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'Within seven days',
+      due_date: in7,
+      status: 'Pending',
+    });
+
+    const aliasRange = await request(app)
+      .get('/tasks')
+      .query({ range: '7' })
+      .set(headers);
+
+    expect(aliasRange.status).toBe(200);
+    expect(
+      aliasRange.body.tasks.some(
+        (t: { title: string }) => t.title === 'Within seven days'
+      )
+    ).toBe(true);
+  });
+
+  it('GET /tasks?duePreset=overdue&linkedTo=job limits to job-linked overdue', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+    const job = await createJob(headers, lead.id);
+
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    await request(app).post('/tasks').set(headers).send({
+      job_id: job.id,
+      title: 'Job overdue',
+      due_date: past,
+      status: 'Pending',
+    });
+
+    await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'Lead overdue',
+      due_date: past,
+      status: 'Pending',
+    });
+
+    const res = await request(app)
+      .get('/tasks')
+      .query({ duePreset: 'overdue', linkedTo: 'job' })
+      .set(headers);
+
+    expect(res.status).toBe(200);
+    expect(res.body.tasks).toHaveLength(1);
+    expect(res.body.tasks[0].title).toBe('Job overdue');
+  });
 });

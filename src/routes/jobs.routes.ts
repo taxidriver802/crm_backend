@@ -5,6 +5,7 @@ import { createJobSchema, updateJobSchema } from '../validators/jobs.schemas';
 import * as jobsService from '../services/jobs.service';
 import * as tasksService from '../services/tasks.service';
 import * as activityService from '../services/jobActivity.service';
+import * as jobMeasurementsService from '../services/jobMeasurements.service';
 
 export const jobsRouter = Router();
 
@@ -123,6 +124,172 @@ jobsRouter.get(
       activity: result.activity,
       hasMore: result.hasMore,
     });
+  })
+);
+
+// GET /jobs/:id/measurements
+jobsRouter.get(
+  '/:id/measurements',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.userId;
+    const id = Number(req.params.id);
+
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
+
+    try {
+      const measurements = await jobMeasurementsService.listJobMeasurements(
+        userId,
+        id
+      );
+      res.json({ ok: true, measurements });
+    } catch (error) {
+      if (error instanceof jobsService.JobNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// POST /jobs/:id/measurements
+jobsRouter.post(
+  '/:id/measurements',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.userId;
+    const id = Number(req.params.id);
+
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
+
+    const label =
+      typeof req.body?.label === 'string' ? req.body.label.trim() : '';
+    if (!label) {
+      return res.status(400).json({ ok: false, error: 'label is required' });
+    }
+
+    const value = Number(req.body?.value);
+    if (!Number.isFinite(value)) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'value must be a number' });
+    }
+
+    const unit = typeof req.body?.unit === 'string' ? req.body.unit.trim() : '';
+    const sort_order =
+      req.body?.sort_order != null ? Number(req.body.sort_order) : 0;
+
+    try {
+      const measurement = await jobMeasurementsService.createJobMeasurement(
+        userId,
+        id,
+        {
+          label,
+          value,
+          unit,
+          sort_order: Number.isFinite(sort_order) ? sort_order : 0,
+        }
+      );
+      res.status(201).json({ ok: true, measurement });
+    } catch (error) {
+      if (error instanceof jobsService.JobNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// PATCH /jobs/:id/measurements/:measurementId
+jobsRouter.patch(
+  '/:id/measurements/:measurementId',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.userId;
+    const id = Number(req.params.id);
+    const measurementId = Number(req.params.measurementId);
+
+    if (!Number.isFinite(id) || !Number.isFinite(measurementId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
+
+    const updates: {
+      label?: string;
+      value?: number;
+      unit?: string;
+      sort_order?: number;
+    } = {};
+
+    if (req.body?.label !== undefined) {
+      if (typeof req.body.label !== 'string' || !req.body.label.trim()) {
+        return res.status(400).json({ ok: false, error: 'Invalid label' });
+      }
+      updates.label = req.body.label;
+    }
+    if (req.body?.value !== undefined) {
+      const value = Number(req.body.value);
+      if (!Number.isFinite(value)) {
+        return res.status(400).json({ ok: false, error: 'Invalid value' });
+      }
+      updates.value = value;
+    }
+    if (req.body?.unit !== undefined) {
+      updates.unit = typeof req.body.unit === 'string' ? req.body.unit : '';
+    }
+    if (req.body?.sort_order !== undefined) {
+      const so = Number(req.body.sort_order);
+      updates.sort_order = Number.isFinite(so) ? so : 0;
+    }
+
+    try {
+      const measurement = await jobMeasurementsService.updateJobMeasurement(
+        userId,
+        id,
+        measurementId,
+        updates
+      );
+      res.json({ ok: true, measurement });
+    } catch (error) {
+      if (error instanceof jobsService.JobNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof jobMeasurementsService.MeasurementNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// DELETE /jobs/:id/measurements/:measurementId
+jobsRouter.delete(
+  '/:id/measurements/:measurementId',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.userId;
+    const id = Number(req.params.id);
+    const measurementId = Number(req.params.measurementId);
+
+    if (!Number.isFinite(id) || !Number.isFinite(measurementId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
+
+    try {
+      const deletedId = await jobMeasurementsService.deleteJobMeasurement(
+        userId,
+        id,
+        measurementId
+      );
+      res.json({ ok: true, deletedId });
+    } catch (error) {
+      if (error instanceof jobsService.JobNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof jobMeasurementsService.MeasurementNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
   })
 );
 

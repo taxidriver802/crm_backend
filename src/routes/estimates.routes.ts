@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import * as estimatesService from '../services/estimates.service';
+import { env } from '../config/env';
 
 export const estimatesRouter = Router();
 
@@ -122,6 +123,95 @@ estimatesRouter.post(
     } catch (error) {
       if (error instanceof estimatesService.JobNotFoundError) {
         return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// GET /estimates/:id/pdf — must be registered before GET /:id
+estimatesRouter.get(
+  '/:id/pdf',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.userId;
+    const id = parseId(req.params.id);
+
+    if (id == null) {
+      return res.status(400).json({ ok: false, error: 'Invalid estimate id' });
+    }
+
+    try {
+      const buf = await estimatesService.renderEstimatePdfForUser(userId, id);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="estimate-${id}.pdf"`
+      );
+      res.send(buf);
+    } catch (error) {
+      if (error instanceof estimatesService.EstimateNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// POST /estimates/:id/share — must be registered before GET /:id
+estimatesRouter.post(
+  '/:id/share',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.userId;
+    const id = parseId(req.params.id);
+
+    if (id == null) {
+      return res.status(400).json({ ok: false, error: 'Invalid estimate id' });
+    }
+
+    try {
+      const out = await estimatesService.rotateEstimateShareToken(userId, id);
+      const shareUrl = `${env.frontendUrl.replace(/\/$/, '')}/public/estimate/${out.token}`;
+      res.json({
+        ok: true,
+        share_url: shareUrl,
+        share_expires_at: out.share_expires_at,
+        estimate: out.estimate,
+      });
+    } catch (error) {
+      if (error instanceof estimatesService.EstimateNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// POST /estimates/:id/resend — clear client response, Sent + new token (Draft/Rejected only)
+estimatesRouter.post(
+  '/:id/resend',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.userId;
+    const id = parseId(req.params.id);
+
+    if (id == null) {
+      return res.status(400).json({ ok: false, error: 'Invalid estimate id' });
+    }
+
+    try {
+      const out = await estimatesService.resendEstimateToClient(userId, id);
+      const shareUrl = `${env.frontendUrl.replace(/\/$/, '')}/public/estimate/${out.token}`;
+      res.json({
+        ok: true,
+        share_url: shareUrl,
+        share_expires_at: out.share_expires_at,
+        estimate: out.estimate,
+      });
+    } catch (error) {
+      if (error instanceof estimatesService.EstimateNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof estimatesService.EstimateResendNotApplicableError) {
+        return res.status(400).json({ ok: false, error: error.message });
       }
       throw error;
     }
