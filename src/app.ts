@@ -17,6 +17,7 @@ import { errorHandler } from './middleware/error';
 import { filesRouter } from './routes/files.routes';
 import { notificationRouter } from './routes/notification.routes';
 import { runTaskNotificationJob } from './jobs/taskNotifications';
+import { runInvoiceReminderJob } from './jobs/invoiceReminders';
 import { jobsRouter } from './routes/jobs.routes';
 import { estimatesRouter } from './routes/estimates.routes';
 import { publicEstimatesRouter } from './routes/publicEstimates.routes';
@@ -24,6 +25,10 @@ import { notesRouter } from './routes/notes.routes';
 import { searchRouter } from './routes/search.routes';
 import { reportsRouter } from './routes/reports.routes';
 import { savedViewsRouter } from './routes/savedViews.routes';
+import { invoicesRouter } from './routes/invoices.routes';
+import { automationRouter } from './routes/automation.routes';
+import { portalRouter, publicPortalRouter } from './routes/portal.routes';
+import { productMetricsRouter } from './routes/productMetrics.routes';
 
 export const app = express();
 
@@ -57,6 +62,11 @@ app.use('/notes', notesRouter);
 app.use('/search', searchRouter);
 app.use('/reports', reportsRouter);
 app.use('/saved-views', savedViewsRouter);
+app.use('/invoices', invoicesRouter);
+app.use('/automation', automationRouter);
+app.use('/portal', portalRouter);
+app.use('/public/portal', publicPortalRouter);
+app.use('/product-metrics', productMetricsRouter);
 
 if (process.env.NODE_ENV !== 'test') {
   setInterval(
@@ -65,7 +75,14 @@ if (process.env.NODE_ENV !== 'test') {
     },
     1000 * 60 * 5
   );
-} // every 5 minutes
+
+  setInterval(
+    () => {
+      runInvoiceReminderJob().catch(console.error);
+    },
+    1000 * 60 * 15
+  );
+}
 
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 

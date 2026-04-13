@@ -8,6 +8,8 @@ import {
   normalizeMoney,
   calculateEstimateTotals,
 } from './estimateCalculations';
+import { evaluateRules } from './automation.service';
+import { trackEvent } from './productEvents.service';
 
 export class EstimateNotFoundError extends Error {
   constructor(message = 'Estimate not found') {
@@ -426,6 +428,21 @@ export async function updateEstimate(
         newStatus: updated.status,
       },
     });
+
+    if (updated.status === 'Approved') {
+      trackEvent('estimate_approved', {
+        userId,
+        entityType: 'estimate',
+        entityId: updated.id,
+      });
+      evaluateRules(userId, 'ESTIMATE_APPROVED', {
+        job_id: updated.job_id,
+        estimate_id: updated.id,
+        estimate_title: updated.title,
+        entity_type: 'estimate',
+        entity_id: updated.id,
+      }).catch((err) => console.error('Automation evaluation failed:', err));
+    }
   }
 
   return updated;

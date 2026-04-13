@@ -19,10 +19,15 @@ export type CreateJobActivityInput = {
     | 'TASK_REOPENED'
     | 'TASK_UPDATED'
     | 'FILE_UPLOADED'
-    | 'FILE_DELETED';
+    | 'FILE_DELETED'
+    | 'INVOICE_CREATED'
+    | 'INVOICE_UPDATED'
+    | 'INVOICE_STATUS_CHANGED'
+    | 'INVOICE_DELETED'
+    | 'INVOICE_PAID';
   title: string;
   message?: string | null;
-  entityType?: 'job' | 'task' | 'file' | 'estimate' | null;
+  entityType?: 'job' | 'task' | 'file' | 'estimate' | 'invoice' | null;
   entityId?: number | null;
   metadata?: JobActivityMetadata;
 };

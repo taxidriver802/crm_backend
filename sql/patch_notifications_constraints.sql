@@ -14,11 +14,14 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (
     'INVITE_ACCEPTED',
     'ESTIMATE_CREATED',
     'ESTIMATE_STATUS_CHANGED',
-    'ESTIMATE_CLIENT_RESPONDED'
+    'ESTIMATE_CLIENT_RESPONDED',
+    'INVOICE_CREATED',
+    'INVOICE_STATUS_CHANGED',
+    'INVOICE_PAID'
   )
 );
 
 ALTER TABLE notifications ADD CONSTRAINT notifications_entity_type_check CHECK (
   entity_type IS NULL
-  OR entity_type IN ('task', 'lead', 'job', 'invite', 'estimate')
+  OR entity_type IN ('task', 'lead', 'job', 'invite', 'estimate', 'invoice')
 );

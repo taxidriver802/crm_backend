@@ -323,6 +323,139 @@ CREATE INDEX IF NOT EXISTS idx_saved_views_user_entity ON saved_views (
 );
 
 -- =========================================================
+-- INVOICES
+-- =========================================================
+CREATE SEQUENCE IF NOT EXISTS invoice_number_seq START 1;
+
+CREATE TABLE IF NOT EXISTS invoices (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
+  estimate_id INTEGER REFERENCES estimates (id) ON DELETE SET NULL,
+  invoice_number TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Draft',
+  subtotal NUMERIC NOT NULL DEFAULT 0,
+  tax_total NUMERIC NOT NULL DEFAULT 0,
+  discount_total NUMERIC NOT NULL DEFAULT 0,
+  grand_total NUMERIC NOT NULL DEFAULT 0,
+  due_date TIMESTAMPTZ,
+  paid_at TIMESTAMPTZ,
+  notes TEXT,
+  share_token_hash TEXT,
+  share_expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT invoices_status_check CHECK (
+    status IN ('Draft', 'Sent', 'Paid', 'Overdue')
+  ),
+  CONSTRAINT invoices_subtotal_check CHECK (subtotal >= 0),
+  CONSTRAINT invoices_tax_total_check CHECK (tax_total >= 0),
+  CONSTRAINT invoices_discount_total_check CHECK (discount_total >= 0),
+  CONSTRAINT invoices_grand_total_check CHECK (grand_total >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoices_user_id ON invoices (user_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_job_id ON invoices (job_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_estimate_id ON invoices (estimate_id);
+CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices (status);
+CREATE INDEX IF NOT EXISTS idx_invoices_created_at ON invoices (created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_number ON invoices (user_id, invoice_number);
+
+-- =========================================================
+-- INVOICE_LINE_ITEMS
+-- =========================================================
+CREATE TABLE IF NOT EXISTS invoice_line_items (
+  id SERIAL PRIMARY KEY,
+  invoice_id INTEGER NOT NULL REFERENCES invoices (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  quantity NUMERIC NOT NULL DEFAULT 1,
+  unit_price NUMERIC NOT NULL DEFAULT 0,
+  line_total NUMERIC NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT invoice_line_items_quantity_check CHECK (quantity >= 0),
+  CONSTRAINT invoice_line_items_unit_price_check CHECK (unit_price >= 0),
+  CONSTRAINT invoice_line_items_line_total_check CHECK (line_total >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_invoice_line_items_invoice_id ON invoice_line_items (invoice_id);
+CREATE INDEX IF NOT EXISTS idx_invoice_line_items_sort_order ON invoice_line_items (invoice_id, sort_order);
+
+-- =========================================================
+-- PRODUCT EVENTS
+-- =========================================================
+CREATE TABLE IF NOT EXISTS product_events (
+  id SERIAL PRIMARY KEY,
+  user_id UUID REFERENCES users (id) ON DELETE SET NULL,
+  event_name TEXT NOT NULL,
+  entity_type TEXT,
+  entity_id INTEGER,
+  metadata JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_events_name ON product_events (event_name);
+CREATE INDEX IF NOT EXISTS idx_product_events_user ON product_events (user_id);
+CREATE INDEX IF NOT EXISTS idx_product_events_created ON product_events (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_product_events_name_created ON product_events (event_name, created_at DESC);
+
+-- =========================================================
+-- PORTAL TOKENS
+-- =========================================================
+CREATE TABLE IF NOT EXISTS portal_tokens (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_tokens_job ON portal_tokens (job_id);
+CREATE INDEX IF NOT EXISTS idx_portal_tokens_hash ON portal_tokens (token_hash);
+CREATE INDEX IF NOT EXISTS idx_portal_tokens_user ON portal_tokens (user_id);
+
+-- =========================================================
+-- AUTOMATION RULES
+-- =========================================================
+CREATE TABLE IF NOT EXISTS automation_rules (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  trigger_event TEXT NOT NULL,
+  conditions JSONB NOT NULL DEFAULT '{}'::jsonb,
+  action_type TEXT NOT NULL,
+  action_config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT automation_rules_trigger_check CHECK (
+    trigger_event IN (
+      'ESTIMATE_APPROVED',
+      'LEAD_INACTIVE',
+      'JOB_STATUS_CHANGED',
+      'TASK_COMPLETED'
+    )
+  ),
+  CONSTRAINT automation_rules_action_check CHECK (
+    action_type IN (
+      'CREATE_TASKS',
+      'CREATE_FOLLOW_UP_TASK',
+      'SEND_NOTIFICATION',
+      'UPDATE_STATUS'
+    )
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_automation_rules_user_id ON automation_rules (user_id);
+CREATE INDEX IF NOT EXISTS idx_automation_rules_trigger ON automation_rules (trigger_event);
+CREATE INDEX IF NOT EXISTS idx_automation_rules_enabled ON automation_rules (enabled);
+
+-- =========================================================
 -- NOTIFICATIONS
 -- =========================================================
 CREATE TABLE IF NOT EXISTS notifications (
@@ -347,12 +480,15 @@ CREATE TABLE IF NOT EXISTS notifications (
       'INVITE_ACCEPTED',
       'ESTIMATE_CREATED',
       'ESTIMATE_STATUS_CHANGED',
-      'ESTIMATE_CLIENT_RESPONDED'
+      'ESTIMATE_CLIENT_RESPONDED',
+      'INVOICE_CREATED',
+      'INVOICE_STATUS_CHANGED',
+      'INVOICE_PAID'
     )
   ),
   CONSTRAINT notifications_entity_type_check CHECK (
     entity_type IS NULL
-    OR entity_type IN ('task', 'lead', 'job', 'invite', 'estimate')
+    OR entity_type IN ('task', 'lead', 'job', 'invite', 'estimate', 'invoice')
   )
 );
 

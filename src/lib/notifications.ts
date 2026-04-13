@@ -9,14 +9,18 @@ export type NotificationType =
   | 'INVITE_ACCEPTED'
   | 'ESTIMATE_CREATED'
   | 'ESTIMATE_STATUS_CHANGED'
-  | 'ESTIMATE_CLIENT_RESPONDED';
+  | 'ESTIMATE_CLIENT_RESPONDED'
+  | 'INVOICE_CREATED'
+  | 'INVOICE_STATUS_CHANGED'
+  | 'INVOICE_PAID';
 
 export type NotificationEntityType =
   | 'task'
   | 'lead'
   | 'job'
   | 'invite'
-  | 'estimate';
+  | 'estimate'
+  | 'invoice';
 
 type CreateNotificationInput = {
   userId: string;

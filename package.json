@@ -14,7 +14,11 @@
     "db:patch-notifications": "node scripts/apply-notifications-patch.js",
     "db:patch-phase10-notes": "node scripts/apply-phase10-notes-patch.js",
     "db:patch-phase12-team-visibility": "node scripts/apply-phase12-team-visibility-patch.js",
-    "db:patch-phase12-saved-views": "node scripts/apply-phase12-saved-views-patch.js"
+    "db:patch-phase12-saved-views": "node scripts/apply-phase12-saved-views-patch.js",
+    "db:patch-phase12-invoicing": "node scripts/apply-phase12-invoicing-patch.js",
+    "db:patch-phase13-automation": "node scripts/apply-phase13-automation-patch.js",
+    "db:patch-phase13-portal": "node scripts/apply-phase13-portal-patch.js",
+    "db:patch-phase14-events": "node scripts/apply-phase14-events-patch.js"
   },
   "keywords": [],
   "author": "",

@@ -29,7 +29,7 @@ notificationRouter.get(
       limit,
       unreadOnly
     );
-    res.json({ notifications: rows });
+    res.json({ ok: true, notifications: rows });
   })
 );
 
@@ -39,7 +39,7 @@ notificationRouter.get(
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
     const rows = await notificationService.getUnreadCount(userId);
-    res.json({ count: rows });
+    res.json({ ok: true, count: rows });
   })
 );
 
@@ -51,6 +51,7 @@ notificationRouter.patch(
 
     if (!parsed.success) {
       return res.status(400).json({
+        ok: false,
         error: 'Invalid notification id',
         details: parsed.error.flatten(),
       });
@@ -61,7 +62,7 @@ notificationRouter.patch(
 
     const rows = await notificationService.readNotification(id, userId);
 
-    res.json({ notification: rows });
+    res.json({ ok: true, notification: rows });
   })
 );
 
@@ -71,7 +72,7 @@ notificationRouter.patch(
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
     const rowCount = await notificationService.readAll(userId);
-    res.json({ updated: rowCount });
+    res.json({ ok: true, updated: rowCount });
   })
 );
 
@@ -81,7 +82,7 @@ notificationRouter.delete(
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
     const rowCount = await notificationService.deleteAllRead(userId);
-    res.json({ deleted: rowCount });
+    res.json({ ok: true, deleted: rowCount });
   })
 );
 
@@ -93,6 +94,7 @@ notificationRouter.delete(
 
     if (!parsed.success) {
       return res.status(400).json({
+        ok: false,
         error: 'Invalid notification id',
         details: parsed.error.flatten(),
       });
@@ -101,6 +103,6 @@ notificationRouter.delete(
     const userId = req.user!.userId;
     const { id } = parsed.data;
     const rows = await notificationService.deleteNotification(userId, id);
-    res.json({ deletedId: rows });
+    res.json({ ok: true, deletedId: rows });
   })
 );

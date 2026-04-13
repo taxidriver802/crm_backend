@@ -39,6 +39,15 @@ export async function ensureSchema() {
     patchPhase12SavedViewsPath,
     'utf8'
   );
+  const patchPhase12InvoicingPath = path.join(
+    process.cwd(),
+    'sql',
+    'patch_phase12_invoicing.sql'
+  );
+  const patchPhase12InvoicingSql = fs.readFileSync(
+    patchPhase12InvoicingPath,
+    'utf8'
+  );
 
   const client = await pool.connect();
   try {
@@ -49,6 +58,40 @@ export async function ensureSchema() {
     await client.query(patchPhase10NotesSql);
     await client.query(patchPhase12TeamVisibilitySql);
     await client.query(patchPhase12SavedViewsSql);
+    await client.query(patchPhase12InvoicingSql);
+
+    const patchPhase13AutomationPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase13_automation.sql'
+    );
+    const patchPhase13AutomationSql = fs.readFileSync(
+      patchPhase13AutomationPath,
+      'utf8'
+    );
+    await client.query(patchPhase13AutomationSql);
+
+    const patchPhase13PortalPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase13_portal.sql'
+    );
+    const patchPhase13PortalSql = fs.readFileSync(
+      patchPhase13PortalPath,
+      'utf8'
+    );
+    await client.query(patchPhase13PortalSql);
+
+    const patchPhase14EventsPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase14_events.sql'
+    );
+    const patchPhase14EventsSql = fs.readFileSync(
+      patchPhase14EventsPath,
+      'utf8'
+    );
+    await client.query(patchPhase14EventsSql);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

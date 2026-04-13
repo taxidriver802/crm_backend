@@ -1,4 +1,5 @@
 import { pool } from '../db';
+import { trackEvent } from './productEvents.service';
 
 export class LeadNotFoundError extends Error {
   constructor(message = 'Lead not found') {
@@ -230,9 +231,13 @@ export async function createLead(
     ]
   );
 
-  return getLeadById(userId, result.rows[0].id, {
+  const lead = await getLeadById(userId, result.rows[0].id, {
     includeAll: actor.role === 'owner' || actor.role === 'admin',
   });
+
+  trackEvent('lead_created', { userId, entityType: 'lead', entityId: lead.id });
+
+  return lead;
 }
 
 export async function updateLead(

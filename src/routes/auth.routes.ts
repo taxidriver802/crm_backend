@@ -67,7 +67,7 @@ authRouter.post(
     );
 
     const user = result.rows[0];
-    const token = signToken(user.id, user.email, 'agent');
+    const token = signToken(user.id, user.email, user.role);
 
     res.cookie('access_token', token, {
       httpOnly: true,

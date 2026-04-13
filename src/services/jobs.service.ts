@@ -1,5 +1,6 @@
 import { pool } from '../db';
 import * as activityService from '../services/jobActivity.service';
+import { evaluateRules } from './automation.service';
 
 export class JobNotFoundError extends Error {
   constructor(message = 'Job not found') {
@@ -347,6 +348,15 @@ export async function updateJob(
         jobTitle: existingJob.title,
       },
     });
+
+    evaluateRules(userId, 'JOB_STATUS_CHANGED', {
+      job_id: id,
+      job_title: existingJob.title,
+      from_status: existingJob.status,
+      to_status: updates.status,
+      entity_type: 'job',
+      entity_id: id,
+    }).catch((err) => console.error('Automation evaluation failed:', err));
   }
 
   return getJobById(userId, updatedJob.id, { includeAll: options.includeAll });
