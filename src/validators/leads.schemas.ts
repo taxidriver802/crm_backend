@@ -1,6 +1,7 @@
-import { z } from "zod";
+import { z } from 'zod';
 
 export const createLeadSchema = z.object({
+  assigned_to: z.string().uuid().optional().nullable(),
   first_name: z.string().min(1),
   last_name: z.string().min(1),
   email: z.string().email().optional().nullable(),

@@ -1,6 +1,8 @@
+ALTER TABLE notifications
+DROP CONSTRAINT IF EXISTS notifications_type_check;
 
-ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
-ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_entity_type_check;
+ALTER TABLE notifications
+DROP CONSTRAINT IF EXISTS notifications_entity_type_check;
 
 ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (
   type IN (
@@ -11,7 +13,8 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (
     'FILE_UPLOADED',
     'INVITE_ACCEPTED',
     'ESTIMATE_CREATED',
-    'ESTIMATE_STATUS_CHANGED'
+    'ESTIMATE_STATUS_CHANGED',
+    'ESTIMATE_CLIENT_RESPONDED'
   )
 );
 

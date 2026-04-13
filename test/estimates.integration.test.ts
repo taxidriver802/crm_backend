@@ -1,6 +1,7 @@
 /// <reference types="jest" />
 import request from 'supertest';
 import { app } from '../src/app';
+import { pool } from '../src/db';
 import { ensureSchema } from './helpers/setup';
 import { resetDb } from './helpers/db';
 import { createAuthedUser } from './helpers/auth';
@@ -67,7 +68,9 @@ describe('Estimates integration', () => {
     expect(Array.isArray(res.body.estimate.line_items)).toBe(true);
     expect(res.body.estimate.line_items).toHaveLength(0);
 
-    const notifRes = await request(app).get('/notifications?limit=20').set(headers);
+    const notifRes = await request(app)
+      .get('/notifications?limit=20')
+      .set(headers);
     expect(notifRes.status).toBe(200);
     expect(
       notifRes.body.notifications.some(
@@ -302,12 +305,46 @@ describe('Estimates integration', () => {
 
     expect(patchRes.status).toBe(200);
 
-    const notifRes = await request(app).get('/notifications?limit=20').set(headers);
+    const notifRes = await request(app)
+      .get('/notifications?limit=20')
+      .set(headers);
     expect(notifRes.status).toBe(200);
     expect(
       notifRes.body.notifications.some(
         (n: { type: string }) => n.type === 'ESTIMATE_STATUS_CHANGED'
       )
     ).toBe(true);
+  });
+
+  it('DELETE /estimates/:id records ESTIMATE_DELETED job_activity', async () => {
+    const { headers, user } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+    const job = await createJob(headers, lead.id);
+
+    const estimateRes = await request(app)
+      .post('/estimates')
+      .set(headers)
+      .send({
+        job_id: job.id,
+        title: 'To delete',
+      });
+
+    const estimateId = estimateRes.body.estimate.id;
+
+    const delRes = await request(app)
+      .delete(`/estimates/${estimateId}`)
+      .set(headers);
+    expect(delRes.status).toBe(200);
+
+    const { rows } = await pool.query(
+      `
+      SELECT type, job_id
+      FROM job_activity
+      WHERE user_id = $1 AND type = 'ESTIMATE_DELETED' AND entity_id = $2
+      `,
+      [user.id, estimateId]
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].job_id).toBe(job.id);
   });
 });

@@ -10,7 +10,11 @@
     "test": "cross-env NODE_ENV=test jest --runInBand",
     "test:watch": "cross-env NODE_ENV=test jest --watch",
     "test:debug": "cross-env NODE_ENV=test jest --runInBand --detectOpenHandles",
-    "db:patch-phase9": "node scripts/apply-phase9-patch.js"
+    "db:patch-phase9": "node scripts/apply-phase9-patch.js",
+    "db:patch-notifications": "node scripts/apply-notifications-patch.js",
+    "db:patch-phase10-notes": "node scripts/apply-phase10-notes-patch.js",
+    "db:patch-phase12-team-visibility": "node scripts/apply-phase12-team-visibility-patch.js",
+    "db:patch-phase12-saved-views": "node scripts/apply-phase12-saved-views-patch.js"
   },
   "keywords": [],
   "author": "",

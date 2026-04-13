@@ -6,7 +6,9 @@ export async function resetDb() {
   await pool.query(`
     TRUNCATE TABLE
       job_activity,
+      notes,
       notifications,
+      saved_views,
       estimate_line_items,
       estimates,
       files,

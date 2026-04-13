@@ -8,7 +8,8 @@ export type NotificationType =
   | 'FILE_UPLOADED'
   | 'INVITE_ACCEPTED'
   | 'ESTIMATE_CREATED'
-  | 'ESTIMATE_STATUS_CHANGED';
+  | 'ESTIMATE_STATUS_CHANGED'
+  | 'ESTIMATE_CLIENT_RESPONDED';
 
 export type NotificationEntityType =
   | 'task'

@@ -1,6 +1,7 @@
 /// <reference types="jest" />
 import request from 'supertest';
 import { app } from '../src/app';
+import { pool } from '../src/db';
 import { ensureSchema } from './helpers/setup';
 import { resetDb } from './helpers/db';
 import { createAuthedUser } from './helpers/auth';
@@ -51,6 +52,94 @@ describe('Estimates public share, PDF, resend, measurements', () => {
     );
     expect(res.status).toBe(404);
     expect(res.body.ok).toBe(false);
+  });
+
+  it('POST /public/estimates/:token/respond creates job_activity and notification for owner', async () => {
+    const { headers, user } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+    const job = await createJob(headers, lead.id);
+
+    const estRes = await request(app).post('/estimates').set(headers).send({
+      job_id: job.id,
+      title: 'Client response activity',
+    });
+    expect(estRes.status).toBe(201);
+    const estimateId = estRes.body.estimate.id;
+
+    const shareRes = await request(app)
+      .post(`/estimates/${estimateId}/share`)
+      .set(headers)
+      .send({});
+    expect(shareRes.status).toBe(200);
+    const token = parseTokenFromShareUrl(shareRes.body.share_url);
+    expect(token.length).toBeGreaterThan(20);
+
+    const respondRes = await request(app)
+      .post(`/public/estimates/${token}/respond`)
+      .send({ decision: 'approve', note: 'Looks good' });
+    expect(respondRes.status).toBe(200);
+
+    const { rows: activities } = await pool.query(
+      `
+      SELECT id, job_id, type
+      FROM job_activity
+      WHERE user_id = $1 AND type = 'ESTIMATE_CLIENT_RESPONDED'
+      `,
+      [user.id]
+    );
+    expect(activities).toHaveLength(1);
+    expect(activities[0].job_id).toBe(job.id);
+
+    const { rows: notifs } = await pool.query(
+      `
+      SELECT id, type
+      FROM notifications
+      WHERE user_id = $1 AND type = 'ESTIMATE_CLIENT_RESPONDED'
+      `,
+      [user.id]
+    );
+    expect(notifs).toHaveLength(1);
+  });
+
+  it('POST /estimates/:id/resend creates ESTIMATE_RESENT_TO_CLIENT job_activity', async () => {
+    const { headers, user } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+    const job = await createJob(headers, lead.id);
+
+    const estRes = await request(app).post('/estimates').set(headers).send({
+      job_id: job.id,
+      title: 'Resend activity',
+    });
+    expect(estRes.status).toBe(201);
+    const estimateId = estRes.body.estimate.id;
+
+    const shareRes = await request(app)
+      .post(`/estimates/${estimateId}/share`)
+      .set(headers)
+      .send({});
+    expect(shareRes.status).toBe(200);
+    const token = parseTokenFromShareUrl(shareRes.body.share_url);
+
+    await request(app)
+      .post(`/public/estimates/${token}/respond`)
+      .send({ decision: 'revision', note: 'Change scope' });
+    expect(
+      (
+        await request(app)
+          .post(`/estimates/${estimateId}/resend`)
+          .set(headers)
+          .send({})
+      ).status
+    ).toBe(200);
+
+    const { rows } = await pool.query(
+      `
+      SELECT type FROM job_activity
+      WHERE user_id = $1 AND type = 'ESTIMATE_RESENT_TO_CLIENT'
+      `,
+      [user.id]
+    );
+    expect(rows).toHaveLength(1);
   });
 
   it('POST /estimates/:id/share then GET public + PDF; respond revision; resend clears and sets Sent', async () => {

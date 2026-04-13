@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const taskFieldsSchema = z.object({
+  assigned_to: z.string().uuid().optional().nullable(),
   lead_id: z.number().int().optional().nullable(),
   job_id: z.number().int().optional().nullable(),
   title: z.string().min(1),

@@ -11,12 +11,17 @@ export const leadsRouter = Router();
 
 leadsRouter.use(requireAuth);
 
+function canViewAll(role?: string) {
+  return role === 'owner' || role === 'admin';
+}
+
 // GET /leads/summary
 leadsRouter.get(
   '/summary',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
-    const summary = await leadsService.getLeadSummary(userId);
+    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
+    const summary = await leadsService.getLeadSummary(userId, { includeAll });
 
     res.json({
       ok: true,
@@ -30,16 +35,23 @@ leadsRouter.get(
   '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
 
     const status =
       typeof req.query.status === 'string' ? req.query.status : undefined;
+    const assignedTo =
+      typeof req.query.assignedTo === 'string'
+        ? req.query.assignedTo
+        : undefined;
     const q = typeof req.query.q === 'string' ? req.query.q : undefined;
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Number(req.query.offset || 0);
 
     const leads = await leadsService.getLeads(userId, {
       status,
+      assignedTo,
       q,
+      includeAll,
       limit,
       offset,
     });
@@ -53,6 +65,7 @@ leadsRouter.get(
   '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const includeAll = canViewAll(req.user?.role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -60,7 +73,7 @@ leadsRouter.get(
     }
 
     try {
-      const lead = await leadsService.getLeadById(userId, id);
+      const lead = await leadsService.getLeadById(userId, id, { includeAll });
       res.json({ ok: true, lead });
     } catch (error) {
       if (error instanceof leadsService.LeadNotFoundError) {
@@ -77,6 +90,7 @@ leadsRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const includeAll = canViewAll(req.user?.role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -84,7 +98,9 @@ leadsRouter.delete(
     }
 
     try {
-      const deletedId = await leadsService.deleteLead(userId, id);
+      const deletedId = await leadsService.deleteLead(userId, id, {
+        includeAll,
+      });
       res.json({ ok: true, deletedId });
     } catch (error) {
       if (error instanceof leadsService.LeadNotFoundError) {
@@ -101,15 +117,25 @@ leadsRouter.post(
   '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const role = req.user?.role;
 
     const parsed = createLeadSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ ok: false, error: parsed.error.flatten() });
     }
 
-    const lead = await leadsService.createLead(userId, parsed.data);
-
-    res.status(201).json({ ok: true, lead });
+    try {
+      const lead = await leadsService.createLead(userId, parsed.data, { role });
+      res.status(201).json({ ok: true, lead });
+    } catch (error) {
+      if (error instanceof leadsService.AssigneeNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof leadsService.AssignmentPermissionError) {
+        return res.status(403).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
   })
 );
 
@@ -118,6 +144,8 @@ leadsRouter.patch(
   '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const role = req.user?.role;
+    const includeAll = canViewAll(role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -130,7 +158,10 @@ leadsRouter.patch(
     }
 
     try {
-      const lead = await leadsService.updateLead(userId, id, parsed.data);
+      const lead = await leadsService.updateLead(userId, id, parsed.data, {
+        includeAll,
+        actorRole: role,
+      });
 
       if (!lead) {
         return res
@@ -142,6 +173,12 @@ leadsRouter.patch(
     } catch (error) {
       if (error instanceof leadsService.LeadNotFoundError) {
         return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof leadsService.AssigneeNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof leadsService.AssignmentPermissionError) {
+        return res.status(403).json({ ok: false, error: error.message });
       }
 
       throw error;

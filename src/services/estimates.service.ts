@@ -432,6 +432,8 @@ export async function updateEstimate(
 }
 
 export async function deleteEstimate(userId: string, id: number) {
+  const existing = await getEstimateById(userId, id);
+
   const result = await pool.query(
     `
       DELETE FROM estimates
@@ -444,6 +446,20 @@ export async function deleteEstimate(userId: string, id: number) {
   if (result.rowCount === 0) {
     throw new EstimateNotFoundError();
   }
+
+  await createJobActivity({
+    userId,
+    jobId: existing.job_id,
+    type: 'ESTIMATE_DELETED',
+    title: 'Estimate deleted',
+    message: `${existing.title} was deleted`,
+    entityType: 'estimate',
+    entityId: existing.id,
+    metadata: {
+      estimateId: existing.id,
+      estimateTitle: existing.title,
+    },
+  });
 
   return result.rows[0].id;
 }
@@ -720,6 +736,21 @@ export async function resendEstimateToClient(
   );
 
   const estimate = await getEstimateById(userId, estimateId);
+
+  await createJobActivity({
+    userId,
+    jobId: estimate.job_id,
+    type: 'ESTIMATE_RESENT_TO_CLIENT',
+    title: 'Estimate resent to client',
+    message: `${estimate.title}: share link refreshed after client response was cleared`,
+    entityType: 'estimate',
+    entityId: estimate.id,
+    metadata: {
+      estimateId: estimate.id,
+      estimateTitle: estimate.title,
+    },
+  });
+
   return { token: raw, share_expires_at: expires, estimate };
 }
 
@@ -747,7 +778,7 @@ export async function respondToEstimateShare(
   decision: 'approve' | 'reject' | 'revision',
   note: string | null
 ) {
-  await getEstimateByShareToken(rawToken);
+  const before = await getEstimateByShareToken(rawToken);
   const hash = sha256(String(rawToken).trim());
 
   let status: 'Approved' | 'Rejected' | 'Draft';
@@ -755,7 +786,7 @@ export async function respondToEstimateShare(
   else if (decision === 'reject') status = 'Rejected';
   else status = 'Draft';
 
-  await pool.query(
+  const updateRes = await pool.query(
     `
     UPDATE estimates
     SET
@@ -767,6 +798,51 @@ export async function respondToEstimateShare(
     `,
     [hash, status, note?.trim() || null]
   );
+
+  if (updateRes.rowCount === 0) {
+    throw new InvalidShareTokenError();
+  }
+
+  const trimmedNote = note?.trim() || null;
+  const decisionLabel =
+    decision === 'approve'
+      ? 'approved the estimate'
+      : decision === 'reject'
+        ? 'declined the estimate'
+        : 'requested a revision';
+
+  await createJobActivity({
+    userId: before.user_id,
+    jobId: before.job_id,
+    type: 'ESTIMATE_CLIENT_RESPONDED',
+    title: 'Client responded',
+    message: `${before.title}: Client ${decisionLabel}.`,
+    entityType: 'estimate',
+    entityId: before.id,
+    metadata: {
+      estimateId: before.id,
+      estimateTitle: before.title,
+      decision,
+      note: trimmedNote,
+      previousStatus: before.status,
+      newStatus: status,
+    },
+  });
+
+  await createNotification({
+    userId: before.user_id,
+    type: 'ESTIMATE_CLIENT_RESPONDED',
+    title: 'Client responded',
+    message: `${before.title}: Client ${decisionLabel}.`,
+    entityType: 'estimate',
+    entityId: before.id,
+    metadata: {
+      jobId: before.job_id,
+      decision,
+      previousStatus: before.status,
+      newStatus: status,
+    },
+  });
 
   return getEstimateByShareToken(rawToken);
 }

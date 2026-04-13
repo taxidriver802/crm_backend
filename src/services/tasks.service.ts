@@ -30,11 +30,33 @@ export class JobNotFoundError extends Error {
   }
 }
 
-async function ensureJobBelongsToUser(jobId: number, userId: string) {
-  const result = await pool.query(
-    `SELECT id FROM jobs WHERE id = $1 AND user_id = $2`,
-    [jobId, userId]
-  );
+export class AssigneeNotFoundError extends Error {
+  constructor(message = 'Assignee not found') {
+    super(message);
+    this.name = 'AssigneeNotFoundError';
+  }
+}
+
+export class AssignmentPermissionError extends Error {
+  constructor(message = 'Not allowed to assign to that user') {
+    super(message);
+    this.name = 'AssignmentPermissionError';
+  }
+}
+
+async function ensureJobBelongsToUser(
+  jobId: number,
+  userId: string,
+  options: { includeAll?: boolean } = {}
+) {
+  const params: any[] = [jobId];
+  let sql = `SELECT id FROM jobs WHERE id = $1`;
+  if (!options.includeAll) {
+    params.push(userId);
+    sql += ` AND user_id = $2`;
+  }
+
+  const result = await pool.query(sql, params);
 
   if (result.rowCount === 0) {
     throw new JobNotFoundError();
@@ -52,22 +74,54 @@ async function ensureLeadBelongsToUser(leadId: number, userId: string) {
   }
 }
 
+async function validateAssignee(
+  assignedTo: string | null | undefined,
+  actorUserId: string,
+  actorRole?: string
+) {
+  if (assignedTo == null) return;
+
+  const canAssignTeam = actorRole === 'owner' || actorRole === 'admin';
+  if (!canAssignTeam && assignedTo !== actorUserId) {
+    throw new AssignmentPermissionError();
+  }
+
+  const assignee = await pool.query(
+    `
+    SELECT id
+    FROM users
+    WHERE id = $1 AND status = 'active'
+    LIMIT 1
+    `,
+    [assignedTo]
+  );
+
+  if (assignee.rowCount === 0) {
+    throw new AssigneeNotFoundError();
+  }
+}
+
 export type TaskDuePreset = 'overdue' | 'due_today' | 'next_7_days';
 
 export type GetTasksFilters = {
   status?: string;
+  assignedTo?: string;
   leadId?: number;
   jobId?: number;
   dueBefore?: string;
+  dateFrom?: string;
+  dateTo?: string;
   /** Matches windows used in getTaskSummary list queries */
   duePreset?: TaskDuePreset;
   q?: string;
   linkedTo?: string;
+  includeAll?: boolean;
   limit?: number;
   offset?: number;
 };
 
 export type CreateTaskInput = {
+  assigned_to?: string | null;
   lead_id?: number | null;
   job_id?: number | null;
   title: string;
@@ -82,6 +136,7 @@ const TASK_SELECT = `
   SELECT
     t.id,
     t.user_id,
+    t.assigned_to,
     t.lead_id,
     t.job_id,
     t.title,
@@ -96,6 +151,9 @@ const TASK_SELECT = `
     jl.id AS job_lead_id,
     jl.first_name AS job_lead_first_name,
     jl.last_name AS job_lead_last_name,
+    au.first_name AS assigned_first_name,
+    au.last_name AS assigned_last_name,
+    au.email AS assigned_email,
 
     j.title AS job_title,
     j.status AS job_status,
@@ -104,6 +162,7 @@ const TASK_SELECT = `
   LEFT JOIN leads l ON l.id = t.lead_id
 LEFT JOIN jobs j ON j.id = t.job_id
 LEFT JOIN leads jl ON jl.id = j.lead_id
+LEFT JOIN users au ON au.id = t.assigned_to
 `;
 
 function buildLeadName(row: any) {
@@ -195,6 +254,7 @@ function normalizeTask(row: any) {
   return {
     id: row.id,
     user_id: row.user_id,
+    assigned_to: row.assigned_to,
     lead_id: row.lead_id,
     job_id: row.job_id,
     title: row.title,
@@ -212,6 +272,15 @@ function normalizeTask(row: any) {
     job_address: row.job_address,
 
     // new normalized relationship fields
+    assigned_user:
+      row.assigned_to != null
+        ? {
+            id: row.assigned_to,
+            first_name: row.assigned_first_name ?? null,
+            last_name: row.assigned_last_name ?? null,
+            email: row.assigned_email ?? null,
+          }
+        : null,
     lead:
       row.lead_id != null
         ? {
@@ -248,7 +317,15 @@ function normalizeTasks(rows: any[]) {
   return rows.map(normalizeTask);
 }
 
-export async function getTaskSummary(userId: string) {
+export async function getTaskSummary(
+  userId: string,
+  options: { includeAll?: boolean } = {}
+) {
+  const scopeWhere = options.includeAll ? 'TRUE' : 'user_id = $1';
+  const scopeParams = options.includeAll ? [] : [userId];
+  const taskSelectParams = options.includeAll ? [] : [userId];
+  const taskSelectWhere = options.includeAll ? 'TRUE' : 't.user_id = $1';
+
   const [countsResult, overdueTasks, dueTodayTasks, upcomingResult] =
     await Promise.all([
       pool.query(
@@ -272,26 +349,26 @@ export async function getTaskSummary(userId: string) {
               AND due_date <= NOW() + INTERVAL '7 days'
           )::int AS next_7_days
         FROM tasks
-        WHERE user_id = $1;
+        WHERE ${scopeWhere};
         `,
-        [userId]
+        scopeParams
       ),
       pool.query(
         `
         ${TASK_SELECT}
-        WHERE t.user_id = $1
+        WHERE ${taskSelectWhere}
           AND t.status <> 'Completed'
           AND t.due_date IS NOT NULL
           AND t.due_date < NOW()
         ORDER BY t.due_date ASC
         LIMIT 10;
         `,
-        [userId]
+        taskSelectParams
       ),
       pool.query(
         `
         ${TASK_SELECT}
-        WHERE t.user_id = $1
+        WHERE ${taskSelectWhere}
           AND t.status <> 'Completed'
           AND t.due_date IS NOT NULL
           AND t.due_date >= date_trunc('day', NOW())
@@ -299,19 +376,19 @@ export async function getTaskSummary(userId: string) {
         ORDER BY t.due_date ASC
         LIMIT 10;
         `,
-        [userId]
+        taskSelectParams
       ),
       pool.query(
         `
         ${TASK_SELECT}
-        WHERE t.user_id = $1
+        WHERE ${taskSelectWhere}
           AND t.status <> 'Completed'
           AND t.due_date IS NOT NULL
           AND t.due_date >= NOW()
         ORDER BY t.due_date ASC
         LIMIT 10;
         `,
-        [userId]
+        taskSelectParams
       ),
     ]);
 
@@ -324,8 +401,13 @@ export async function getTaskSummary(userId: string) {
 }
 
 export async function getTasks(userId: string, filters: GetTasksFilters) {
-  const params: any[] = [userId];
-  const where: string[] = ['t.user_id = $1'];
+  const params: any[] = [];
+  const where: string[] = [];
+
+  if (!filters.includeAll) {
+    params.push(userId);
+    where.push(`t.user_id = $${params.length}`);
+  }
 
   if (filters.status) {
     params.push(filters.status);
@@ -340,6 +422,13 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
     where.push(`t.lead_id IS NOT NULL`);
   }
 
+  if (filters.assignedTo === 'unassigned') {
+    where.push(`t.assigned_to IS NULL`);
+  } else if (filters.assignedTo) {
+    params.push(filters.assignedTo);
+    where.push(`t.assigned_to = $${params.length}`);
+  }
+
   if (Number.isFinite(filters.leadId)) {
     params.push(filters.leadId);
     where.push(`t.lead_id = $${params.length}`);
@@ -352,6 +441,16 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
 
   if (!filters.duePreset && filters.dueBefore) {
     params.push(filters.dueBefore);
+    where.push(`t.due_date <= $${params.length}`);
+  }
+
+  if (filters.dateFrom) {
+    params.push(filters.dateFrom);
+    where.push(`t.due_date >= $${params.length}`);
+  }
+
+  if (filters.dateTo) {
+    params.push(filters.dateTo);
     where.push(`t.due_date <= $${params.length}`);
   }
 
@@ -382,7 +481,7 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
 
   const sql = `
     ${TASK_SELECT}
-    WHERE ${where.join(' AND ')}
+    WHERE ${where.length > 0 ? where.join(' AND ') : 'TRUE'}
     ORDER BY (t.due_date IS NULL) ASC, t.due_date ASC, t.created_at DESC
     LIMIT $${params.length - 1}
     OFFSET $${params.length};
@@ -392,7 +491,11 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
   return normalizeTasks(result.rows);
 }
 
-export async function createTask(userId: string, input: CreateTaskInput) {
+export async function createTask(
+  userId: string,
+  input: CreateTaskInput,
+  actor: { role?: string } = {}
+) {
   if (input.lead_id != null) {
     await ensureLeadBelongsToUser(input.lead_id, userId);
   }
@@ -400,6 +503,8 @@ export async function createTask(userId: string, input: CreateTaskInput) {
   if (input.job_id != null) {
     await ensureJobBelongsToUser(input.job_id, userId);
   }
+
+  await validateAssignee(input.assigned_to, userId, actor.role);
 
   if (!input.lead_id && !input.job_id) {
     throw new TaskOwnershipError('Task must be attached to a lead or a job');
@@ -421,12 +526,22 @@ export async function createTask(userId: string, input: CreateTaskInput) {
 
   const result = await pool.query(
     `
-    INSERT INTO tasks (user_id, lead_id, job_id, title, description, due_date, status)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    INSERT INTO tasks (
+      user_id,
+      assigned_to,
+      lead_id,
+      job_id,
+      title,
+      description,
+      due_date,
+      status
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     RETURNING *;
     `,
     [
       userId,
+      input.assigned_to ?? null,
       input.lead_id ?? null,
       input.job_id ?? null,
       input.title,
@@ -455,7 +570,9 @@ export async function createTask(userId: string, input: CreateTaskInput) {
     });
   }
 
-  const fullTask = await getTaskById(userId, task.id);
+  const fullTask = await getTaskById(userId, task.id, {
+    includeAll: actor.role === 'owner' || actor.role === 'admin',
+  });
 
   if (task.user_id) {
     await createNotification({
@@ -472,14 +589,25 @@ export async function createTask(userId: string, input: CreateTaskInput) {
   return fullTask;
 }
 
-export async function getTaskById(userId: string, id: number) {
+export async function getTaskById(
+  userId: string,
+  id: number,
+  options: { includeAll?: boolean } = {}
+) {
+  const params: any[] = [id];
+  const where: string[] = ['t.id = $1'];
+  if (!options.includeAll) {
+    params.push(userId);
+    where.push(`t.user_id = $${params.length}`);
+  }
+
   const result = await pool.query(
     `
     ${TASK_SELECT}
-    WHERE t.user_id = $1 AND t.id = $2
+    WHERE ${where.join(' AND ')}
     LIMIT 1
     `,
-    [userId, id]
+    params
   );
 
   if (result.rowCount === 0) {
@@ -489,16 +617,27 @@ export async function getTaskById(userId: string, id: number) {
   return normalizeTask(result.rows[0]);
 }
 
-export async function getTasksByJobId(userId: string, jobId: number) {
-  await ensureJobBelongsToUser(jobId, userId);
+export async function getTasksByJobId(
+  userId: string,
+  jobId: number,
+  options: { includeAll?: boolean } = {}
+) {
+  await ensureJobBelongsToUser(jobId, userId, options);
+
+  const params: any[] = [jobId];
+  const where: string[] = ['t.job_id = $1'];
+  if (!options.includeAll) {
+    params.push(userId);
+    where.push(`t.user_id = $${params.length}`);
+  }
 
   const result = await pool.query(
     `
     ${TASK_SELECT}
-    WHERE t.user_id = $1 AND t.job_id = $2
+    WHERE ${where.join(' AND ')}
     ORDER BY (t.due_date IS NULL) ASC, t.due_date ASC, t.created_at DESC
     `,
-    [userId, jobId]
+    params
   );
 
   return normalizeTasks(result.rows);
@@ -507,13 +646,20 @@ export async function getTasksByJobId(userId: string, jobId: number) {
 export async function updateTask(
   userId: string,
   id: number,
-  updates: UpdateTaskInput
+  updates: UpdateTaskInput,
+  options: { includeAll?: boolean; actorRole?: string } = {}
 ) {
-  const existingTask = await getTaskById(userId, id);
+  const existingTask = await getTaskById(userId, id, {
+    includeAll: options.includeAll,
+  });
 
   const keys = Object.keys(updates) as (keyof UpdateTaskInput)[];
   if (keys.length === 0) {
     throw new Error('No fields to update');
+  }
+
+  if ('assigned_to' in updates) {
+    await validateAssignee(updates.assigned_to, userId, options.actorRole);
   }
 
   if ('lead_id' in updates || 'job_id' in updates) {
@@ -526,7 +672,7 @@ export async function updateTask(
   }
 
   const setParts: string[] = [];
-  const values: any[] = [userId, id];
+  const values: any[] = [id];
 
   for (const key of keys) {
     let value = updates[key];
@@ -549,10 +695,16 @@ export async function updateTask(
 
   setParts.push(`updated_at = CURRENT_TIMESTAMP`);
 
+  let whereClause = 'id = $1';
+  if (!options.includeAll) {
+    values.push(userId);
+    whereClause += ` AND user_id = $${values.length}`;
+  }
+
   const sql = `
     UPDATE tasks
     SET ${setParts.join(', ')}
-    WHERE user_id = $1 AND id = $2
+    WHERE ${whereClause}
     RETURNING *;
   `;
 
@@ -617,7 +769,9 @@ export async function updateTask(
     }
   }
 
-  const fullUpdatedTask = await getTaskById(userId, updatedTask.id);
+  const fullUpdatedTask = await getTaskById(userId, updatedTask.id, {
+    includeAll: options.includeAll,
+  });
 
   if (
     existingTask.status !== fullUpdatedTask.status &&
@@ -637,12 +791,25 @@ export async function updateTask(
   return fullUpdatedTask;
 }
 
-export async function deleteTask(userId: string, id: number) {
-  const existingTask = await getTaskById(userId, id);
+export async function deleteTask(
+  userId: string,
+  id: number,
+  options: { includeAll?: boolean } = {}
+) {
+  const existingTask = await getTaskById(userId, id, {
+    includeAll: options.includeAll,
+  });
+
+  const params: any[] = [id];
+  let whereClause = 'id = $1';
+  if (!options.includeAll) {
+    params.push(userId);
+    whereClause += ` AND user_id = $${params.length}`;
+  }
 
   const result = await pool.query(
-    `DELETE FROM tasks WHERE user_id = $1 AND id = $2 RETURNING id`,
-    [userId, id]
+    `DELETE FROM tasks WHERE ${whereClause} RETURNING id`,
+    params
   );
 
   if (result.rowCount === 0) {

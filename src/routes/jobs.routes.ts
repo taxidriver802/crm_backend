@@ -11,21 +11,32 @@ export const jobsRouter = Router();
 
 jobsRouter.use(requireAuth);
 
+function canViewAll(role?: string) {
+  return role === 'owner' || role === 'admin';
+}
+
 // GET /jobs?status=New&q=roof&limit=50&offset=0
 jobsRouter.get(
   '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
 
     const status =
       typeof req.query.status === 'string' ? req.query.status : undefined;
+    const assignedTo =
+      typeof req.query.assignedTo === 'string'
+        ? req.query.assignedTo
+        : undefined;
     const q = typeof req.query.q === 'string' ? req.query.q : undefined;
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Number(req.query.offset || 0);
 
     const jobs = await jobsService.getJobs(userId, {
       status,
+      assignedTo,
       q,
+      includeAll,
       limit,
       offset,
     });
@@ -39,15 +50,25 @@ jobsRouter.post(
   '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const role = req.user?.role;
 
     const parsed = createJobSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ ok: false, error: parsed.error.flatten() });
     }
 
-    const job = await jobsService.createJob(userId, parsed.data);
-
-    res.status(201).json({ ok: true, job });
+    try {
+      const job = await jobsService.createJob(userId, parsed.data, { role });
+      res.status(201).json({ ok: true, job });
+    } catch (error) {
+      if (error instanceof jobsService.AssigneeNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof jobsService.AssignmentPermissionError) {
+        return res.status(403).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
   })
 );
 
@@ -56,6 +77,7 @@ jobsRouter.get(
   '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const includeAll = canViewAll(req.user?.role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -63,7 +85,7 @@ jobsRouter.get(
     }
 
     try {
-      const job = await jobsService.getJobById(userId, id);
+      const job = await jobsService.getJobById(userId, id, { includeAll });
       res.json({ ok: true, job });
     } catch (error) {
       if (error instanceof jobsService.JobNotFoundError) {
@@ -80,6 +102,7 @@ jobsRouter.get(
   '/:id/tasks',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const includeAll = canViewAll(req.user?.role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -87,7 +110,9 @@ jobsRouter.get(
     }
 
     try {
-      const tasks = await tasksService.getTasksByJobId(userId, id);
+      const tasks = await tasksService.getTasksByJobId(userId, id, {
+        includeAll,
+      });
       res.json({ ok: true, tasks });
     } catch (error) {
       if (
@@ -107,6 +132,8 @@ jobsRouter.get(
   '/:id/activity',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const role = req.user?.role;
+    const includeAll = canViewAll(role);
     const id = Number(req.params.id);
     let limit = parseInt(req.query.limit as string, 10);
     if (isNaN(limit) || limit <= 0) {
@@ -298,6 +325,8 @@ jobsRouter.patch(
   '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const role = req.user?.role;
+    const includeAll = canViewAll(role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -310,12 +339,21 @@ jobsRouter.patch(
     }
 
     try {
-      const job = await jobsService.updateJob(userId, id, parsed.data);
+      const job = await jobsService.updateJob(userId, id, parsed.data, {
+        includeAll,
+        actorRole: role,
+      });
 
       res.json({ ok: true, job });
     } catch (error) {
       if (error instanceof jobsService.JobNotFoundError) {
         return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof jobsService.AssigneeNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof jobsService.AssignmentPermissionError) {
+        return res.status(403).json({ ok: false, error: error.message });
       }
 
       throw error;
@@ -328,6 +366,7 @@ jobsRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const includeAll = canViewAll(req.user?.role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -335,7 +374,7 @@ jobsRouter.delete(
     }
 
     try {
-      const deletedId = await jobsService.deleteJob(userId, id);
+      const deletedId = await jobsService.deleteJob(userId, id, { includeAll });
       res.json({ ok: true, deletedId });
     } catch (error) {
       if (error instanceof jobsService.JobNotFoundError) {

@@ -39,6 +39,7 @@ CREATE INDEX IF NOT EXISTS idx_users_invite_expires_at ON users (invite_expires_
 CREATE TABLE IF NOT EXISTS leads (
   id SERIAL PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  assigned_to UUID REFERENCES users (id) ON DELETE SET NULL,
   first_name TEXT NOT NULL,
   last_name TEXT NOT NULL,
   email TEXT,
@@ -52,7 +53,12 @@ CREATE TABLE IF NOT EXISTS leads (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE leads
+ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users (id) ON DELETE SET NULL;
+
 CREATE INDEX IF NOT EXISTS idx_leads_user_id ON leads (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_leads_assigned_to ON leads (assigned_to);
 
 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status);
 
@@ -67,6 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_leads_name ON leads (last_name, first_name);
 CREATE TABLE IF NOT EXISTS jobs (
   id SERIAL PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  assigned_to UUID REFERENCES users (id) ON DELETE SET NULL,
   lead_id INTEGER REFERENCES leads (id) ON DELETE SET NULL,
   title TEXT NOT NULL,
   description TEXT,
@@ -76,7 +83,12 @@ CREATE TABLE IF NOT EXISTS jobs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE jobs
+ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users (id) ON DELETE SET NULL;
+
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_assigned_to ON jobs (assigned_to);
 
 CREATE INDEX IF NOT EXISTS idx_jobs_lead_id ON jobs (lead_id);
 
@@ -116,6 +128,7 @@ CREATE INDEX IF NOT EXISTS idx_job_activity_created_at ON job_activity (created_
 CREATE TABLE IF NOT EXISTS tasks (
   id SERIAL PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  assigned_to UUID REFERENCES users (id) ON DELETE SET NULL,
   lead_id INTEGER REFERENCES leads (id) ON DELETE CASCADE,
   job_id INTEGER REFERENCES jobs (id) ON DELETE CASCADE,
   title TEXT NOT NULL,
@@ -136,7 +149,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   )
 );
 
+ALTER TABLE tasks
+ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users (id) ON DELETE SET NULL;
+
 CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks (assigned_to);
 
 CREATE INDEX IF NOT EXISTS idx_tasks_lead_id ON tasks (lead_id);
 
@@ -256,6 +274,55 @@ CREATE TABLE IF NOT EXISTS job_measurements (
 CREATE INDEX IF NOT EXISTS idx_job_measurements_job_id ON job_measurements (job_id);
 
 -- =========================================================
+-- NOTES
+-- User-authored communication log attached to lead or job
+-- =========================================================
+CREATE TABLE IF NOT EXISTS notes (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  entity_type TEXT NOT NULL,
+  entity_id INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT notes_entity_type_check CHECK (entity_type IN ('lead', 'job'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_entity ON notes (entity_type, entity_id);
+
+CREATE INDEX IF NOT EXISTS idx_notes_user_id ON notes (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes (created_at DESC);
+
+-- =========================================================
+-- SAVED_VIEWS
+-- User-saved filter presets for list pages
+-- =========================================================
+CREATE TABLE IF NOT EXISTS saved_views (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  entity_type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  filters JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT saved_views_entity_type_check CHECK (
+    entity_type IN ('leads', 'jobs', 'tasks')
+  )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_views_user_entity_name ON saved_views (
+  user_id,
+  entity_type,
+  lower(name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_views_user_entity ON saved_views (
+  user_id,
+  entity_type
+);
+
+-- =========================================================
 -- NOTIFICATIONS
 -- =========================================================
 CREATE TABLE IF NOT EXISTS notifications (
@@ -279,7 +346,8 @@ CREATE TABLE IF NOT EXISTS notifications (
       'FILE_UPLOADED',
       'INVITE_ACCEPTED',
       'ESTIMATE_CREATED',
-      'ESTIMATE_STATUS_CHANGED'
+      'ESTIMATE_STATUS_CHANGED',
+      'ESTIMATE_CLIENT_RESPONDED'
     )
   ),
   CONSTRAINT notifications_entity_type_check CHECK (

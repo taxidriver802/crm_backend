@@ -10,6 +10,10 @@ import type { TaskDuePreset } from '../services/tasks.service';
 
 export const tasksRouter = Router();
 
+function canViewAll(role?: string) {
+  return role === 'owner' || role === 'admin';
+}
+
 function parseDuePresetQuery(
   query: Record<string, unknown>
 ): TaskDuePreset | undefined {
@@ -35,7 +39,8 @@ tasksRouter.get(
   '/summary',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
-    const summary = await tasksService.getTaskSummary(userId);
+    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
+    const summary = await tasksService.getTaskSummary(userId, { includeAll });
 
     res.json({ ok: true, ...summary });
   })
@@ -46,11 +51,17 @@ tasksRouter.get(
   '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const role = req.user?.role;
+    const includeAll = req.query.view === 'all' && canViewAll(role);
     const q = typeof req.query.q === 'string' ? req.query.q : undefined;
     const status =
       typeof req.query.status === 'string' ? req.query.status : undefined;
     const dueBefore =
       typeof req.query.dueBefore === 'string' ? req.query.dueBefore : undefined;
+    const dateFrom =
+      typeof req.query.dateFrom === 'string' ? req.query.dateFrom : undefined;
+    const dateTo =
+      typeof req.query.dateTo === 'string' ? req.query.dateTo : undefined;
     const leadId =
       typeof req.query.leadId === 'string'
         ? Number(req.query.leadId)
@@ -60,6 +71,10 @@ tasksRouter.get(
 
     const linkedTo =
       typeof req.query.linkedTo === 'string' ? req.query.linkedTo : undefined;
+    const assignedTo =
+      typeof req.query.assignedTo === 'string'
+        ? req.query.assignedTo
+        : undefined;
 
     const duePreset = parseDuePresetQuery(req.query as Record<string, unknown>);
 
@@ -71,9 +86,13 @@ tasksRouter.get(
       leadId,
       jobId,
       dueBefore,
+      dateFrom,
+      dateTo,
       duePreset,
       q,
       linkedTo,
+      assignedTo,
+      includeAll,
       limit,
       offset,
     });
@@ -87,6 +106,7 @@ tasksRouter.post(
   '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const role = req.user?.role;
 
     const parsed = createTaskSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -94,7 +114,7 @@ tasksRouter.post(
     }
 
     try {
-      const task = await tasksService.createTask(userId, parsed.data);
+      const task = await tasksService.createTask(userId, parsed.data, { role });
       res.status(201).json({ ok: true, task });
     } catch (error) {
       if (error instanceof tasksService.LeadNotFoundError) {
@@ -103,6 +123,12 @@ tasksRouter.post(
 
       if (error instanceof tasksService.JobNotFoundError) {
         return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof tasksService.AssigneeNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof tasksService.AssignmentPermissionError) {
+        return res.status(403).json({ ok: false, error: error.message });
       }
 
       throw error;
@@ -115,6 +141,7 @@ tasksRouter.get(
   '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const includeAll = canViewAll(req.user?.role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -122,7 +149,7 @@ tasksRouter.get(
     }
 
     try {
-      const task = await tasksService.getTaskById(userId, id);
+      const task = await tasksService.getTaskById(userId, id, { includeAll });
       res.json({ ok: true, task });
     } catch (error) {
       if (error instanceof tasksService.TaskNotFoundError) {
@@ -139,6 +166,8 @@ tasksRouter.patch(
   '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const role = req.user?.role;
+    const includeAll = canViewAll(role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -151,7 +180,10 @@ tasksRouter.patch(
     }
 
     try {
-      const task = await tasksService.updateTask(userId, id, parsed.data);
+      const task = await tasksService.updateTask(userId, id, parsed.data, {
+        includeAll,
+        actorRole: role,
+      });
 
       res.json({ ok: true, task });
     } catch (error) {
@@ -166,6 +198,12 @@ tasksRouter.patch(
       if (error instanceof tasksService.JobNotFoundError) {
         return res.status(404).json({ ok: false, error: error.message });
       }
+      if (error instanceof tasksService.AssigneeNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof tasksService.AssignmentPermissionError) {
+        return res.status(403).json({ ok: false, error: error.message });
+      }
 
       throw error;
     }
@@ -177,6 +215,7 @@ tasksRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
+    const includeAll = canViewAll(req.user?.role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -184,7 +223,9 @@ tasksRouter.delete(
     }
 
     try {
-      const deletedId = await tasksService.deleteTask(userId, id);
+      const deletedId = await tasksService.deleteTask(userId, id, {
+        includeAll,
+      });
       res.json({ ok: true, deletedId });
     } catch (error) {
       if (error instanceof tasksService.TaskNotFoundError) {

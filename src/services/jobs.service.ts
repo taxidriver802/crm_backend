@@ -22,14 +22,31 @@ export class JobOwnershipError extends Error {
   }
 }
 
+export class AssigneeNotFoundError extends Error {
+  constructor(message = 'Assignee not found') {
+    super(message);
+    this.name = 'AssigneeNotFoundError';
+  }
+}
+
+export class AssignmentPermissionError extends Error {
+  constructor(message = 'Not allowed to assign to that user') {
+    super(message);
+    this.name = 'AssignmentPermissionError';
+  }
+}
+
 export type GetJobsFilters = {
   status?: string;
+  assignedTo?: string;
   q?: string;
+  includeAll?: boolean;
   limit?: number;
   offset?: number;
 };
 
 export type CreateJobInput = {
+  assigned_to?: string | null;
   lead_id: number;
   title: string;
   description?: string | null;
@@ -64,6 +81,16 @@ function normalizeJob(row: any) {
     address: row.address,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    assigned_to: row.assigned_to,
+    assigned_user:
+      row.assigned_to != null
+        ? {
+            id: row.assigned_to,
+            first_name: row.assigned_first_name ?? null,
+            last_name: row.assigned_last_name ?? null,
+            email: row.assigned_email ?? null,
+          }
+        : null,
     lead:
       row.lead_id != null
         ? {
@@ -80,14 +107,50 @@ const JOB_SELECT = `
   SELECT
     j.*,
     l.first_name AS lead_first_name,
-    l.last_name AS lead_last_name
+    l.last_name AS lead_last_name,
+    au.first_name AS assigned_first_name,
+    au.last_name AS assigned_last_name,
+    au.email AS assigned_email
   FROM jobs j
   LEFT JOIN leads l ON l.id = j.lead_id
+  LEFT JOIN users au ON au.id = j.assigned_to
 `;
 
+async function validateAssignee(
+  assignedTo: string | null | undefined,
+  actorUserId: string,
+  actorRole?: string
+) {
+  if (assignedTo == null) return;
+
+  const canAssignTeam = actorRole === 'owner' || actorRole === 'admin';
+  if (!canAssignTeam && assignedTo !== actorUserId) {
+    throw new AssignmentPermissionError();
+  }
+
+  const assignee = await pool.query(
+    `
+    SELECT id
+    FROM users
+    WHERE id = $1 AND status = 'active'
+    LIMIT 1
+    `,
+    [assignedTo]
+  );
+
+  if (assignee.rowCount === 0) {
+    throw new AssigneeNotFoundError();
+  }
+}
+
 export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
-  const params: any[] = [userId];
-  const where: string[] = ['j.user_id = $1'];
+  const params: any[] = [];
+  const where: string[] = [];
+
+  if (!filters.includeAll) {
+    params.push(userId);
+    where.push(`j.user_id = $${params.length}`);
+  }
 
   if (filters.status) {
     params.push(filters.status);
@@ -102,12 +165,19 @@ export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
     );
   }
 
+  if (filters.assignedTo === 'unassigned') {
+    where.push(`j.assigned_to IS NULL`);
+  } else if (filters.assignedTo) {
+    params.push(filters.assignedTo);
+    where.push(`j.assigned_to = $${params.length}`);
+  }
+
   params.push(filters.limit ?? 50);
   params.push(filters.offset ?? 0);
 
   const sql = `
     ${JOB_SELECT}
-    WHERE ${where.join(' AND ')}
+    WHERE ${where.length > 0 ? where.join(' AND ') : 'TRUE'}
     ORDER BY j.created_at DESC
     LIMIT $${params.length - 1}
     OFFSET $${params.length};
@@ -117,14 +187,25 @@ export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
   return result.rows.map(normalizeJob);
 }
 
-export async function getJobById(userId: string, id: number) {
+export async function getJobById(
+  userId: string,
+  id: number,
+  options: { includeAll?: boolean } = {}
+) {
+  const params: any[] = [id];
+  const where: string[] = ['j.id = $1'];
+  if (!options.includeAll) {
+    params.push(userId);
+    where.push(`j.user_id = $${params.length}`);
+  }
+
   const result = await pool.query(
     `
     ${JOB_SELECT}
-    WHERE j.user_id = $1 AND j.id = $2
+    WHERE ${where.join(' AND ')}
     LIMIT 1
     `,
-    [userId, id]
+    params
   );
 
   if (result.rowCount === 0) {
@@ -134,17 +215,31 @@ export async function getJobById(userId: string, id: number) {
   return normalizeJob(result.rows[0]);
 }
 
-export async function createJob(userId: string, input: CreateJobInput) {
+export async function createJob(
+  userId: string,
+  input: CreateJobInput,
+  actor: { role?: string } = {}
+) {
   await ensureLeadBelongsToUser(input.lead_id, userId);
+  await validateAssignee(input.assigned_to, userId, actor.role);
 
   const result = await pool.query(
     `
-    INSERT INTO jobs (user_id, lead_id, title, description, status, address)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO jobs (
+      user_id,
+      assigned_to,
+      lead_id,
+      title,
+      description,
+      status,
+      address
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     RETURNING *;
     `,
     [
       userId,
+      input.assigned_to ?? null,
       input.lead_id,
       input.title,
       input.description ?? null,
@@ -171,15 +266,20 @@ export async function createJob(userId: string, input: CreateJobInput) {
     },
   });
 
-  return getJobById(userId, job.id);
+  return getJobById(userId, job.id, {
+    includeAll: actor.role === 'owner' || actor.role === 'admin',
+  });
 }
 
 export async function updateJob(
   userId: string,
   id: number,
-  updates: UpdateJobInput & { lead_id?: number | null }
+  updates: UpdateJobInput & { lead_id?: number | null },
+  options: { includeAll?: boolean; actorRole?: string } = {}
 ) {
-  const existingJob = await getJobById(userId, id);
+  const existingJob = await getJobById(userId, id, {
+    includeAll: options.includeAll,
+  });
 
   if ('lead_id' in updates) {
     if (updates.lead_id !== existingJob.lead_id) {
@@ -197,8 +297,12 @@ export async function updateJob(
     throw new Error('No fields to update');
   }
 
+  if ('assigned_to' in updates) {
+    await validateAssignee(updates.assigned_to, userId, options.actorRole);
+  }
+
   const setParts: string[] = [];
-  const values: any[] = [userId, id];
+  const values: any[] = [id];
 
   for (const key of keys) {
     values.push(updates[key] ?? null);
@@ -207,10 +311,16 @@ export async function updateJob(
 
   setParts.push(`updated_at = CURRENT_TIMESTAMP`);
 
+  let whereClause = 'id = $1';
+  if (!options.includeAll) {
+    values.push(userId);
+    whereClause += ` AND user_id = $${values.length}`;
+  }
+
   const sql = `
     UPDATE jobs
     SET ${setParts.join(', ')}
-    WHERE user_id = $1 AND id = $2
+    WHERE ${whereClause}
     RETURNING *;
   `;
 
@@ -239,13 +349,24 @@ export async function updateJob(
     });
   }
 
-  return getJobById(userId, updatedJob.id);
+  return getJobById(userId, updatedJob.id, { includeAll: options.includeAll });
 }
 
-export async function deleteJob(userId: string, id: number) {
+export async function deleteJob(
+  userId: string,
+  id: number,
+  options: { includeAll?: boolean } = {}
+) {
+  const params: any[] = [id];
+  let whereClause = 'id = $1';
+  if (!options.includeAll) {
+    params.push(userId);
+    whereClause += ` AND user_id = $${params.length}`;
+  }
+
   const result = await pool.query(
-    `DELETE FROM jobs WHERE user_id = $1 AND id = $2 RETURNING id`,
-    [userId, id]
+    `DELETE FROM jobs WHERE ${whereClause} RETURNING id`,
+    params
   );
 
   if (result.rowCount === 0) {

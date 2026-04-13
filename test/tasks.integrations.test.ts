@@ -352,4 +352,84 @@ describe('Tasks integration', () => {
     expect(res.body.tasks).toHaveLength(1);
     expect(res.body.tasks[0].title).toBe('Job overdue');
   });
+
+  it('GET /tasks supports dateFrom/dateTo range filtering', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+
+    const inMay = new Date('2026-05-15T12:00:00.000Z').toISOString();
+    const inJune = new Date('2026-06-10T12:00:00.000Z').toISOString();
+
+    await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'May task',
+      due_date: inMay,
+      status: 'Pending',
+    });
+
+    await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'June task',
+      due_date: inJune,
+      status: 'Pending',
+    });
+
+    const res = await request(app)
+      .get('/tasks')
+      .query({
+        dateFrom: '2026-05-01T00:00:00.000Z',
+        dateTo: '2026-05-31T23:59:59.999Z',
+      })
+      .set(headers);
+
+    expect(res.status).toBe(200);
+    expect(res.body.tasks).toHaveLength(1);
+    expect(res.body.tasks[0].title).toBe('May task');
+  });
+
+  it('owner can view team tasks with view=all', async () => {
+    const owner = await createAuthedUser('owner');
+    const agent = await createAuthedUser('agent');
+
+    const lead = await createLead(agent.headers);
+    await request(app).post('/tasks').set(agent.headers).send({
+      lead_id: lead.id,
+      title: 'Agent owned task',
+      status: 'Pending',
+    });
+
+    const ownerMine = await request(app).get('/tasks').set(owner.headers);
+    expect(ownerMine.status).toBe(200);
+    expect(ownerMine.body.tasks).toHaveLength(0);
+
+    const ownerTeam = await request(app)
+      .get('/tasks')
+      .query({ view: 'all' })
+      .set(owner.headers);
+    expect(ownerTeam.status).toBe(200);
+    expect(
+      ownerTeam.body.tasks.some(
+        (task: { title: string }) => task.title === 'Agent owned task'
+      )
+    ).toBe(true);
+  });
+
+  it('agent cannot assign task to other user', async () => {
+    const agent = await createAuthedUser('agent');
+    const teammate = await createAuthedUser('agent');
+    const lead = await createLead(agent.headers);
+
+    const taskRes = await request(app).post('/tasks').set(agent.headers).send({
+      lead_id: lead.id,
+      title: 'Assignment protected task',
+      status: 'Pending',
+    });
+
+    const patchRes = await request(app)
+      .patch(`/tasks/${taskRes.body.task.id}`)
+      .set(agent.headers)
+      .send({ assigned_to: teammate.user.id });
+
+    expect(patchRes.status).toBe(403);
+  });
 });
