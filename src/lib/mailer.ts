@@ -7,7 +7,11 @@ const smtpUser = process.env.SMTP_USER;
 const smtpPass = process.env.SMTP_PASS;
 const mailFrom = process.env.MAIL_FROM;
 
-if (!smtpHost || !smtpUser || !smtpPass || !mailFrom) {
+const SMTP_TIMEOUT_MS = Number(process.env.SMTP_TIMEOUT_MS || 8000);
+
+const smtpConfigured = Boolean(smtpHost && smtpUser && smtpPass && mailFrom);
+
+if (!smtpConfigured) {
   console.warn(
     '[mailer] Missing SMTP configuration. Invite emails will fail until env vars are set.'
   );
@@ -17,10 +21,15 @@ export const transporter = nodemailer.createTransport({
   host: smtpHost,
   port: smtpPort,
   secure: smtpSecure,
-  auth: {
-    user: smtpUser,
-    pass: smtpPass,
-  },
+  auth: smtpConfigured
+    ? {
+        user: smtpUser,
+        pass: smtpPass,
+      }
+    : undefined,
+  connectionTimeout: SMTP_TIMEOUT_MS,
+  greetingTimeout: SMTP_TIMEOUT_MS,
+  socketTimeout: SMTP_TIMEOUT_MS,
 });
 
 export async function sendMail({
@@ -34,6 +43,10 @@ export async function sendMail({
   html: string;
   text: string;
 }) {
+  if (!smtpConfigured) {
+    throw new Error('SMTP is not configured');
+  }
+
   return transporter.sendMail({
     from: mailFrom,
     to,
