@@ -12,6 +12,7 @@ import {
 } from '../validators/auth.schemas';
 
 import jwt, { type Secret, type SignOptions } from 'jsonwebtoken';
+import { authCookieOptions } from '../lib/authCookies';
 
 export const authRouter = Router();
 
@@ -69,13 +70,7 @@ authRouter.post(
     const user = result.rows[0];
     const token = signToken(user.id, user.email, user.role);
 
-    res.cookie('access_token', token, {
-      httpOnly: true,
-      secure: true, // MUST be true for https (ngrok)
-      sameSite: 'none', // MUST be none for cross-site
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie('access_token', token, authCookieOptions());
 
     res.status(201).json({ ok: true, user });
   })
@@ -121,13 +116,7 @@ authRouter.post(
 
     const token = signToken(user.id, user.email, user.role);
 
-    res.cookie('access_token', token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie('access_token', token, authCookieOptions());
 
     res.json({
       ok: true,
@@ -235,13 +224,7 @@ authRouter.post(
 
     const tokenJwt = signToken(authUser.id, authUser.email, authUser.role);
 
-    res.cookie('access_token', tokenJwt, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie('access_token', tokenJwt, authCookieOptions());
 
     res.status(200).json({
       ok: true,
@@ -269,12 +252,7 @@ authRouter.get(
 );
 
 authRouter.post('/logout', (_req, res) => {
-  res.clearCookie('access_token', {
-    httpOnly: true,
-    secure: true,
-    sameSite: 'none',
-    path: '/',
-  });
+  res.clearCookie('access_token', authCookieOptions());
 
   res.json({ ok: true });
 });

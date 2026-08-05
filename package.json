@@ -18,7 +18,8 @@
     "db:patch-phase12-invoicing": "node scripts/apply-phase12-invoicing-patch.js",
     "db:patch-phase13-automation": "node scripts/apply-phase13-automation-patch.js",
     "db:patch-phase13-portal": "node scripts/apply-phase13-portal-patch.js",
-    "db:patch-phase14-events": "node scripts/apply-phase14-events-patch.js"
+    "db:patch-phase14-events": "node scripts/apply-phase14-events-patch.js",
+    "db:seed-demo": "node scripts/seed-demo-data.js"
   },
   "keywords": [],
   "author": "",
@@ -34,7 +35,7 @@
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.10.1",
     "multer": "^2.1.1",
-    "nodemailer": "^8.0.3",
+    "nodemailer": "^9.0.4",
     "pdf-lib": "^1.17.1",
     "pg": "^8.19.0",
     "uuid": "^13.0.0",
