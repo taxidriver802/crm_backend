@@ -1,4 +1,4 @@
-import { PDFDocument, StandardFonts, rgb, type PDFFont } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 
 type LineItem = {
   name: string;
@@ -26,8 +26,25 @@ type InvoicePdfInput = {
 
 const PAGE_W = 612;
 const PAGE_H = 792;
-const MARGIN = 50;
-const MAX_W = PAGE_W - MARGIN * 2;
+const MARGIN = 48;
+const CONTENT_W = PAGE_W - MARGIN * 2;
+
+// App accent (#2563eb) — readable on white print
+const ACCENT = rgb(0.145, 0.388, 0.922);
+const ACCENT_SOFT = rgb(0.925, 0.937, 0.98);
+const INK = rgb(0.12, 0.14, 0.18);
+const MUTED = rgb(0.42, 0.45, 0.5);
+const RULE = rgb(0.86, 0.88, 0.9);
+const WHITE = rgb(1, 1, 1);
+
+// Table column layout (left edges within content)
+const COL = {
+  qty: MARGIN,
+  desc: MARGIN + 48,
+  rate: MARGIN + CONTENT_W - 160,
+  amount: MARGIN + CONTENT_W - 72,
+};
+const DESC_W = COL.rate - COL.desc - 12;
 
 function money(n: number) {
   return n.toLocaleString('en-US', {
@@ -52,14 +69,15 @@ function wrapLines(
   size: number,
   maxWidth: number
 ): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
+  const words = String(text || '')
+    .split(/\s+/)
+    .filter(Boolean);
   if (words.length === 0) return [''];
   const lines: string[] = [];
   let current = '';
   for (const word of words) {
     const test = current ? `${current} ${word}` : word;
-    const w = font.widthOfTextAtSize(test, size);
-    if (w > maxWidth && current) {
+    if (font.widthOfTextAtSize(test, size) > maxWidth && current) {
       lines.push(current);
       current = word;
     } else {
@@ -70,6 +88,19 @@ function wrapLines(
   return lines;
 }
 
+function drawRight(
+  page: PDFPage,
+  text: string,
+  xRight: number,
+  y: number,
+  size: number,
+  font: PDFFont,
+  color = INK
+) {
+  const w = font.widthOfTextAtSize(text, size);
+  page.drawText(text, { x: xRight - w, y, size, font, color });
+}
+
 export async function buildInvoicePdfBuffer(
   data: InvoicePdfInput
 ): Promise<Buffer> {
@@ -77,100 +108,367 @@ export async function buildInvoicePdfBuffer(
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
+  const pages: PDFPage[] = [];
   let page = pdfDoc.addPage([PAGE_W, PAGE_H]);
-  let fromTop = MARGIN;
+  pages.push(page);
+  /** Cursor from top of page (user space). */
+  let fromTop = 0;
 
-  function ensurePage(extra: number) {
-    if (fromTop + extra > PAGE_H - MARGIN) {
-      page = pdfDoc.addPage([PAGE_W, PAGE_H]);
-      fromTop = MARGIN;
-    }
+  function newPage() {
+    page = pdfDoc.addPage([PAGE_W, PAGE_H]);
+    pages.push(page);
+    fromTop = MARGIN;
   }
 
-  function baselineY(size: number) {
+  function yFor(size: number) {
     return PAGE_H - fromTop - size;
   }
 
-  function drawLine(text: string, size: number, bold = false, gray = false) {
-    const f = bold ? fontBold : font;
-    const color = gray ? rgb(0.27, 0.27, 0.27) : rgb(0, 0, 0);
-    const lines = wrapLines(text, f, size, MAX_W);
-    for (const ln of lines) {
-      ensurePage(size + 6);
-      page.drawText(ln, {
-        x: MARGIN,
-        y: baselineY(size),
-        size,
-        font: f,
-        color,
-      });
-      fromTop += size + 4;
+  function drawTableHeader() {
+    const rowH = 22;
+    page.drawRectangle({
+      x: MARGIN,
+      y: PAGE_H - fromTop - rowH,
+      width: CONTENT_W,
+      height: rowH,
+      color: ACCENT_SOFT,
+    });
+    const labelY = PAGE_H - fromTop - 15;
+    page.drawText('QTY', {
+      x: COL.qty,
+      y: labelY,
+      size: 8,
+      font: fontBold,
+      color: MUTED,
+    });
+    page.drawText('DESCRIPTION', {
+      x: COL.desc,
+      y: labelY,
+      size: 8,
+      font: fontBold,
+      color: MUTED,
+    });
+    drawRight(page, 'RATE', COL.rate + 56, labelY, 8, fontBold, MUTED);
+    drawRight(page, 'AMOUNT', PAGE_W - MARGIN, labelY, 8, fontBold, MUTED);
+    fromTop += rowH + 2;
+  }
+
+  /** Break to a new page when needed; optionally repeat the table header. */
+  function ensureSpace(needed: number, repeatTableHeader = false) {
+    if (fromTop + needed > PAGE_H - MARGIN - 28) {
+      newPage();
+      if (repeatTableHeader) drawTableHeader();
     }
   }
 
-  drawLine('INVOICE', 20, true);
-  fromTop += 2;
-  drawLine(data.invoice_number, 12, true);
-  fromTop += 4;
-  drawLine(`Status: ${data.status}`, 10, false, true);
-  drawLine(`Due: ${fmtDate(data.due_date)}`, 10, false, true);
-  if (data.paid_at) {
-    drawLine(`Paid: ${fmtDate(data.paid_at)}`, 10, false, true);
+  // ── Header band ──────────────────────────────────────
+  const headerH = 72;
+  page.drawRectangle({
+    x: 0,
+    y: PAGE_H - headerH,
+    width: PAGE_W,
+    height: headerH,
+    color: ACCENT,
+  });
+  page.drawText('INVOICE', {
+    x: MARGIN,
+    y: PAGE_H - 42,
+    size: 22,
+    font: fontBold,
+    color: WHITE,
+  });
+  drawRight(
+    page,
+    data.invoice_number,
+    PAGE_W - MARGIN,
+    PAGE_H - 36,
+    14,
+    fontBold,
+    WHITE
+  );
+  drawRight(
+    page,
+    data.status.toUpperCase(),
+    PAGE_W - MARGIN,
+    PAGE_H - 54,
+    9,
+    font,
+    rgb(0.85, 0.9, 1)
+  );
+  fromTop = headerH + 28;
+
+  // ── Meta: Bill to | Dates ────────────────────────────
+  const metaTop = fromTop;
+  page.drawText('BILL TO', {
+    x: MARGIN,
+    y: yFor(8),
+    size: 8,
+    font: fontBold,
+    color: MUTED,
+  });
+  fromTop += 14;
+
+  const client = data.lead_name || '—';
+  page.drawText(client, {
+    x: MARGIN,
+    y: yFor(11),
+    size: 11,
+    font: fontBold,
+    color: INK,
+  });
+  fromTop += 16;
+
+  page.drawText(data.job_title, {
+    x: MARGIN,
+    y: yFor(10),
+    size: 10,
+    font,
+    color: INK,
+  });
+  fromTop += 14;
+
+  if (data.job_address) {
+    for (const ln of wrapLines(data.job_address, font, 9, CONTENT_W * 0.5)) {
+      page.drawText(ln, {
+        x: MARGIN,
+        y: yFor(9),
+        size: 9,
+        font,
+        color: MUTED,
+      });
+      fromTop += 12;
+    }
   }
-  fromTop += 8;
 
-  drawLine('Job', 11, true);
-  drawLine(data.job_title, 10);
-  if (data.job_address) drawLine(data.job_address, 10);
-  if (data.lead_name) drawLine(`Client: ${data.lead_name}`, 10);
-  fromTop += 8;
+  const leftBottom = fromTop;
 
-  drawLine('Line items', 11, true);
-  fromTop += 4;
+  // Right column dates (aligned to meta block top)
+  fromTop = metaTop;
+  const rightX = MARGIN + CONTENT_W * 0.55;
+  const labelSize = 8;
+  const valueSize = 10;
 
-  for (const line of data.line_items) {
-    drawLine(`${line.name} — ${money(line.line_total)}`, 10, true);
-    if (line.description) drawLine(line.description, 9, false, true);
-    drawLine(
-      `Qty ${line.quantity} × ${money(line.unit_price)}`,
-      9,
-      false,
-      true
-    );
-    fromTop += 6;
+  const metaRows: [string, string][] = [
+    ['DUE DATE', fmtDate(data.due_date)],
+    ['PAID', data.paid_at ? fmtDate(data.paid_at) : '—'],
+    ['STATUS', data.status],
+  ];
+
+  for (const [label, value] of metaRows) {
+    page.drawText(label, {
+      x: rightX,
+      y: yFor(labelSize),
+      size: labelSize,
+      font: fontBold,
+      color: MUTED,
+    });
+    fromTop += 12;
+    page.drawText(value, {
+      x: rightX,
+      y: yFor(valueSize),
+      size: valueSize,
+      font,
+      color: INK,
+    });
+    fromTop += 18;
   }
 
+  fromTop = Math.max(fromTop, leftBottom) + 16;
+
+  // Divider
+  page.drawRectangle({
+    x: MARGIN,
+    y: PAGE_H - fromTop,
+    width: CONTENT_W,
+    height: 1,
+    color: RULE,
+  });
+  fromTop += 18;
+
+  // ── Line items table ─────────────────────────────────
+  drawTableHeader();
+
+  if (data.line_items.length === 0) {
+    ensureSpace(20, true);
+    page.drawText('No line items.', {
+      x: COL.desc,
+      y: yFor(10),
+      size: 10,
+      font,
+      color: MUTED,
+    });
+    fromTop += 20;
+  } else {
+    for (const item of data.line_items) {
+      const nameLines = wrapLines(item.name, fontBold, 10, DESC_W);
+      const descLines = item.description
+        ? wrapLines(item.description, font, 8, DESC_W)
+        : [];
+      const rowContentH =
+        nameLines.length * 13 + descLines.length * 11 + 10;
+
+      ensureSpace(rowContentH + 4, true);
+
+      const rowStart = fromTop;
+      let cursor = fromTop + 2;
+
+      // Qty
+      page.drawText(String(item.quantity), {
+        x: COL.qty,
+        y: PAGE_H - cursor - 10,
+        size: 10,
+        font,
+        color: INK,
+      });
+
+      // Description
+      for (const ln of nameLines) {
+        page.drawText(ln, {
+          x: COL.desc,
+          y: PAGE_H - cursor - 10,
+          size: 10,
+          font: fontBold,
+          color: INK,
+        });
+        cursor += 13;
+      }
+      for (const ln of descLines) {
+        page.drawText(ln, {
+          x: COL.desc,
+          y: PAGE_H - cursor - 8,
+          size: 8,
+          font,
+          color: MUTED,
+        });
+        cursor += 11;
+      }
+
+      // Rate & amount — top-aligned with first name line
+      const valueY = PAGE_H - rowStart - 12;
+      drawRight(
+        page,
+        money(item.unit_price),
+        COL.rate + 56,
+        valueY,
+        10,
+        font,
+        INK
+      );
+      drawRight(
+        page,
+        money(item.line_total),
+        PAGE_W - MARGIN,
+        valueY,
+        10,
+        fontBold,
+        INK
+      );
+
+      fromTop = Math.max(cursor, rowStart + 18) + 6;
+
+      // Row rule
+      page.drawRectangle({
+        x: MARGIN,
+        y: PAGE_H - fromTop,
+        width: CONTENT_W,
+        height: 0.5,
+        color: RULE,
+      });
+      fromTop += 8;
+    }
+  }
+
+  // ── Totals ───────────────────────────────────────────
+  const totalsW = 220;
+  const totalsX = PAGE_W - MARGIN - totalsW;
+  const totalsNeeded = 90 + (data.notes ? 40 : 0);
+  ensureSpace(totalsNeeded);
   fromTop += 8;
-  const rightAlign = (
+
+  const drawTotalRow = (
     label: string,
     value: string,
-    size: number,
-    bold = false
+    opts: { bold?: boolean; emphasize?: boolean } = {}
   ) => {
-    const text = `${label}${value}`;
-    const f = bold ? fontBold : font;
-    const tw = f.widthOfTextAtSize(text, size);
-    ensurePage(size + 6);
-    page.drawText(text, {
-      x: PAGE_W - MARGIN - tw,
-      y: baselineY(size),
+    const size = opts.emphasize ? 12 : 10;
+    const f = opts.bold || opts.emphasize ? fontBold : font;
+    const color = opts.emphasize ? ACCENT : INK;
+    if (opts.emphasize) {
+      page.drawRectangle({
+        x: totalsX - 8,
+        y: PAGE_H - fromTop - size - 8,
+        width: totalsW + 8,
+        height: size + 14,
+        color: ACCENT_SOFT,
+      });
+    }
+    page.drawText(label, {
+      x: totalsX,
+      y: yFor(size),
       size,
       font: f,
-      color: rgb(0, 0, 0),
+      color: opts.emphasize ? ACCENT : MUTED,
     });
-    fromTop += size + 4;
+    drawRight(page, value, PAGE_W - MARGIN, yFor(size), size, f, color);
+    fromTop += size + (opts.emphasize ? 14 : 8);
   };
 
-  rightAlign('Subtotal: ', money(data.subtotal), 10);
-  rightAlign('Tax: ', money(data.tax_total), 10);
-  rightAlign('Discounts: ', money(data.discount_total), 10);
-  rightAlign('Total Due: ', money(data.grand_total), 12, true);
-
-  if (data.notes) {
-    fromTop += 12;
-    drawLine('Notes', 11, true);
-    drawLine(data.notes, 10);
+  drawTotalRow('Subtotal', money(data.subtotal));
+  drawTotalRow('Tax', money(data.tax_total));
+  if (data.discount_total) {
+    drawTotalRow('Discounts', `-${money(data.discount_total)}`);
   }
+  fromTop += 4;
+  drawTotalRow('Total Due', money(data.grand_total), {
+    bold: true,
+    emphasize: true,
+  });
+
+  // ── Notes ────────────────────────────────────────────
+  if (data.notes) {
+    fromTop += 20;
+    ensureSpace(40);
+    page.drawText('NOTES', {
+      x: MARGIN,
+      y: yFor(8),
+      size: 8,
+      font: fontBold,
+      color: MUTED,
+    });
+    fromTop += 14;
+    for (const ln of wrapLines(data.notes, font, 9, CONTENT_W)) {
+      ensureSpace(14);
+      page.drawText(ln, {
+        x: MARGIN,
+        y: yFor(9),
+        size: 9,
+        font,
+        color: INK,
+      });
+      fromTop += 12;
+    }
+  }
+
+  // ── Footers on every page ────────────────────────────
+  const totalPages = pages.length;
+  pages.forEach((p, i) => {
+    p.drawRectangle({
+      x: MARGIN,
+      y: 28,
+      width: CONTENT_W,
+      height: 0.5,
+      color: RULE,
+    });
+    p.drawText(`Invoice ${data.invoice_number}`, {
+      x: MARGIN,
+      y: 16,
+      size: 8,
+      font,
+      color: MUTED,
+    });
+    const pageLabel = `Page ${i + 1} of ${totalPages}`;
+    drawRight(p, pageLabel, PAGE_W - MARGIN, 16, 8, font, MUTED);
+  });
 
   const bytes = await pdfDoc.save();
   return Buffer.from(bytes);

@@ -32,13 +32,19 @@ import { productMetricsRouter } from './routes/productMetrics.routes';
 
 export const app = express();
 
+const corsOrigins = [
+  env.frontendUrl,
+  'https://unusuriously-interlocutory-dann.ngrok-free.dev',
+  ...(process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+];
+
 app.use(helmet());
 app.use(
   cors({
-    origin: [
-      env.frontendUrl,
-      'https://unusuriously-interlocutory-dann.ngrok-free.dev',
-    ],
+    origin: corsOrigins,
     credentials: true,
   })
 );
