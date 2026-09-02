@@ -1,3 +1,5 @@
+import { PRINT_THEME } from './print-theme';
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, '&amp;')
@@ -40,15 +42,17 @@ export function buildInviteEmail({
   ].join('\n');
 
   const safeInviteUrl = inviteUrl.replace(/&/g, '&amp;');
+  const t = PRINT_THEME;
 
   const html = `
-  <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827; background: #f8fafc; padding: 32px;">
-    <div style="max-width: 600px; margin: 0 auto; background: white; border: 1px solid #e5e7eb; border-radius: 16px; overflow: hidden;">
+  <div style="font-family: Arial, sans-serif; line-height: 1.6; color: ${t.ink}; background: ${t.paper}; padding: 32px;">
+    <div style="max-width: 600px; margin: 0 auto; background: ${t.surface}; border: 1px solid ${t.rule}; border-radius: 10px; overflow: hidden;">
+      <div style="height: 4px; background: ${t.accent};"></div>
       <div style="padding: 24px 24px 8px;">
-        <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7280;">
+        <div style="font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: ${t.muted};">
           Rooftop Realty CRM
         </div>
-        <h1 style="margin: 8px 0 0; font-size: 24px; color: #111827;">
+        <h1 style="margin: 8px 0 0; font-size: 24px; color: ${t.ink};">
           You’ve been invited
         </h1>
       </div>
@@ -60,12 +64,12 @@ export function buildInviteEmail({
 
         <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin: 24px 0;">
           <tr>
-            <td style="border-radius: 10px; background: #111827; text-align: center;">
+            <td style="border-radius: 10px; background: ${t.accent}; text-align: center;">
               <a
                 href="${safeInviteUrl}"
                 target="_blank"
                 rel="noopener noreferrer"
-                style="background: #111827; border: 1px solid #111827; border-radius: 10px; color: #ffffff; display: inline-block; font-size: 14px; font-weight: 600; line-height: 1; padding: 14px 20px; text-decoration: none;"
+                style="background: ${t.accent}; border: 1px solid ${t.accent}; border-radius: 10px; color: ${t.onAccent}; display: inline-block; font-size: 14px; font-weight: 600; line-height: 1; padding: 14px 20px; text-decoration: none;"
               >
                 Set Up Your Account
               </a>
@@ -73,17 +77,17 @@ export function buildInviteEmail({
           </tr>
         </table>
 
-        <p style="font-size: 14px; color: #4b5563;">
+        <p style="font-size: 14px; color: ${t.muted};">
           If the button does not work, use this link:
         </p>
 
         <p style="font-size: 14px; word-break: break-all;">
-          <a href="${safeInviteUrl}" target="_blank" rel="noopener noreferrer" style="color: #2563eb; text-decoration: underline;">
+          <a href="${safeInviteUrl}" target="_blank" rel="noopener noreferrer" style="color: ${t.accent}; text-decoration: underline;">
             ${safeInviteUrl}
           </a>
         </p>
 
-        <p style="font-size: 13px; color: #6b7280; margin-top: 24px;">
+        <p style="font-size: 13px; color: ${t.muted}; margin-top: 24px;">
           This invite link expires in 24 hours and can only be used once.
         </p>
       </div>

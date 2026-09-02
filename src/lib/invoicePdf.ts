@@ -1,4 +1,16 @@
-import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
+import { PDFDocument, StandardFonts, type PDFPage } from 'pdf-lib';
+import { PRINT_PDF } from './print-theme';
+import {
+  PAGE_W,
+  PAGE_H,
+  MARGIN,
+  CONTENT_W,
+  COL,
+  DESC_W,
+  money,
+  wrapLines,
+  drawRight,
+} from './pdf-layout';
 
 type LineItem = {
   name: string;
@@ -24,36 +36,6 @@ type InvoicePdfInput = {
   line_items: LineItem[];
 };
 
-const PAGE_W = 612;
-const PAGE_H = 792;
-const MARGIN = 48;
-const CONTENT_W = PAGE_W - MARGIN * 2;
-
-// App accent (#2563eb) — readable on white print
-const ACCENT = rgb(0.145, 0.388, 0.922);
-const ACCENT_SOFT = rgb(0.925, 0.937, 0.98);
-const INK = rgb(0.12, 0.14, 0.18);
-const MUTED = rgb(0.42, 0.45, 0.5);
-const RULE = rgb(0.86, 0.88, 0.9);
-const WHITE = rgb(1, 1, 1);
-
-// Table column layout (left edges within content)
-const COL = {
-  qty: MARGIN,
-  desc: MARGIN + 48,
-  rate: MARGIN + CONTENT_W - 160,
-  amount: MARGIN + CONTENT_W - 72,
-};
-const DESC_W = COL.rate - COL.desc - 12;
-
-function money(n: number) {
-  return n.toLocaleString('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-  });
-}
-
 function fmtDate(d: string | null) {
   if (!d) return '—';
   return new Date(d).toLocaleDateString('en-US', {
@@ -61,44 +43,6 @@ function fmtDate(d: string | null) {
     month: 'short',
     day: 'numeric',
   });
-}
-
-function wrapLines(
-  text: string,
-  font: PDFFont,
-  size: number,
-  maxWidth: number
-): string[] {
-  const words = String(text || '')
-    .split(/\s+/)
-    .filter(Boolean);
-  if (words.length === 0) return [''];
-  const lines: string[] = [];
-  let current = '';
-  for (const word of words) {
-    const test = current ? `${current} ${word}` : word;
-    if (font.widthOfTextAtSize(test, size) > maxWidth && current) {
-      lines.push(current);
-      current = word;
-    } else {
-      current = test;
-    }
-  }
-  if (current) lines.push(current);
-  return lines;
-}
-
-function drawRight(
-  page: PDFPage,
-  text: string,
-  xRight: number,
-  y: number,
-  size: number,
-  font: PDFFont,
-  color = INK
-) {
-  const w = font.widthOfTextAtSize(text, size);
-  page.drawText(text, { x: xRight - w, y, size, font, color });
 }
 
 export async function buildInvoicePdfBuffer(
@@ -131,7 +75,7 @@ export async function buildInvoicePdfBuffer(
       y: PAGE_H - fromTop - rowH,
       width: CONTENT_W,
       height: rowH,
-      color: ACCENT_SOFT,
+      color: PRINT_PDF.accentSoft,
     });
     const labelY = PAGE_H - fromTop - 15;
     page.drawText('QTY', {
@@ -139,17 +83,17 @@ export async function buildInvoicePdfBuffer(
       y: labelY,
       size: 8,
       font: fontBold,
-      color: MUTED,
+      color: PRINT_PDF.muted,
     });
     page.drawText('DESCRIPTION', {
       x: COL.desc,
       y: labelY,
       size: 8,
       font: fontBold,
-      color: MUTED,
+      color: PRINT_PDF.muted,
     });
-    drawRight(page, 'RATE', COL.rate + 56, labelY, 8, fontBold, MUTED);
-    drawRight(page, 'AMOUNT', PAGE_W - MARGIN, labelY, 8, fontBold, MUTED);
+    drawRight(page, 'RATE', COL.rate + 56, labelY, 8, fontBold, PRINT_PDF.muted);
+    drawRight(page, 'AMOUNT', PAGE_W - MARGIN, labelY, 8, fontBold, PRINT_PDF.muted);
     fromTop += rowH + 2;
   }
 
@@ -168,14 +112,14 @@ export async function buildInvoicePdfBuffer(
     y: PAGE_H - headerH,
     width: PAGE_W,
     height: headerH,
-    color: ACCENT,
+    color: PRINT_PDF.accent,
   });
   page.drawText('INVOICE', {
     x: MARGIN,
     y: PAGE_H - 42,
     size: 22,
     font: fontBold,
-    color: WHITE,
+    color: PRINT_PDF.onAccent,
   });
   drawRight(
     page,
@@ -184,7 +128,7 @@ export async function buildInvoicePdfBuffer(
     PAGE_H - 36,
     14,
     fontBold,
-    WHITE
+    PRINT_PDF.onAccent
   );
   drawRight(
     page,
@@ -193,7 +137,8 @@ export async function buildInvoicePdfBuffer(
     PAGE_H - 54,
     9,
     font,
-    rgb(0.85, 0.9, 1)
+    PRINT_PDF.onAccent,
+    0.85
   );
   fromTop = headerH + 28;
 
@@ -204,7 +149,7 @@ export async function buildInvoicePdfBuffer(
     y: yFor(8),
     size: 8,
     font: fontBold,
-    color: MUTED,
+    color: PRINT_PDF.muted,
   });
   fromTop += 14;
 
@@ -214,7 +159,7 @@ export async function buildInvoicePdfBuffer(
     y: yFor(11),
     size: 11,
     font: fontBold,
-    color: INK,
+    color: PRINT_PDF.ink,
   });
   fromTop += 16;
 
@@ -223,7 +168,7 @@ export async function buildInvoicePdfBuffer(
     y: yFor(10),
     size: 10,
     font,
-    color: INK,
+    color: PRINT_PDF.ink,
   });
   fromTop += 14;
 
@@ -234,7 +179,7 @@ export async function buildInvoicePdfBuffer(
         y: yFor(9),
         size: 9,
         font,
-        color: MUTED,
+        color: PRINT_PDF.muted,
       });
       fromTop += 12;
     }
@@ -260,7 +205,7 @@ export async function buildInvoicePdfBuffer(
       y: yFor(labelSize),
       size: labelSize,
       font: fontBold,
-      color: MUTED,
+      color: PRINT_PDF.muted,
     });
     fromTop += 12;
     page.drawText(value, {
@@ -268,7 +213,7 @@ export async function buildInvoicePdfBuffer(
       y: yFor(valueSize),
       size: valueSize,
       font,
-      color: INK,
+      color: PRINT_PDF.ink,
     });
     fromTop += 18;
   }
@@ -281,7 +226,7 @@ export async function buildInvoicePdfBuffer(
     y: PAGE_H - fromTop,
     width: CONTENT_W,
     height: 1,
-    color: RULE,
+    color: PRINT_PDF.rule,
   });
   fromTop += 18;
 
@@ -295,7 +240,7 @@ export async function buildInvoicePdfBuffer(
       y: yFor(10),
       size: 10,
       font,
-      color: MUTED,
+      color: PRINT_PDF.muted,
     });
     fromTop += 20;
   } else {
@@ -318,7 +263,7 @@ export async function buildInvoicePdfBuffer(
         y: PAGE_H - cursor - 10,
         size: 10,
         font,
-        color: INK,
+        color: PRINT_PDF.ink,
       });
 
       // Description
@@ -328,7 +273,7 @@ export async function buildInvoicePdfBuffer(
           y: PAGE_H - cursor - 10,
           size: 10,
           font: fontBold,
-          color: INK,
+          color: PRINT_PDF.ink,
         });
         cursor += 13;
       }
@@ -338,7 +283,7 @@ export async function buildInvoicePdfBuffer(
           y: PAGE_H - cursor - 8,
           size: 8,
           font,
-          color: MUTED,
+          color: PRINT_PDF.muted,
         });
         cursor += 11;
       }
@@ -352,7 +297,7 @@ export async function buildInvoicePdfBuffer(
         valueY,
         10,
         font,
-        INK
+        PRINT_PDF.ink
       );
       drawRight(
         page,
@@ -361,7 +306,7 @@ export async function buildInvoicePdfBuffer(
         valueY,
         10,
         fontBold,
-        INK
+        PRINT_PDF.ink
       );
 
       fromTop = Math.max(cursor, rowStart + 18) + 6;
@@ -372,7 +317,7 @@ export async function buildInvoicePdfBuffer(
         y: PAGE_H - fromTop,
         width: CONTENT_W,
         height: 0.5,
-        color: RULE,
+        color: PRINT_PDF.rule,
       });
       fromTop += 8;
     }
@@ -392,14 +337,14 @@ export async function buildInvoicePdfBuffer(
   ) => {
     const size = opts.emphasize ? 12 : 10;
     const f = opts.bold || opts.emphasize ? fontBold : font;
-    const color = opts.emphasize ? ACCENT : INK;
+    const color = opts.emphasize ? PRINT_PDF.accent : PRINT_PDF.ink;
     if (opts.emphasize) {
       page.drawRectangle({
         x: totalsX - 8,
         y: PAGE_H - fromTop - size - 8,
         width: totalsW + 8,
         height: size + 14,
-        color: ACCENT_SOFT,
+        color: PRINT_PDF.accentSoft,
       });
     }
     page.drawText(label, {
@@ -407,7 +352,7 @@ export async function buildInvoicePdfBuffer(
       y: yFor(size),
       size,
       font: f,
-      color: opts.emphasize ? ACCENT : MUTED,
+      color: opts.emphasize ? PRINT_PDF.accent : PRINT_PDF.muted,
     });
     drawRight(page, value, PAGE_W - MARGIN, yFor(size), size, f, color);
     fromTop += size + (opts.emphasize ? 14 : 8);
@@ -433,7 +378,7 @@ export async function buildInvoicePdfBuffer(
       y: yFor(8),
       size: 8,
       font: fontBold,
-      color: MUTED,
+      color: PRINT_PDF.muted,
     });
     fromTop += 14;
     for (const ln of wrapLines(data.notes, font, 9, CONTENT_W)) {
@@ -443,7 +388,7 @@ export async function buildInvoicePdfBuffer(
         y: yFor(9),
         size: 9,
         font,
-        color: INK,
+        color: PRINT_PDF.ink,
       });
       fromTop += 12;
     }
@@ -457,17 +402,17 @@ export async function buildInvoicePdfBuffer(
       y: 28,
       width: CONTENT_W,
       height: 0.5,
-      color: RULE,
+      color: PRINT_PDF.rule,
     });
     p.drawText(`Invoice ${data.invoice_number}`, {
       x: MARGIN,
       y: 16,
       size: 8,
       font,
-      color: MUTED,
+      color: PRINT_PDF.muted,
     });
     const pageLabel = `Page ${i + 1} of ${totalPages}`;
-    drawRight(p, pageLabel, PAGE_W - MARGIN, 16, 8, font, MUTED);
+    drawRight(p, pageLabel, PAGE_W - MARGIN, 16, 8, font, PRINT_PDF.muted);
   });
 
   const bytes = await pdfDoc.save();
