@@ -6,12 +6,12 @@ import { rgb, type RGB } from 'pdf-lib';
  * Stay light — no dark mode.
  */
 export const PRINT_THEME = {
-  accent: '#2563eb',
-  accentSoft: '#e5ecfd',
+  accent: '#f97316',
+  accentSoft: '#feeee3',
   ink: '#111318',
   muted: '#5c6370',
   rule: '#e2e4ea',
-  onAccent: '#ffffff',
+  onAccent: '#111318',
   paper: '#f4f5f7',
   surface: '#ffffff',
 } as const;
