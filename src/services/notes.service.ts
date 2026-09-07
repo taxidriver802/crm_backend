@@ -223,14 +223,18 @@ export async function createNote(userId: string, input: CreateNoteInput) {
           'Pending',
         ]
       );
-      followUpTask = taskResult.rows[0];
+      const createdTask = taskResult.rows[0];
+      if (!createdTask) {
+        throw new Error('Failed to create follow-up task');
+      }
+      followUpTask = createdTask;
       await client.query(
         `
         UPDATE notes
         SET follow_up_task_id = $1, updated_at = CURRENT_TIMESTAMP
         WHERE id = $2
         `,
-        [followUpTask.id, noteId]
+        [createdTask.id, noteId]
       );
     }
 
