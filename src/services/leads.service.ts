@@ -1,4 +1,5 @@
 import { pool } from '../db';
+import { daysInStatus } from '../lib/aging';
 import { trackEvent } from './productEvents.service';
 
 export class LeadNotFoundError extends Error {
@@ -42,6 +43,9 @@ export type CreateLeadInput = {
   budget_min?: number | null;
   budget_max?: number | null;
   notes?: string | null;
+  service_type?: string | null;
+  preferred_contact_method?: string | null;
+  urgency?: string | null;
 };
 
 export type UpdateLeadInput = Partial<CreateLeadInput>;
@@ -59,6 +63,8 @@ const LEAD_SELECT = `
 function normalizeLead(row: any) {
   return {
     ...row,
+    status_changed_at: row.status_changed_at ?? null,
+    days_in_status: daysInStatus(row.status_changed_at),
     assigned_user:
       row.assigned_to != null
         ? {
@@ -211,9 +217,9 @@ export async function createLead(
     `
     INSERT INTO leads (
       user_id, assigned_to, first_name, last_name, email, phone, source, status,
-      budget_min, budget_max, notes
+      budget_min, budget_max, notes, service_type, preferred_contact_method, urgency
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
     RETURNING *;
     `,
     [
@@ -228,6 +234,9 @@ export async function createLead(
       input.budget_min ?? null,
       input.budget_max ?? null,
       input.notes ?? null,
+      input.service_type ?? null,
+      input.preferred_contact_method ?? null,
+      input.urgency ?? null,
     ]
   );
 
@@ -246,6 +255,10 @@ export async function updateLead(
   updates: UpdateLeadInput,
   options: { includeAll?: boolean; actorRole?: string } = {}
 ) {
+  const existingLead = await getLeadById(userId, id, {
+    includeAll: options.includeAll,
+  });
+
   if ('assigned_to' in updates) {
     await validateAssignee(updates.assigned_to, userId, options.actorRole);
   }
@@ -256,12 +269,21 @@ export async function updateLead(
     throw new Error('No fields to update');
   }
 
+  const statusChanged =
+    'status' in updates &&
+    updates.status != null &&
+    updates.status !== existingLead.status;
+
   const setParts: string[] = [];
   const values: any[] = [id];
 
   for (const key of keys) {
     values.push(updates[key] ?? null);
     setParts.push(`${key} = $${values.length}`);
+  }
+
+  if (statusChanged) {
+    setParts.push(`status_changed_at = CURRENT_TIMESTAMP`);
   }
 
   setParts.push(`updated_at = CURRENT_TIMESTAMP`);

@@ -347,4 +347,33 @@ describe('Estimates integration', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].job_id).toBe(job.id);
   });
+
+  it('POST /estimates/:id/apply-template copies a seeded template onto a draft', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+    const job = await createJob(headers, lead.id);
+
+    const estimateRes = await request(app).post('/estimates').set(headers).send({
+      job_id: job.id,
+      title: 'From template',
+    });
+    expect(estimateRes.status).toBe(201);
+
+    const templatesRes = await request(app)
+      .get('/estimate-templates')
+      .set(headers);
+    const inspection = templatesRes.body.templates.find(
+      (t: { name: string }) => t.name === 'Inspection'
+    );
+    expect(inspection).toBeTruthy();
+
+    const res = await request(app)
+      .post(`/estimates/${estimateRes.body.estimate.id}/apply-template`)
+      .set(headers)
+      .send({ template_id: inspection.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.estimate.line_items).toHaveLength(2);
+    expect(Number(res.body.estimate.grand_total)).toBe(325);
+  });
 });

@@ -13,7 +13,8 @@ export type TriggerEvent =
   | 'ESTIMATE_APPROVED'
   | 'LEAD_INACTIVE'
   | 'JOB_STATUS_CHANGED'
-  | 'TASK_COMPLETED';
+  | 'TASK_COMPLETED'
+  | 'JOB_CREATED';
 
 export type ActionType =
   | 'CREATE_TASKS'
@@ -213,6 +214,85 @@ export const RULE_TEMPLATES = [
     action_config: {
       title: 'All tasks done',
       message: 'All tasks on {job_title} are now complete.',
+    },
+  },
+  {
+    template_id: 'job_created_inspection',
+    name: 'Inspection job kickoff tasks',
+    description:
+      'When a job is created, create standard inspection follow-through tasks.',
+    trigger_event: 'JOB_CREATED' as TriggerEvent,
+    action_type: 'CREATE_TASKS' as ActionType,
+    conditions: {},
+    action_config: {
+      tasks: [
+        {
+          title: 'Confirm inspection appointment',
+          description: 'Call or text the client to lock date and access notes',
+        },
+        {
+          title: 'Complete on-site inspection',
+          description: 'Document findings and capture photos',
+        },
+        {
+          title: 'Send written report / estimate',
+          description: 'Share findings and next-step pricing with the client',
+        },
+      ],
+    },
+  },
+  {
+    template_id: 'job_created_repair',
+    name: 'Repair job kickoff tasks',
+    description:
+      'When a job is created, create standard repair workflow tasks.',
+    trigger_event: 'JOB_CREATED' as TriggerEvent,
+    action_type: 'CREATE_TASKS' as ActionType,
+    conditions: {},
+    action_config: {
+      tasks: [
+        {
+          title: 'Diagnose leak / damage',
+          description: 'Locate source and scope materials needed',
+        },
+        {
+          title: 'Order repair materials',
+          description: 'Confirm stock and delivery timing',
+        },
+        {
+          title: 'Complete repair and photo verify',
+          description: 'Finish work and capture before/after photos',
+        },
+      ],
+    },
+  },
+  {
+    template_id: 'job_created_replacement',
+    name: 'Replacement job kickoff tasks',
+    description:
+      'When a job is created, create standard roof replacement kickoff tasks.',
+    trigger_event: 'JOB_CREATED' as TriggerEvent,
+    action_type: 'CREATE_TASKS' as ActionType,
+    conditions: {},
+    action_config: {
+      tasks: [
+        {
+          title: 'Confirm material order',
+          description: 'Finalize shingles, underlayment, and delivery window',
+        },
+        {
+          title: 'Schedule tear-off and install crew',
+          description: 'Coordinate weather window and crew availability',
+        },
+        {
+          title: 'Notify client of start date',
+          description: 'Share arrival window and property access notes',
+        },
+        {
+          title: 'Final walkthrough and photos',
+          description: 'Complete punch list and capture after photos',
+        },
+      ],
     },
   },
 ];

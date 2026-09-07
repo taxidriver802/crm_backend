@@ -12,7 +12,8 @@ export type NotificationType =
   | 'ESTIMATE_CLIENT_RESPONDED'
   | 'INVOICE_CREATED'
   | 'INVOICE_STATUS_CHANGED'
-  | 'INVOICE_PAID';
+  | 'INVOICE_PAID'
+  | 'LEAD_CREATED';
 
 export type NotificationEntityType =
   | 'task'

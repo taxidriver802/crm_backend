@@ -49,12 +49,38 @@ CREATE TABLE IF NOT EXISTS leads (
   budget_min NUMERIC,
   budget_max NUMERIC,
   notes TEXT,
+  service_type TEXT,
+  preferred_contact_method TEXT,
+  urgency TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  status_changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 ALTER TABLE leads
 ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users (id) ON DELETE SET NULL;
+
+ALTER TABLE leads
+ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ;
+
+UPDATE leads
+SET status_changed_at = COALESCE(status_changed_at, updated_at, created_at, CURRENT_TIMESTAMP)
+WHERE status_changed_at IS NULL;
+
+ALTER TABLE leads
+ALTER COLUMN status_changed_at SET DEFAULT CURRENT_TIMESTAMP;
+
+ALTER TABLE leads
+ALTER COLUMN status_changed_at SET NOT NULL;
+
+ALTER TABLE leads
+ADD COLUMN IF NOT EXISTS service_type TEXT;
+
+ALTER TABLE leads
+ADD COLUMN IF NOT EXISTS preferred_contact_method TEXT;
+
+ALTER TABLE leads
+ADD COLUMN IF NOT EXISTS urgency TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_leads_user_id ON leads (user_id);
 
@@ -63,6 +89,9 @@ CREATE INDEX IF NOT EXISTS idx_leads_assigned_to ON leads (assigned_to);
 CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status);
 
 CREATE INDEX IF NOT EXISTS idx_leads_created_at ON leads (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_leads_user_status_changed_at
+  ON leads (user_id, status, status_changed_at);
 
 CREATE INDEX IF NOT EXISTS idx_leads_name ON leads (last_name, first_name);
 
@@ -80,11 +109,25 @@ CREATE TABLE IF NOT EXISTS jobs (
   status TEXT NOT NULL DEFAULT 'New',
   address TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  status_changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 ALTER TABLE jobs
 ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users (id) ON DELETE SET NULL;
+
+ALTER TABLE jobs
+ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ;
+
+UPDATE jobs
+SET status_changed_at = COALESCE(status_changed_at, updated_at, created_at, CURRENT_TIMESTAMP)
+WHERE status_changed_at IS NULL;
+
+ALTER TABLE jobs
+ALTER COLUMN status_changed_at SET DEFAULT CURRENT_TIMESTAMP;
+
+ALTER TABLE jobs
+ALTER COLUMN status_changed_at SET NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id);
 
@@ -95,6 +138,9 @@ CREATE INDEX IF NOT EXISTS idx_jobs_lead_id ON jobs (lead_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
 
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_user_status_changed_at
+  ON jobs (user_id, status, status_changed_at);
 
 -- =========================================================
 -- JOBS ACTIVITY
@@ -182,7 +228,11 @@ CREATE TABLE IF NOT EXISTS files (
   job_id INTEGER REFERENCES jobs (id) ON DELETE CASCADE,
   -- Legacy / transitional compatibility
   task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+  caption TEXT,
+  category TEXT NOT NULL DEFAULT 'other',
+  client_visible BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT files_category_check CHECK (category IN ('before', 'after', 'other'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_uploaded_by_user_id ON files (uploaded_by_user_id);
@@ -194,6 +244,42 @@ CREATE INDEX IF NOT EXISTS idx_files_job_id ON files (job_id);
 CREATE INDEX IF NOT EXISTS idx_files_task_id ON files (task_id);
 
 CREATE INDEX IF NOT EXISTS idx_files_created_at ON files (created_at);
+
+ALTER TABLE files
+ADD COLUMN IF NOT EXISTS caption TEXT;
+
+ALTER TABLE files
+ADD COLUMN IF NOT EXISTS category TEXT;
+
+UPDATE files
+SET category = COALESCE(category, 'other')
+WHERE category IS NULL;
+
+ALTER TABLE files
+ALTER COLUMN category SET DEFAULT 'other';
+
+ALTER TABLE files
+ALTER COLUMN category SET NOT NULL;
+
+ALTER TABLE files
+DROP CONSTRAINT IF EXISTS files_category_check;
+
+ALTER TABLE files
+ADD CONSTRAINT files_category_check
+CHECK (category IN ('before', 'after', 'other'));
+
+ALTER TABLE files
+ADD COLUMN IF NOT EXISTS client_visible BOOLEAN;
+
+UPDATE files
+SET client_visible = COALESCE(client_visible, TRUE)
+WHERE client_visible IS NULL;
+
+ALTER TABLE files
+ALTER COLUMN client_visible SET DEFAULT TRUE;
+
+ALTER TABLE files
+ALTER COLUMN client_visible SET NOT NULL;
 
 -- =========================================================
 -- ESTIMATES
@@ -258,6 +344,37 @@ CREATE INDEX IF NOT EXISTS idx_estimate_line_items_estimate_id ON estimate_line_
 CREATE INDEX IF NOT EXISTS idx_estimate_line_items_sort_order ON estimate_line_items (estimate_id, sort_order);
 
 -- =========================================================
+-- ESTIMATE TEMPLATES (copy-on-apply line packages)
+-- =========================================================
+CREATE TABLE IF NOT EXISTS estimate_templates (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_estimate_templates_name
+  ON estimate_templates (lower(name));
+
+CREATE TABLE IF NOT EXISTS estimate_template_line_items (
+  id SERIAL PRIMARY KEY,
+  template_id INTEGER NOT NULL REFERENCES estimate_templates (id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  quantity NUMERIC NOT NULL DEFAULT 1,
+  unit_price NUMERIC NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT estimate_template_line_items_quantity_check CHECK (quantity >= 0),
+  CONSTRAINT estimate_template_line_items_unit_price_check CHECK (unit_price >= 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_estimate_template_line_items_template_sort
+  ON estimate_template_line_items (template_id, sort_order);
+
+-- =========================================================
 -- JOB_MEASUREMENTS (Phase 9 — manual scope / quantities)
 -- =========================================================
 CREATE TABLE IF NOT EXISTS job_measurements (
@@ -283,16 +400,67 @@ CREATE TABLE IF NOT EXISTS notes (
   entity_type TEXT NOT NULL,
   entity_id INTEGER NOT NULL,
   body TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'note',
+  direction TEXT NOT NULL DEFAULT 'internal',
+  follow_up_task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT notes_entity_type_check CHECK (entity_type IN ('lead', 'job'))
+  CONSTRAINT notes_entity_type_check CHECK (entity_type IN ('lead', 'job')),
+  CONSTRAINT notes_type_check CHECK (type IN ('call', 'text', 'email', 'in_person', 'note')),
+  CONSTRAINT notes_direction_check CHECK (direction IN ('inbound', 'outbound', 'internal'))
 );
+
+ALTER TABLE notes
+ADD COLUMN IF NOT EXISTS type TEXT;
+
+ALTER TABLE notes
+ADD COLUMN IF NOT EXISTS direction TEXT;
+
+ALTER TABLE notes
+ADD COLUMN IF NOT EXISTS follow_up_task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL;
+
+UPDATE notes
+SET type = COALESCE(type, 'note')
+WHERE type IS NULL;
+
+UPDATE notes
+SET direction = COALESCE(direction, 'internal')
+WHERE direction IS NULL;
+
+ALTER TABLE notes
+ALTER COLUMN type SET DEFAULT 'note';
+
+ALTER TABLE notes
+ALTER COLUMN direction SET DEFAULT 'internal';
+
+ALTER TABLE notes
+ALTER COLUMN type SET NOT NULL;
+
+ALTER TABLE notes
+ALTER COLUMN direction SET NOT NULL;
+
+ALTER TABLE notes
+DROP CONSTRAINT IF EXISTS notes_type_check;
+
+ALTER TABLE notes
+ADD CONSTRAINT notes_type_check
+CHECK (type IN ('call', 'text', 'email', 'in_person', 'note'));
+
+ALTER TABLE notes
+DROP CONSTRAINT IF EXISTS notes_direction_check;
+
+ALTER TABLE notes
+ADD CONSTRAINT notes_direction_check
+CHECK (direction IN ('inbound', 'outbound', 'internal'));
 
 CREATE INDEX IF NOT EXISTS idx_notes_entity ON notes (entity_type, entity_id);
 
 CREATE INDEX IF NOT EXISTS idx_notes_user_id ON notes (user_id);
 
 CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_notes_entity_created
+  ON notes (entity_type, entity_id, created_at DESC);
 
 -- =========================================================
 -- SAVED_VIEWS
@@ -438,7 +606,8 @@ CREATE TABLE IF NOT EXISTS automation_rules (
       'ESTIMATE_APPROVED',
       'LEAD_INACTIVE',
       'JOB_STATUS_CHANGED',
-      'TASK_COMPLETED'
+      'TASK_COMPLETED',
+      'JOB_CREATED'
     )
   ),
   CONSTRAINT automation_rules_action_check CHECK (
@@ -454,6 +623,27 @@ CREATE TABLE IF NOT EXISTS automation_rules (
 CREATE INDEX IF NOT EXISTS idx_automation_rules_user_id ON automation_rules (user_id);
 CREATE INDEX IF NOT EXISTS idx_automation_rules_trigger ON automation_rules (trigger_event);
 CREATE INDEX IF NOT EXISTS idx_automation_rules_enabled ON automation_rules (enabled);
+
+-- =========================================================
+-- INTAKE TOKENS (public website lead capture)
+-- =========================================================
+CREATE TABLE IF NOT EXISTS intake_tokens (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  singleton BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT intake_tokens_singleton_true CHECK (singleton = TRUE)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_tokens_singleton
+  ON intake_tokens (singleton);
+
+CREATE INDEX IF NOT EXISTS idx_intake_tokens_hash ON intake_tokens (token_hash);
+
+CREATE INDEX IF NOT EXISTS idx_intake_tokens_user ON intake_tokens (user_id);
 
 -- =========================================================
 -- NOTIFICATIONS
@@ -483,7 +673,8 @@ CREATE TABLE IF NOT EXISTS notifications (
       'ESTIMATE_CLIENT_RESPONDED',
       'INVOICE_CREATED',
       'INVOICE_STATUS_CHANGED',
-      'INVOICE_PAID'
+      'INVOICE_PAID',
+      'LEAD_CREATED'
     )
   ),
   CONSTRAINT notifications_entity_type_check CHECK (

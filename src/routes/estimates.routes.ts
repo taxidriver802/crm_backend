@@ -3,6 +3,8 @@ import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import * as estimatesService from '../services/estimates.service';
 import { env } from '../config/env';
+import { applyTemplateSchema } from '../validators/estimateTemplates.schemas';
+import { EstimateTemplateNotFoundError } from '../services/estimateTemplates.service';
 
 export const estimatesRouter = Router();
 
@@ -212,6 +214,44 @@ estimatesRouter.post(
       }
       if (error instanceof estimatesService.EstimateResendNotApplicableError) {
         return res.status(400).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// POST /estimates/:id/apply-template
+estimatesRouter.post(
+  '/:id/apply-template',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.userId;
+    const id = parseId(req.params.id);
+
+    if (id == null) {
+      return res.status(400).json({ ok: false, error: 'Invalid estimate id' });
+    }
+
+    const parsed = applyTemplateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    }
+
+    try {
+      const estimate = await estimatesService.applyTemplateToEstimate(
+        userId,
+        id,
+        parsed.data.template_id
+      );
+      res.json({ ok: true, estimate });
+    } catch (error) {
+      if (error instanceof estimatesService.EstimateNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      if (error instanceof estimatesService.EstimateNotDraftError) {
+        return res.status(400).json({ ok: false, error: error.message });
+      }
+      if (error instanceof EstimateTemplateNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
       }
       throw error;
     }

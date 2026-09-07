@@ -11,11 +11,14 @@ export async function resetDb() {
       saved_views,
       product_events,
       portal_tokens,
+      intake_tokens,
       automation_rules,
       invoice_line_items,
       invoices,
       estimate_line_items,
       estimates,
+      estimate_template_line_items,
+      estimate_templates,
       files,
       tasks,
       jobs,
@@ -41,5 +44,14 @@ export async function resetDb() {
         // ignore cleanup failures for test temp files
       }
     }
+  }
+
+  const seedPath = path.join(
+    process.cwd(),
+    'sql',
+    'patch_phase17_quotes_photos.sql'
+  );
+  if (fs.existsSync(seedPath)) {
+    await pool.query(fs.readFileSync(seedPath, 'utf8'));
   }
 }

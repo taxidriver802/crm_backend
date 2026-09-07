@@ -1,6 +1,7 @@
 /// <reference types="jest" />
 import request from 'supertest';
 import { app } from '../src/app';
+import { pool } from '../src/db';
 import { ensureSchema } from './helpers/setup';
 import { resetDb } from './helpers/db';
 import { createAuthedUser } from './helpers/auth';
@@ -88,6 +89,150 @@ describe('Jobs integration', () => {
     expect(statusActivity).toBeTruthy();
     expect(statusActivity.title).toBe('Status changed');
     expect(statusActivity.message).toBe('New → Contacted');
+    expect(
+      new Date(patchRes.body.job.status_changed_at).getTime()
+    ).toBeGreaterThan(new Date(jobRes.body.job.status_changed_at).getTime() - 1);
+  });
+
+  it('does not move status_changed_at on title-only updates', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+    const jobRes = await request(app).post('/jobs').set(headers).send({
+      lead_id: lead.id,
+      title: 'Roof inspection for Sarah',
+      status: 'New',
+      address: '123 Main St',
+    });
+    const jobId = jobRes.body.job.id;
+
+    await pool.query(
+      `UPDATE jobs SET status_changed_at = NOW() - INTERVAL '2 days' WHERE id = $1`,
+      [jobId]
+    );
+
+    const beforeRes = await request(app).get(`/jobs/${jobId}`).set(headers);
+    const before = new Date(beforeRes.body.job.status_changed_at).getTime();
+
+    const titlePatch = await request(app)
+      .patch(`/jobs/${jobId}`)
+      .set(headers)
+      .send({ title: 'Updated title' });
+
+    expect(titlePatch.status).toBe(200);
+    expect(new Date(titlePatch.body.job.status_changed_at).getTime()).toBe(before);
+    expect(titlePatch.body.job.days_in_status).toBeGreaterThanOrEqual(2);
+  });
+
+  it('computes job health from overdue tasks, sent estimates, and closed status', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+
+    const greenJob = await request(app).post('/jobs').set(headers).send({
+      lead_id: lead.id,
+      title: 'Healthy job',
+      status: 'New',
+    });
+    expect(greenJob.body.job.health.level).toBe('green');
+    expect(greenJob.body.job.days_in_status).toBe(0);
+
+    const yellowJob = await request(app).post('/jobs').set(headers).send({
+      lead_id: lead.id,
+      title: 'Waiting on estimate',
+      status: 'New',
+    });
+    const estimate = await request(app).post('/estimates').set(headers).send({
+      job_id: yellowJob.body.job.id,
+      title: 'Quote',
+    });
+    await request(app)
+      .patch(`/estimates/${estimate.body.estimate.id}`)
+      .set(headers)
+      .send({ status: 'Sent' });
+    const yellowGet = await request(app)
+      .get(`/jobs/${yellowJob.body.job.id}`)
+      .set(headers);
+    expect(yellowGet.body.job.health.level).toBe('yellow');
+    expect(yellowGet.body.job.health.reasons).toContain(
+      'Estimate awaiting response'
+    );
+
+    const redJob = await request(app).post('/jobs').set(headers).send({
+      lead_id: lead.id,
+      title: 'Overdue job',
+      status: 'New',
+    });
+    await request(app).post('/tasks').set(headers).send({
+      job_id: redJob.body.job.id,
+      title: 'Late task',
+      due_date: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const redGet = await request(app)
+      .get(`/jobs/${redJob.body.job.id}`)
+      .set(headers);
+    expect(redGet.body.job.health.level).toBe('red');
+    expect(redGet.body.job.health.reasons).toContain('Overdue tasks');
+
+    const closedJob = await request(app).post('/jobs').set(headers).send({
+      lead_id: lead.id,
+      title: 'Closed job',
+      status: 'New',
+    });
+    await request(app).post('/tasks').set(headers).send({
+      job_id: closedJob.body.job.id,
+      title: 'Still overdue',
+      due_date: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const closedPatch = await request(app)
+      .patch(`/jobs/${closedJob.body.job.id}`)
+      .set(headers)
+      .send({ status: 'Closed Won' });
+    expect(closedPatch.body.job.health.level).toBe('none');
+  });
+
+  it('filters jobs by leadId', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const leadA = await createLead(headers);
+    const leadBRes = await request(app).post('/leads').set(headers).send({
+      first_name: 'Mike',
+      last_name: 'Chen',
+      source: 'Website',
+      status: 'New',
+    });
+    expect(leadBRes.status).toBe(201);
+    const leadB = leadBRes.body.lead;
+
+    const jobA = await request(app).post('/jobs').set(headers).send({
+      lead_id: leadA.id,
+      title: 'Lead A job',
+      status: 'New',
+    });
+    const jobB = await request(app).post('/jobs').set(headers).send({
+      lead_id: leadB.id,
+      title: 'Lead B job',
+      status: 'New',
+    });
+    expect(jobA.status).toBe(201);
+    expect(jobB.status).toBe(201);
+
+    const filtered = await request(app)
+      .get('/jobs')
+      .query({ leadId: String(leadA.id) })
+      .set(headers);
+
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.ok).toBe(true);
+    expect(filtered.body.jobs).toHaveLength(1);
+    expect(filtered.body.jobs[0].id).toBe(jobA.body.job.id);
+    expect(filtered.body.jobs[0].lead_id).toBe(leadA.id);
+
+    const filteredSnake = await request(app)
+      .get('/jobs')
+      .query({ lead_id: String(leadB.id) })
+      .set(headers);
+
+    expect(filteredSnake.status).toBe(200);
+    expect(filteredSnake.body.jobs).toHaveLength(1);
+    expect(filteredSnake.body.jobs[0].id).toBe(jobB.body.job.id);
   });
 
   it('returns job tasks from /jobs/:id/tasks', async () => {

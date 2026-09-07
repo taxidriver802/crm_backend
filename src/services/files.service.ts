@@ -47,7 +47,16 @@ export type CreateFileInput = {
   sizeBytes: number;
   leadId?: number | null;
   jobId?: number | null;
+  caption?: string | null;
+  category?: 'before' | 'after' | 'other' | null;
+  clientVisible?: boolean | null;
 };
+
+export type UpdateFileInput = Partial<{
+  caption: string | null;
+  category: 'before' | 'after' | 'other';
+  client_visible: boolean;
+}>;
 
 function buildFileNotificationContext(input: {
   originalName: string;
@@ -142,9 +151,12 @@ export async function createFile(input: CreateFileInput) {
       mime_type,
       size_bytes,
       lead_id,
-      job_id
+      job_id,
+      caption,
+      category,
+      client_visible
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     RETURNING *;
     `,
     [
@@ -155,6 +167,9 @@ export async function createFile(input: CreateFileInput) {
       input.sizeBytes,
       leadId,
       jobId,
+      input.caption ?? null,
+      input.category ?? 'other',
+      input.clientVisible ?? true,
     ]
   );
 
@@ -246,6 +261,62 @@ export async function getFiles(
   );
 
   return result.rows;
+}
+
+export async function updateFile(
+  userId: string,
+  id: number,
+  updates: UpdateFileInput
+) {
+  if (!userId) {
+    throw new UserNotProvidedError();
+  }
+
+  const existing = await pool.query(
+    `
+    SELECT *
+    FROM files
+    WHERE id = $1 AND uploaded_by_user_id = $2
+    LIMIT 1
+    `,
+    [id, userId]
+  );
+
+  if (existing.rowCount === 0) {
+    throw new FileNotFoundError();
+  }
+
+  const allowed = new Set<keyof UpdateFileInput>([
+    'caption',
+    'category',
+    'client_visible',
+  ]);
+  const keys = (Object.keys(updates) as (keyof UpdateFileInput)[]).filter((key) =>
+    allowed.has(key)
+  );
+  if (keys.length === 0) {
+    return existing.rows[0];
+  }
+
+  const setParts: string[] = [];
+  const values: any[] = [id];
+  for (const key of keys) {
+    const value = updates[key];
+    values.push(value === undefined ? null : value);
+    setParts.push(`${key} = $${values.length}`);
+  }
+
+  const result = await pool.query(
+    `
+    UPDATE files
+    SET ${setParts.join(', ')}
+    WHERE id = $1
+    RETURNING *
+    `,
+    values
+  );
+
+  return result.rows[0];
 }
 
 export async function deleteFile(userId: string, id: number) {

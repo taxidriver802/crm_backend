@@ -20,6 +20,7 @@ import { runTaskNotificationJob } from './jobs/taskNotifications';
 import { runInvoiceReminderJob } from './jobs/invoiceReminders';
 import { jobsRouter } from './routes/jobs.routes';
 import { estimatesRouter } from './routes/estimates.routes';
+import { estimateTemplatesRouter } from './routes/estimateTemplates.routes';
 import { publicEstimatesRouter } from './routes/publicEstimates.routes';
 import { notesRouter } from './routes/notes.routes';
 import { searchRouter } from './routes/search.routes';
@@ -28,6 +29,7 @@ import { savedViewsRouter } from './routes/savedViews.routes';
 import { invoicesRouter } from './routes/invoices.routes';
 import { automationRouter } from './routes/automation.routes';
 import { portalRouter, publicPortalRouter } from './routes/portal.routes';
+import { intakeRouter, publicIntakeRouter } from './routes/intake.routes';
 import { productMetricsRouter } from './routes/productMetrics.routes';
 
 export const app = express();
@@ -63,6 +65,7 @@ app.use('/files', filesRouter);
 app.use('/notifications', notificationRouter);
 app.use('/jobs', jobsRouter);
 app.use('/estimates', estimatesRouter);
+app.use('/estimate-templates', estimateTemplatesRouter);
 app.use('/public/estimates', publicEstimatesRouter);
 app.use('/notes', notesRouter);
 app.use('/search', searchRouter);
@@ -72,6 +75,8 @@ app.use('/invoices', invoicesRouter);
 app.use('/automation', automationRouter);
 app.use('/portal', portalRouter);
 app.use('/public/portal', publicPortalRouter);
+app.use('/intake', intakeRouter);
+app.use('/public/intake', publicIntakeRouter);
 app.use('/product-metrics', productMetricsRouter);
 
 if (process.env.NODE_ENV !== 'test') {

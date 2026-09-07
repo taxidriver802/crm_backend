@@ -134,4 +134,39 @@ describe('Automation API', () => {
     expect(res.status).toBe(200);
     expect(res.body.deletedId).toBe(ruleId);
   });
+
+  it('JOB_CREATED template creates kickoff tasks when a job is created', async () => {
+    const enable = await request(app)
+      .post('/automation/rules/from-template/job_created_inspection')
+      .set('Cookie', cookie);
+    expect(enable.status).toBe(201);
+    expect(enable.body.rule.trigger_event).toBe('JOB_CREATED');
+
+    const lead = await request(app)
+      .post('/leads')
+      .set('Cookie', cookie)
+      .send({ first_name: 'Kick', last_name: 'Off' });
+    const leadId = lead.body.lead.id;
+
+    const job = await request(app)
+      .post('/jobs')
+      .set('Cookie', cookie)
+      .send({ title: 'Inspection kickoff job', lead_id: leadId });
+    expect(job.status).toBe(201);
+    const newJobId = job.body.job.id;
+
+    // evaluateRules is fire-and-forget; give it a moment
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const tasks = await request(app)
+      .get(`/jobs/${newJobId}/tasks`)
+      .set('Cookie', cookie);
+    expect(tasks.status).toBe(200);
+    expect(tasks.body.tasks.length).toBeGreaterThanOrEqual(3);
+    expect(
+      tasks.body.tasks.some(
+        (t: { title: string }) => t.title === 'Confirm inspection appointment'
+      )
+    ).toBe(true);
+  });
 });

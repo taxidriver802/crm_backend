@@ -8,11 +8,16 @@ export const dashboardRouter = Router();
 
 dashboardRouter.use(requireAuth);
 
+function canViewAll(role?: string) {
+  return role === 'owner' || role === 'admin';
+}
+
 dashboardRouter.get(
   '/',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;
-    const data = await dashboardService.getDashboardData(userId);
+    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
+    const data = await dashboardService.getDashboardData(userId, { includeAll });
 
     res.json({
       ok: true,

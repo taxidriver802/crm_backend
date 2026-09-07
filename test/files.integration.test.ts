@@ -192,4 +192,57 @@ describe('Files integration', () => {
     expect(deletedActivity).toBeTruthy();
     expect(deletedActivity.title).toBe('File deleted');
   });
+
+  it('defaults client_visible to true and other for category', async () => {
+    const { headers } = await createAuthedUser('owner');
+    const lead = await createLead(headers);
+    const job = await createJob(headers, lead.id);
+
+    const uploadRes = await request(app)
+      .post('/files')
+      .set(headers)
+      .field('job_id', String(job.id))
+      .attach('file', Buffer.from('photo-bytes'), 'roof.jpg');
+
+    expect(uploadRes.status).toBe(201);
+    expect(uploadRes.body.file.client_visible).toBe(true);
+    expect(uploadRes.body.file.category).toBe('other');
+    expect(uploadRes.body.file.caption).toBeNull();
+  });
+
+  it('accepts optional upload metadata and PATCH updates caption, category, and visibility', async () => {
+    const { headers } = await createAuthedUser('owner');
+    const lead = await createLead(headers);
+    const job = await createJob(headers, lead.id);
+
+    const uploadRes = await request(app)
+      .post('/files')
+      .set(headers)
+      .field('job_id', String(job.id))
+      .field('caption', 'North slope')
+      .field('category', 'before')
+      .field('client_visible', 'false')
+      .attach('file', Buffer.from('photo-bytes'), 'before.jpg');
+
+    expect(uploadRes.status).toBe(201);
+    expect(uploadRes.body.file.caption).toBe('North slope');
+    expect(uploadRes.body.file.category).toBe('before');
+    expect(uploadRes.body.file.client_visible).toBe(false);
+
+    const fileId = uploadRes.body.file.id;
+    const patchRes = await request(app)
+      .patch(`/files/${fileId}`)
+      .set(headers)
+      .send({
+        caption: 'After tear-off',
+        category: 'after',
+        client_visible: true,
+      });
+
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.body.ok).toBe(true);
+    expect(patchRes.body.file.caption).toBe('After tear-off');
+    expect(patchRes.body.file.category).toBe('after');
+    expect(patchRes.body.file.client_visible).toBe(true);
+  });
 });

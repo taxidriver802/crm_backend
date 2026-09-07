@@ -11,6 +11,9 @@ export const createLeadSchema = z.object({
   budget_min: z.number().optional().nullable(),
   budget_max: z.number().optional().nullable(),
   notes: z.string().optional().nullable(),
+  service_type: z.string().optional().nullable(),
+  preferred_contact_method: z.string().optional().nullable(),
+  urgency: z.string().optional().nullable(),
 });
 
 export const updateLeadSchema = createLeadSchema.partial();

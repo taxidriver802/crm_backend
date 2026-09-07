@@ -19,6 +19,10 @@
     "db:patch-phase13-automation": "node scripts/apply-phase13-automation-patch.js",
     "db:patch-phase13-portal": "node scripts/apply-phase13-portal-patch.js",
     "db:patch-phase14-events": "node scripts/apply-phase14-events-patch.js",
+    "db:patch-phase15-status-aging": "node scripts/apply-phase15-status-aging-patch.js",
+    "db:patch-phase16-communication": "node scripts/apply-phase16-communication-patch.js",
+    "db:patch-phase17-quotes-photos": "node scripts/apply-phase17-quotes-photos-patch.js",
+    "db:patch-phase18-acquisition-portal": "node scripts/apply-phase18-acquisition-portal-patch.js",
     "db:seed-demo": "node scripts/seed-demo-data.js",
     "db:seed-walkthrough": "node scripts/seed-walkthrough-data.js"
   },

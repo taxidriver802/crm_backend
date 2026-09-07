@@ -92,6 +92,50 @@ export async function ensureSchema() {
       'utf8'
     );
     await client.query(patchPhase14EventsSql);
+
+    const patchPhase15StatusAgingPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase15_status_aging.sql'
+    );
+    const patchPhase15StatusAgingSql = fs.readFileSync(
+      patchPhase15StatusAgingPath,
+      'utf8'
+    );
+    await client.query(patchPhase15StatusAgingSql);
+
+    const patchPhase16CommunicationPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase16_communication.sql'
+    );
+    const patchPhase16CommunicationSql = fs.readFileSync(
+      patchPhase16CommunicationPath,
+      'utf8'
+    );
+    await client.query(patchPhase16CommunicationSql);
+
+    const patchPhase17QuotesPhotosPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase17_quotes_photos.sql'
+    );
+    const patchPhase17QuotesPhotosSql = fs.readFileSync(
+      patchPhase17QuotesPhotosPath,
+      'utf8'
+    );
+    await client.query(patchPhase17QuotesPhotosSql);
+
+    const patchPhase18AcquisitionPortalPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase18_acquisition_portal.sql'
+    );
+    const patchPhase18AcquisitionPortalSql = fs.readFileSync(
+      patchPhase18AcquisitionPortalPath,
+      'utf8'
+    );
+    await client.query(patchPhase18AcquisitionPortalSql);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

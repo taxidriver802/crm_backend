@@ -56,6 +56,9 @@ notesRouter.post(
       if (error instanceof notesService.NoteEntityNotFoundError) {
         return res.status(404).json({ ok: false, error: error.message });
       }
+      if (error instanceof notesService.InvalidFollowUpDateError) {
+        return res.status(400).json({ ok: false, error: error.message });
+      }
       throw error;
     }
   })

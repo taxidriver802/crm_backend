@@ -10,6 +10,7 @@ import {
 } from './estimateCalculations';
 import { evaluateRules } from './automation.service';
 import { trackEvent } from './productEvents.service';
+import { getEstimateTemplateById } from './estimateTemplates.service';
 
 export class EstimateNotFoundError extends Error {
   constructor(message = 'Estimate not found') {
@@ -36,6 +37,13 @@ export class EstimateOwnershipError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'EstimateOwnershipError';
+  }
+}
+
+export class EstimateNotDraftError extends Error {
+  constructor(message = 'Templates can only be applied to draft estimates') {
+    super(message);
+    this.name = 'EstimateNotDraftError';
   }
 }
 
@@ -535,6 +543,105 @@ export async function addEstimateLineItem(
   }
 
   return getEstimateById(userId, estimateId);
+}
+
+export async function applyTemplateToEstimate(
+  userId: string,
+  estimateId: number,
+  templateId: number
+) {
+  const existing = await pool.query(
+    `
+    SELECT id, status, title, job_id
+    FROM estimates
+    WHERE id = $1 AND user_id = $2
+    LIMIT 1
+    `,
+    [estimateId, userId]
+  );
+  if (existing.rowCount === 0) {
+    throw new EstimateNotFoundError();
+  }
+  const estimate = existing.rows[0];
+  if (estimate.status !== 'Draft') {
+    throw new EstimateNotDraftError();
+  }
+
+  const template = await getEstimateTemplateById(templateId);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const maxSortRes = await client.query(
+      `
+      SELECT COALESCE(MAX(sort_order), -1)::int AS max_sort
+      FROM estimate_line_items
+      WHERE estimate_id = $1
+      `,
+      [estimateId]
+    );
+    let nextSort = Number(maxSortRes.rows[0]?.max_sort ?? -1) + 1;
+
+    for (const line of template.line_items) {
+      const { quantity, unit_price, line_total } = calculateLineItem({
+        quantity: line.quantity,
+        unit_price: line.unit_price,
+      });
+      await client.query(
+        `
+        INSERT INTO estimate_line_items (
+          estimate_id,
+          name,
+          description,
+          quantity,
+          unit_price,
+          line_total,
+          sort_order,
+          source
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'manual')
+        `,
+        [
+          estimateId,
+          line.name,
+          line.description ?? null,
+          quantity,
+          unit_price,
+          line_total,
+          nextSort,
+        ]
+      );
+      nextSort += 1;
+    }
+
+    await recalculateEstimateTotals(client, estimateId, userId);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  const updated = await getEstimateById(userId, estimateId);
+
+  await createJobActivity({
+    userId,
+    jobId: estimate.job_id,
+    type: 'ESTIMATE_UPDATED',
+    title: 'Estimate updated',
+    message: `${estimate.title} was updated`,
+    entityType: 'estimate',
+    entityId: estimateId,
+    metadata: {
+      estimateId,
+      templateId,
+      templateName: template.name,
+    },
+  });
+
+  return updated;
 }
 
 export async function updateEstimateLineItem(

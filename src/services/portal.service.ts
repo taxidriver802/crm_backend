@@ -79,9 +79,54 @@ export async function getPortalData(rawToken: string) {
   );
 
   const filesRes = await pool.query(
-    `SELECT id, original_name, mime_type, size_bytes, storage_key, created_at
-     FROM files WHERE job_id = $1
+    `SELECT id, original_name, mime_type, size_bytes, storage_key, created_at,
+            caption, category, client_visible
+     FROM files
+     WHERE job_id = $1 AND client_visible = TRUE
      ORDER BY created_at DESC`,
+    [job_id]
+  );
+
+  const activityRes = await pool.query(
+    `
+    SELECT
+      a.id,
+      a.type,
+      a.title,
+      a.message,
+      a.entity_type,
+      a.entity_id,
+      a.metadata,
+      a.created_at
+    FROM job_activity a
+    WHERE a.job_id = $1
+      AND (
+        a.type = 'JOB_STATUS_CHANGED'
+        OR a.type = 'ESTIMATE_CLIENT_RESPONDED'
+        OR a.type = 'INVOICE_PAID'
+        OR (
+          a.type = 'ESTIMATE_STATUS_CHANGED'
+          AND COALESCE(a.metadata->>'newStatus', '') IN ('Sent', 'Approved')
+        )
+        OR (
+          a.type = 'INVOICE_STATUS_CHANGED'
+          AND COALESCE(a.metadata->>'newStatus', '') = 'Paid'
+        )
+        OR (
+          a.type = 'FILE_UPLOADED'
+          AND a.entity_type = 'file'
+          AND EXISTS (
+            SELECT 1
+            FROM files f
+            WHERE f.id = a.entity_id
+              AND f.job_id = a.job_id
+              AND f.client_visible = TRUE
+          )
+        )
+      )
+    ORDER BY a.created_at ASC, a.id ASC
+    LIMIT 50
+    `,
     [job_id]
   );
 
@@ -132,7 +177,49 @@ export async function getPortalData(rawToken: string) {
       size_bytes: f.size_bytes,
       storage_key: f.storage_key,
       created_at: f.created_at,
+      caption: f.caption ?? null,
+      category: f.category ?? 'other',
     })),
+    timeline: activityRes.rows.map(mapPortalTimelineItem),
+  };
+}
+
+function mapPortalTimelineItem(row: any) {
+  const metadata =
+    row.metadata && typeof row.metadata === 'object'
+      ? row.metadata
+      : (() => {
+          try {
+            return JSON.parse(row.metadata || '{}');
+          } catch {
+            return {};
+          }
+        })();
+
+  let label = 'Project update';
+  if (row.type === 'JOB_STATUS_CHANGED') {
+    label = metadata.newStatus
+      ? `Status updated to ${metadata.newStatus}`
+      : 'Project status updated';
+  } else if (row.type === 'ESTIMATE_STATUS_CHANGED') {
+    if (metadata.newStatus === 'Approved') label = 'Estimate approved';
+    else if (metadata.newStatus === 'Sent') label = 'Estimate sent';
+    else label = 'Estimate updated';
+  } else if (row.type === 'ESTIMATE_CLIENT_RESPONDED') {
+    label = 'Client responded to estimate';
+  } else if (row.type === 'INVOICE_PAID' || metadata.newStatus === 'Paid') {
+    label = 'Invoice paid';
+  } else if (row.type === 'FILE_UPLOADED') {
+    label = metadata.fileName
+      ? `Photo added: ${metadata.fileName}`
+      : 'Photo added';
+  }
+
+  return {
+    id: row.id,
+    type: row.type,
+    label,
+    at: row.created_at,
   };
 }
 

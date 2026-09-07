@@ -15,7 +15,7 @@ function canViewAll(role?: string) {
   return role === 'owner' || role === 'admin';
 }
 
-// GET /jobs?status=New&q=roof&limit=50&offset=0
+// GET /jobs?status=New&q=roof&leadId=2&limit=50&offset=0
 jobsRouter.get(
   '/',
   asyncHandler(async (req, res) => {
@@ -29,6 +29,16 @@ jobsRouter.get(
         ? req.query.assignedTo
         : undefined;
     const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+    const leadIdRaw =
+      typeof req.query.leadId === 'string'
+        ? req.query.leadId
+        : typeof req.query.lead_id === 'string'
+          ? req.query.lead_id
+          : undefined;
+    const leadId =
+      leadIdRaw != null && Number.isFinite(Number(leadIdRaw))
+        ? Number(leadIdRaw)
+        : undefined;
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Number(req.query.offset || 0);
 
@@ -36,6 +46,7 @@ jobsRouter.get(
       status,
       assignedTo,
       q,
+      leadId,
       includeAll,
       limit,
       offset,

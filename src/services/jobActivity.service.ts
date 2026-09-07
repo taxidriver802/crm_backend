@@ -24,10 +24,11 @@ export type CreateJobActivityInput = {
     | 'INVOICE_UPDATED'
     | 'INVOICE_STATUS_CHANGED'
     | 'INVOICE_DELETED'
-    | 'INVOICE_PAID';
+    | 'INVOICE_PAID'
+    | 'COMMUNICATION_LOGGED';
   title: string;
   message?: string | null;
-  entityType?: 'job' | 'task' | 'file' | 'estimate' | 'invoice' | null;
+  entityType?: 'job' | 'task' | 'file' | 'estimate' | 'invoice' | 'note' | null;
   entityId?: number | null;
   metadata?: JobActivityMetadata;
 };

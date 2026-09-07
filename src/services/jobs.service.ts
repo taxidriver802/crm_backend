@@ -1,4 +1,6 @@
 import { pool } from '../db';
+import { daysInStatus } from '../lib/aging';
+import { computeJobHealth } from '../lib/jobHealth';
 import * as activityService from '../services/jobActivity.service';
 import { evaluateRules } from './automation.service';
 
@@ -41,6 +43,7 @@ export type GetJobsFilters = {
   status?: string;
   assignedTo?: string;
   q?: string;
+  leadId?: number;
   includeAll?: boolean;
   limit?: number;
   offset?: number;
@@ -82,6 +85,15 @@ function normalizeJob(row: any) {
     address: row.address,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    status_changed_at: row.status_changed_at ?? null,
+    days_in_status: daysInStatus(row.status_changed_at),
+    health: computeJobHealth({
+      status: row.status,
+      statusChangedAt: row.status_changed_at,
+      overdueTaskCount: row.overdue_task_count,
+      overdueInvoiceCount: row.overdue_invoice_count,
+      sentAwaitingCount: row.sent_awaiting_count,
+    }),
     assigned_to: row.assigned_to,
     assigned_user:
       row.assigned_to != null
@@ -111,10 +123,34 @@ const JOB_SELECT = `
     l.last_name AS lead_last_name,
     au.first_name AS assigned_first_name,
     au.last_name AS assigned_last_name,
-    au.email AS assigned_email
+    au.email AS assigned_email,
+    COALESCE(ot.overdue_task_count, 0) AS overdue_task_count,
+    COALESCE(inv.overdue_invoice_count, 0) AS overdue_invoice_count,
+    COALESCE(est.sent_awaiting_count, 0) AS sent_awaiting_count
   FROM jobs j
   LEFT JOIN leads l ON l.id = j.lead_id
   LEFT JOIN users au ON au.id = j.assigned_to
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::int AS overdue_task_count
+    FROM tasks t
+    WHERE t.job_id = j.id
+      AND t.status <> 'Completed'
+      AND t.due_date IS NOT NULL
+      AND t.due_date < NOW()
+  ) ot ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::int AS overdue_invoice_count
+    FROM invoices i
+    WHERE i.job_id = j.id
+      AND i.status = 'Overdue'
+  ) inv ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT COUNT(*)::int AS sent_awaiting_count
+    FROM estimates e
+    WHERE e.job_id = j.id
+      AND e.status = 'Sent'
+      AND e.client_responded_at IS NULL
+  ) est ON TRUE
 `;
 
 async function validateAssignee(
@@ -171,6 +207,11 @@ export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
   } else if (filters.assignedTo) {
     params.push(filters.assignedTo);
     where.push(`j.assigned_to = $${params.length}`);
+  }
+
+  if (Number.isFinite(filters.leadId)) {
+    params.push(filters.leadId);
+    where.push(`j.lead_id = $${params.length}`);
   }
 
   params.push(filters.limit ?? 50);
@@ -267,6 +308,13 @@ export async function createJob(
     },
   });
 
+  evaluateRules(userId, 'JOB_CREATED', {
+    job_id: job.id,
+    job_title: input.title,
+    lead_id: input.lead_id,
+    status: job.status,
+  }).catch((err) => console.error('JOB_CREATED automation failed:', err));
+
   return getJobById(userId, job.id, {
     includeAll: actor.role === 'owner' || actor.role === 'admin',
   });
@@ -311,6 +359,10 @@ export async function updateJob(
   }
 
   setParts.push(`updated_at = CURRENT_TIMESTAMP`);
+
+  if (updates.status && updates.status !== existingJob.status) {
+    setParts.push(`status_changed_at = CURRENT_TIMESTAMP`);
+  }
 
   let whereClause = 'id = $1';
   if (!options.includeAll) {

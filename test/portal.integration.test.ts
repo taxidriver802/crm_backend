@@ -72,6 +72,79 @@ describe('Customer Portal API', () => {
     expect(Array.isArray(res.body.portal.estimates)).toBe(true);
     expect(Array.isArray(res.body.portal.invoices)).toBe(true);
     expect(Array.isArray(res.body.portal.files)).toBe(true);
+    expect(Array.isArray(res.body.portal.timeline)).toBe(true);
+  });
+
+  it('omits client_visible=false files and returns caption and category for visible ones', async () => {
+    const visible = await request(app)
+      .post('/files')
+      .set('Cookie', cookie)
+      .field('job_id', String(jobId))
+      .field('caption', 'Front elevation')
+      .field('category', 'before')
+      .attach('file', Buffer.from('visible-photo'), 'before.jpg');
+
+    const hidden = await request(app)
+      .post('/files')
+      .set('Cookie', cookie)
+      .field('job_id', String(jobId))
+      .field('client_visible', 'false')
+      .attach('file', Buffer.from('hidden-photo'), 'internal.jpg');
+
+    expect(visible.status).toBe(201);
+    expect(hidden.status).toBe(201);
+    expect(visible.body.file.client_visible).toBe(true);
+
+    const res = await request(app).get(`/public/portal/${portalToken}`);
+    expect(res.status).toBe(200);
+
+    const names = (res.body.portal.files || []).map(
+      (f: { original_name: string }) => f.original_name
+    );
+    expect(names).toContain('before.jpg');
+    expect(names).not.toContain('internal.jpg');
+
+    const before = res.body.portal.files.find(
+      (f: { original_name: string }) => f.original_name === 'before.jpg'
+    );
+    expect(before.caption).toBe('Front elevation');
+    expect(before.category).toBe('before');
+    expect(before.client_visible).toBeUndefined();
+  });
+
+  it('returns a curated timeline and omits internal communication activity', async () => {
+    await request(app)
+      .patch(`/jobs/${jobId}`)
+      .set('Cookie', cookie)
+      .send({ status: 'Contacted' });
+
+    await request(app)
+      .post('/notes')
+      .set('Cookie', cookie)
+      .send({
+        entity_type: 'job',
+        entity_id: jobId,
+        body: 'Internal call notes should stay private',
+        type: 'call',
+        direction: 'outbound',
+      });
+
+    const res = await request(app).get(`/public/portal/${portalToken}`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.portal.timeline)).toBe(true);
+
+    const labels = (res.body.portal.timeline || []).map(
+      (item: { label: string }) => item.label
+    );
+    expect(labels.some((label: string) => /status/i.test(label))).toBe(true);
+    expect(
+      labels.some((label: string) => /Internal call notes/i.test(label))
+    ).toBe(false);
+
+    const types = (res.body.portal.timeline || []).map(
+      (item: { type: string }) => item.type
+    );
+    expect(types).not.toContain('COMMUNICATION_LOGGED');
   });
 
   it('GET /public/portal/invalid-token returns 404', async () => {
