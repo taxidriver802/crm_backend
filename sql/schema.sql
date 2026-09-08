@@ -180,6 +180,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   title TEXT NOT NULL,
   description TEXT,
   due_date TIMESTAMPTZ,
+  kind TEXT NOT NULL DEFAULT 'task',
+  end_at TIMESTAMPTZ,
+  location TEXT,
   status TEXT NOT NULL DEFAULT 'Pending',
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -192,11 +195,30 @@ CREATE TABLE IF NOT EXISTS tasks (
       lead_id IS NULL
       AND job_id IS NOT NULL
     )
+  ),
+  CONSTRAINT tasks_kind_check CHECK (kind IN ('task', 'appointment')),
+  CONSTRAINT tasks_end_at_after_due_check CHECK (
+    end_at IS NULL
+    OR due_date IS NULL
+    OR end_at > due_date
+  ),
+  CONSTRAINT tasks_appointment_requires_due_check CHECK (
+    kind <> 'appointment'
+    OR due_date IS NOT NULL
   )
 );
 
 ALTER TABLE tasks
 ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users (id) ON DELETE SET NULL;
+
+ALTER TABLE tasks
+ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'task';
+
+ALTER TABLE tasks
+ADD COLUMN IF NOT EXISTS end_at TIMESTAMPTZ;
+
+ALTER TABLE tasks
+ADD COLUMN IF NOT EXISTS location TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks (user_id);
 
@@ -209,6 +231,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_job_id ON tasks (job_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks (due_date);
 
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_user_kind_due_date
+  ON tasks (user_id, kind, due_date);
 
 -- =========================================================
 -- FILES
