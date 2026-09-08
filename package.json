@@ -23,6 +23,7 @@
     "db:patch-phase16-communication": "node scripts/apply-phase16-communication-patch.js",
     "db:patch-phase17-quotes-photos": "node scripts/apply-phase17-quotes-photos-patch.js",
     "db:patch-phase18-acquisition-portal": "node scripts/apply-phase18-acquisition-portal-patch.js",
+    "db:patch-phase19-appointments-workload": "node scripts/apply-phase19-appointments-workload-patch.js",
     "db:seed-demo": "node scripts/seed-demo-data.js",
     "db:seed-walkthrough": "node scripts/seed-walkthrough-data.js"
   },
