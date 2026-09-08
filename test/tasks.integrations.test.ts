@@ -432,4 +432,96 @@ describe('Tasks integration', () => {
 
     expect(patchRes.status).toBe(403);
   });
+
+  it('creates an appointment with end_at and location', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+    const job = await createJob(headers, lead.id);
+
+    const start = new Date('2030-06-01T15:00:00.000Z');
+    const end = new Date('2030-06-01T16:30:00.000Z');
+
+    const res = await request(app).post('/tasks').set(headers).send({
+      job_id: job.id,
+      title: 'Site visit',
+      kind: 'appointment',
+      due_date: start.toISOString(),
+      end_at: end.toISOString(),
+      location: '123 Main St',
+      status: 'Pending',
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.task.kind).toBe('appointment');
+    expect(res.body.task.location).toBe('123 Main St');
+    expect(new Date(res.body.task.due_date).toISOString()).toBe(start.toISOString());
+    expect(new Date(res.body.task.end_at).toISOString()).toBe(end.toISOString());
+
+    const filtered = await request(app)
+      .get('/tasks')
+      .query({ kind: 'appointment' })
+      .set(headers);
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.tasks.some((t: { id: number }) => t.id === res.body.task.id)).toBe(
+      true
+    );
+  });
+
+  it('rejects appointment without due_date and end_at before due_date', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+
+    const missingDue = await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'No start',
+      kind: 'appointment',
+      status: 'Pending',
+    });
+    expect(missingDue.status).toBe(400);
+
+    const badEnd = await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'Bad range',
+      kind: 'appointment',
+      due_date: '2030-06-01T16:00:00.000Z',
+      end_at: '2030-06-01T15:00:00.000Z',
+      status: 'Pending',
+    });
+    expect(badEnd.status).toBe(400);
+  });
+
+  it('does not treat an in-progress appointment as overdue until end_at', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+
+    const start = new Date(Date.now() - 2 * 86400000).toISOString();
+    const end = new Date(Date.now() + 2 * 86400000).toISOString();
+
+    const create = await request(app).post('/tasks').set(headers).send({
+      lead_id: lead.id,
+      title: 'Multi-day visit',
+      kind: 'appointment',
+      due_date: start,
+      end_at: end,
+      status: 'Pending',
+    });
+    expect(create.status).toBe(201);
+
+    const overdue = await request(app)
+      .get('/tasks')
+      .query({ duePreset: 'overdue' })
+      .set(headers);
+    expect(overdue.status).toBe(200);
+    expect(
+      overdue.body.tasks.some((t: { id: number }) => t.id === create.body.task.id)
+    ).toBe(false);
+
+    const summary = await request(app).get('/tasks/summary').set(headers);
+    expect(summary.status).toBe(200);
+    expect(
+      summary.body.overdueTasks.some(
+        (t: { id: number }) => t.id === create.body.task.id
+      )
+    ).toBe(false);
+  });
 });

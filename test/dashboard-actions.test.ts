@@ -382,4 +382,60 @@ describe('Dashboard actions', () => {
     expect(afterStatus).toBeGreaterThan(beforeTs);
     expect(statusPatch.body.lead.days_in_status).toBe(0);
   });
+
+  it('returns team workload for owner and forbids agents', async () => {
+    const owner = await createAuthedUser('owner');
+    const agent = await createAuthedUser('agent');
+
+    const lead = await request(app).post('/leads').set(owner.headers).send({
+      first_name: 'Load',
+      last_name: 'Test',
+      status: 'New',
+      assigned_to: agent.user.id,
+    });
+    expect(lead.status).toBe(201);
+
+    const job = await request(app).post('/jobs').set(owner.headers).send({
+      lead_id: lead.body.lead.id,
+      title: 'Assigned job',
+      status: 'New',
+      assigned_to: agent.user.id,
+    });
+    expect(job.status).toBe(201);
+
+    const overdue = new Date(Date.now() - 86400000).toISOString();
+    const task = await request(app).post('/tasks').set(owner.headers).send({
+      job_id: job.body.job.id,
+      title: 'Overdue follow-up',
+      due_date: overdue,
+      status: 'Pending',
+      assigned_to: agent.user.id,
+    });
+    expect(task.status).toBe(201);
+
+    const agentDenied = await request(app)
+      .get('/dashboard/workload')
+      .set(agent.headers);
+    expect(agentDenied.status).toBe(403);
+
+    const workload = await request(app)
+      .get('/dashboard/workload')
+      .set(owner.headers);
+    expect(workload.status).toBe(200);
+    expect(Array.isArray(workload.body.workload)).toBe(true);
+
+    const agentRow = workload.body.workload.find(
+      (row: { user_id: string | null }) => row.user_id === agent.user.id
+    );
+    expect(agentRow).toBeTruthy();
+    expect(agentRow.leads_open).toBeGreaterThanOrEqual(1);
+    expect(agentRow.jobs_open).toBeGreaterThanOrEqual(1);
+    expect(agentRow.tasks_open).toBeGreaterThanOrEqual(1);
+    expect(agentRow.tasks_overdue).toBeGreaterThanOrEqual(1);
+
+    const unassigned = workload.body.workload.find(
+      (row: { user_id: string | null }) => row.user_id == null
+    );
+    expect(unassigned?.name).toBe('Unassigned');
+  });
 });

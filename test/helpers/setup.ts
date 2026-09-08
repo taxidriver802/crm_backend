@@ -136,6 +136,17 @@ export async function ensureSchema() {
       'utf8'
     );
     await client.query(patchPhase18AcquisitionPortalSql);
+
+    const patchPhase19AppointmentsWorkloadPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase19_appointments_workload.sql'
+    );
+    const patchPhase19AppointmentsWorkloadSql = fs.readFileSync(
+      patchPhase19AppointmentsWorkloadPath,
+      'utf8'
+    );
+    await client.query(patchPhase19AppointmentsWorkloadSql);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
