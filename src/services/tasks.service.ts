@@ -44,6 +44,13 @@ export class AssignmentPermissionError extends Error {
   }
 }
 
+export class TaskTimingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TaskTimingError';
+  }
+}
+
 async function ensureJobBelongsToUser(
   jobId: number,
   userId: string,
@@ -113,6 +120,7 @@ export type GetTasksFilters = {
   dateTo?: string;
   /** Matches windows used in getTaskSummary list queries */
   duePreset?: TaskDuePreset;
+  kind?: 'task' | 'appointment';
   q?: string;
   linkedTo?: string;
   includeAll?: boolean;
@@ -127,6 +135,9 @@ export type CreateTaskInput = {
   title: string;
   description?: string | null;
   due_date?: string | null;
+  kind?: 'task' | 'appointment' | null;
+  end_at?: string | null;
+  location?: string | null;
   status?: string | null;
 };
 
@@ -142,6 +153,9 @@ const TASK_SELECT = `
     t.title,
     t.description,
     t.due_date,
+    t.kind,
+    t.end_at,
+    t.location,
     t.status,
     t.created_at,
     t.updated_at,
@@ -260,6 +274,9 @@ function normalizeTask(row: any) {
     title: row.title,
     description: row.description,
     due_date: row.due_date,
+    kind: row.kind ?? 'task',
+    end_at: row.end_at ?? null,
+    location: row.location ?? null,
     status: row.status,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -331,12 +348,16 @@ export async function getTaskSummary(
       pool.query(
         `
         SELECT
-          COUNT(*) FILTER (WHERE status <> 'Completed' AND due_date < NOW())::int AS overdue,
+          COUNT(*) FILTER (
+            WHERE status <> 'Completed'
+              AND due_date IS NOT NULL
+              AND COALESCE(end_at, due_date) < NOW()
+          )::int AS overdue,
           COUNT(*) FILTER (
             WHERE status <> 'Completed'
               AND job_id IS NOT NULL
               AND due_date IS NOT NULL
-              AND due_date < NOW()
+              AND COALESCE(end_at, due_date) < NOW()
           )::int AS overdue_on_jobs,
           COUNT(*) FILTER (
             WHERE status <> 'Completed'
@@ -359,8 +380,8 @@ export async function getTaskSummary(
         WHERE ${taskSelectWhere}
           AND t.status <> 'Completed'
           AND t.due_date IS NOT NULL
-          AND t.due_date < NOW()
-        ORDER BY t.due_date ASC
+          AND COALESCE(t.end_at, t.due_date) < NOW()
+        ORDER BY COALESCE(t.end_at, t.due_date) ASC
         LIMIT 10;
         `,
         taskSelectParams
@@ -414,6 +435,11 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
     where.push(`t.status = $${params.length}`);
   }
 
+  if (filters.kind === 'task' || filters.kind === 'appointment') {
+    params.push(filters.kind);
+    where.push(`t.kind = $${params.length}`);
+  }
+
   if (filters.linkedTo === 'job') {
     where.push(`t.job_id IS NOT NULL`);
   }
@@ -444,21 +470,32 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
     where.push(`t.due_date <= $${params.length}`);
   }
 
-  if (filters.dateFrom) {
+  if (filters.dateFrom && filters.dateTo) {
     params.push(filters.dateFrom);
-    where.push(`t.due_date >= $${params.length}`);
-  }
-
-  if (filters.dateTo) {
+    const fromIdx = params.length;
     params.push(filters.dateTo);
-    where.push(`t.due_date <= $${params.length}`);
+    const toIdx = params.length;
+    // Overlap: include multi-day appointments that span into the visible range
+    where.push(
+      `t.due_date IS NOT NULL AND t.due_date <= $${toIdx} AND COALESCE(t.end_at, t.due_date) >= $${fromIdx}`
+    );
+  } else {
+    if (filters.dateFrom) {
+      params.push(filters.dateFrom);
+      where.push(`t.due_date >= $${params.length}`);
+    }
+
+    if (filters.dateTo) {
+      params.push(filters.dateTo);
+      where.push(`t.due_date <= $${params.length}`);
+    }
   }
 
   if (filters.duePreset) {
     where.push(`t.status <> 'Completed'`);
     if (filters.duePreset === 'overdue') {
       where.push(`t.due_date IS NOT NULL`);
-      where.push(`t.due_date < NOW()`);
+      where.push(`COALESCE(t.end_at, t.due_date) < NOW()`);
     } else if (filters.duePreset === 'due_today') {
       where.push(`t.due_date IS NOT NULL`);
       where.push(`t.due_date >= date_trunc('day', NOW())`);
@@ -519,9 +556,26 @@ export async function createTask(
   if (input.due_date) {
     const d = new Date(input.due_date);
     if (isNaN(d.getTime())) {
-      throw new Error('Invalid due_date');
+      throw new TaskTimingError('Invalid due_date');
     }
     dueDateValue = d.toISOString();
+  }
+
+  let endAtValue: string | null = null;
+  if (input.end_at) {
+    const d = new Date(input.end_at);
+    if (isNaN(d.getTime())) {
+      throw new TaskTimingError('Invalid end_at');
+    }
+    endAtValue = d.toISOString();
+  }
+
+  const kind = input.kind === 'appointment' ? 'appointment' : 'task';
+  if (kind === 'appointment' && !dueDateValue) {
+    throw new TaskTimingError('Appointments require a due_date');
+  }
+  if (endAtValue && dueDateValue && endAtValue <= dueDateValue) {
+    throw new TaskTimingError('end_at must be after due_date');
   }
 
   const result = await pool.query(
@@ -534,9 +588,12 @@ export async function createTask(
       title,
       description,
       due_date,
+      kind,
+      end_at,
+      location,
       status
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     RETURNING *;
     `,
     [
@@ -547,6 +604,9 @@ export async function createTask(
       input.title,
       input.description ?? null,
       dueDateValue,
+      kind,
+      endAtValue,
+      input.location ?? null,
       input.status ?? 'Pending',
     ]
   );
@@ -674,19 +734,67 @@ export async function updateTask(
   const setParts: string[] = [];
   const values: any[] = [id];
 
+  const nextKind =
+    'kind' in updates
+      ? updates.kind === 'appointment'
+        ? 'appointment'
+        : updates.kind === 'task'
+          ? 'task'
+          : existingTask.kind
+      : existingTask.kind;
+
+  let nextDueDate: string | null =
+    existingTask.due_date != null
+      ? new Date(existingTask.due_date).toISOString()
+      : null;
+  if ('due_date' in updates) {
+    if (updates.due_date) {
+      const d = new Date(updates.due_date);
+      if (isNaN(d.getTime())) {
+        throw new TaskTimingError('Invalid due_date');
+      }
+      nextDueDate = d.toISOString();
+    } else {
+      nextDueDate = null;
+    }
+  }
+
+  let nextEndAt: string | null =
+    existingTask.end_at != null
+      ? new Date(existingTask.end_at).toISOString()
+      : null;
+  if ('end_at' in updates) {
+    if (updates.end_at) {
+      const d = new Date(updates.end_at);
+      if (isNaN(d.getTime())) {
+        throw new TaskTimingError('Invalid end_at');
+      }
+      nextEndAt = d.toISOString();
+    } else {
+      nextEndAt = null;
+    }
+  }
+
+  if (nextKind === 'appointment' && !nextDueDate) {
+    throw new TaskTimingError('Appointments require a due_date');
+  }
+  if (nextEndAt && nextDueDate && nextEndAt <= nextDueDate) {
+    throw new TaskTimingError('end_at must be after due_date');
+  }
+
   for (const key of keys) {
     let value = updates[key];
 
     if (key === 'due_date') {
-      if (value) {
-        const d = new Date(value);
-        if (isNaN(d.getTime())) {
-          throw new Error('Invalid due_date');
-        }
-        value = d.toISOString();
-      } else {
-        value = null;
-      }
+      value = nextDueDate;
+    }
+
+    if (key === 'end_at') {
+      value = nextEndAt;
+    }
+
+    if (key === 'kind') {
+      value = nextKind;
     }
 
     values.push(value ?? null);

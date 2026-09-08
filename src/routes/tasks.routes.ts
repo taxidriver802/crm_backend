@@ -76,6 +76,11 @@ tasksRouter.get(
         ? req.query.assignedTo
         : undefined;
 
+    const kindRaw =
+      typeof req.query.kind === 'string' ? req.query.kind.trim() : '';
+    const kind =
+      kindRaw === 'task' || kindRaw === 'appointment' ? kindRaw : undefined;
+
     const duePreset = parseDuePresetQuery(req.query as Record<string, unknown>);
 
     const limit = Math.min(Number(req.query.limit || 50), 200);
@@ -89,6 +94,7 @@ tasksRouter.get(
       dateFrom,
       dateTo,
       duePreset,
+      kind,
       q,
       linkedTo,
       assignedTo,
@@ -129,6 +135,9 @@ tasksRouter.post(
       }
       if (error instanceof tasksService.AssignmentPermissionError) {
         return res.status(403).json({ ok: false, error: error.message });
+      }
+      if (error instanceof tasksService.TaskTimingError) {
+        return res.status(400).json({ ok: false, error: error.message });
       }
 
       throw error;
@@ -203,6 +212,9 @@ tasksRouter.patch(
       }
       if (error instanceof tasksService.AssignmentPermissionError) {
         return res.status(403).json({ ok: false, error: error.message });
+      }
+      if (error instanceof tasksService.TaskTimingError) {
+        return res.status(400).json({ ok: false, error: error.message });
       }
 
       throw error;

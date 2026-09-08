@@ -27,6 +27,18 @@ dashboardRouter.get(
 );
 
 dashboardRouter.get(
+  '/workload',
+  asyncHandler(async (req, res) => {
+    if (!canViewAll(req.user?.role)) {
+      return res.status(403).json({ ok: false, error: 'Insufficient permissions' });
+    }
+
+    const workload = await dashboardService.getWorkload();
+    res.json({ ok: true, workload });
+  })
+);
+
+dashboardRouter.get(
   '/activities',
   asyncHandler(async (req, res) => {
     const userId = req.user!.userId;

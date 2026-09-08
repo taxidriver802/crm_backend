@@ -110,7 +110,7 @@ export async function runTaskNotificationJob() {
   ${TASK_NOTIFICATION_SELECT}
   WHERE t.status <> 'Completed'
     AND t.due_date IS NOT NULL
-    AND t.due_date < NOW()
+    AND COALESCE(t.end_at, t.due_date) < NOW()
 `);
 
   for (const task of overdue.rows) {

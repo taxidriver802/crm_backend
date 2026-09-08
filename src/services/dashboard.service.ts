@@ -198,11 +198,11 @@ export async function getDashboardData(
           ON t.job_id = j.id
          AND t.status <> 'Completed'
          AND t.due_date IS NOT NULL
-         AND t.due_date < NOW()
+         AND COALESCE(t.end_at, t.due_date) < NOW()
         WHERE ${aliased('j')}
           AND j.status NOT IN ('Closed Won', 'Closed Lost')
         GROUP BY j.id
-        ORDER BY MIN(t.due_date) ASC
+        ORDER BY MIN(COALESCE(t.end_at, t.due_date)) ASC
         LIMIT ${ph(1)}
       `,
       extras(QUEUE_LIMIT)
@@ -324,3 +324,95 @@ export async function getDashboardData(
     },
   };
 }
+
+export type WorkloadRow = {
+  user_id: string | null;
+  name: string;
+  leads_open: number;
+  jobs_open: number;
+  tasks_open: number;
+  tasks_overdue: number;
+};
+
+export async function getWorkload(): Promise<WorkloadRow[]> {
+  const result = await pool.query(
+    `
+    WITH active_users AS (
+      SELECT id, first_name, last_name, email
+      FROM users
+      WHERE status = 'active'
+    ),
+    lead_counts AS (
+      SELECT
+        assigned_to AS user_id,
+        COUNT(*)::int AS leads_open
+      FROM leads
+      WHERE status NOT IN ('Closed', 'Inactive')
+      GROUP BY assigned_to
+    ),
+    job_counts AS (
+      SELECT
+        assigned_to AS user_id,
+        COUNT(*)::int AS jobs_open
+      FROM jobs
+      WHERE status NOT IN ('Closed Won', 'Closed Lost')
+      GROUP BY assigned_to
+    ),
+    task_counts AS (
+      SELECT
+        assigned_to AS user_id,
+        COUNT(*) FILTER (WHERE status <> 'Completed')::int AS tasks_open,
+        COUNT(*) FILTER (
+          WHERE status <> 'Completed'
+            AND due_date IS NOT NULL
+            AND COALESCE(end_at, due_date) < NOW()
+        )::int AS tasks_overdue
+      FROM tasks
+      GROUP BY assigned_to
+    ),
+    rows AS (
+      SELECT
+        u.id AS user_id,
+        TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, ''))) AS name,
+        COALESCE(u.email, '') AS email,
+        COALESCE(l.leads_open, 0)::int AS leads_open,
+        COALESCE(j.jobs_open, 0)::int AS jobs_open,
+        COALESCE(t.tasks_open, 0)::int AS tasks_open,
+        COALESCE(t.tasks_overdue, 0)::int AS tasks_overdue,
+        0 AS is_unassigned
+      FROM active_users u
+      LEFT JOIN lead_counts l ON l.user_id = u.id
+      LEFT JOIN job_counts j ON j.user_id = u.id
+      LEFT JOIN task_counts t ON t.user_id = u.id
+
+      UNION ALL
+
+      SELECT
+        NULL::uuid AS user_id,
+        'Unassigned' AS name,
+        '' AS email,
+        COALESCE((SELECT leads_open FROM lead_counts WHERE user_id IS NULL), 0)::int,
+        COALESCE((SELECT jobs_open FROM job_counts WHERE user_id IS NULL), 0)::int,
+        COALESCE((SELECT tasks_open FROM task_counts WHERE user_id IS NULL), 0)::int,
+        COALESCE((SELECT tasks_overdue FROM task_counts WHERE user_id IS NULL), 0)::int,
+        1 AS is_unassigned
+    )
+    SELECT *
+    FROM rows
+    ORDER BY is_unassigned ASC, tasks_overdue DESC, tasks_open DESC, name ASC;
+    `
+  );
+
+  return result.rows.map((row) => {
+    const trimmed = String(row.name || '').trim();
+    return {
+      user_id: row.user_id ?? null,
+      name: trimmed || row.email || 'User',
+      leads_open: Number(row.leads_open) || 0,
+      jobs_open: Number(row.jobs_open) || 0,
+      tasks_open: Number(row.tasks_open) || 0,
+      tasks_overdue: Number(row.tasks_overdue) || 0,
+    };
+  });
+}
+
