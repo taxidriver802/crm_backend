@@ -1,36 +1,46 @@
 /**
  * Seeds realistic Rooftop Realty walkthrough data for demos.
  *
- * Attaches everything to your existing owner account (does not create users).
+ * Attaches records to an existing owner account (does not wipe users).
+ * Optionally creates demo agent logins with --include-team.
  *
  * Usage (from crm_backend):
  *   npm run db:seed-walkthrough
  *   npm run db:seed-walkthrough -- --dry-run
  *   npm run db:seed-walkthrough -- --reset
+ *   npm run db:seed-walkthrough -- --owner-email you@example.com
+ *   npm run db:seed-walkthrough -- --include-team
+ *   npm run db:seed-walkthrough -- --confirm --reset   # required for non-local DB hosts
  *
- * --reset clears demo tables first (keeps users).
+ * Flags:
+ *   --dry-run         Print planned writes without committing
+ *   --reset           Truncate CRM business tables first (keeps users)
+ *   --force           Allow appending even if walkthrough leads already exist
+ *   --confirm         Required when DATABASE_URL host is not localhost/127.0.0.1
+ *   --owner-email     Target a specific active owner (default: oldest active owner)
+ *   --include-team    Create/reuse demo agents and assign some work to them
+ *
+ * Suggested demo path:
+ *   Dashboard → Leads (Nelson/Patel) → Jobs → Estimates → Invoices →
+ *   Tasks/Appointments → Notifications → Team view (if --include-team)
  */
 require('dotenv').config();
 
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
 
-function parseArgs(argv) {
-  return {
-    dryRun: argv.includes('--dry-run'),
-    reset: argv.includes('--reset'),
-  };
-}
+const WALKTHROUGH_LEAD_EMAILS = [
+  'marcus.nelson@example.com',
+  'priya.patel@example.com',
+  'elena.brooks@example.com',
+  'david.chen@example.com',
+  'tom.andersen@example.com',
+  'sofia.rivera@example.com',
+  'jordan.hayes@example.com',
+];
 
-function daysFromNow(days, hour = 10) {
-  const d = new Date();
-  d.setHours(hour, 0, 0, 0);
-  d.setDate(d.getDate() + days);
-  return d.toISOString();
-}
-
-function daysAgo(days, hour = 14) {
-  return daysFromNow(-days, hour);
-}
+const DEMO_AGENT_PASSWORD = 'DemoAgent123!';
 
 const DEMO_TABLES = [
   'supplier_webhook_events',
@@ -55,10 +65,87 @@ const DEMO_TABLES = [
   'leads',
 ];
 
-async function getOwner(pool) {
+function parseArgs(argv) {
+  return {
+    dryRun: argv.includes('--dry-run'),
+    reset: argv.includes('--reset'),
+    force: argv.includes('--force'),
+    confirm: argv.includes('--confirm'),
+    includeTeam: argv.includes('--include-team'),
+    ownerEmail: getArgValue(argv, '--owner-email'),
+  };
+}
+
+function getArgValue(argv, flag) {
+  const index = argv.indexOf(flag);
+  if (index === -1) return null;
+  return argv[index + 1] || null;
+}
+
+function daysFromNow(days, hour = 10) {
+  const d = new Date();
+  d.setHours(hour, 0, 0, 0);
+  d.setDate(d.getDate() + days);
+  return d.toISOString();
+}
+
+function daysAgo(days, hour = 14) {
+  return daysFromNow(-days, hour);
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function randomToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function assertSafeDatabaseTarget(databaseUrl, options) {
+  let hostname = '';
+  try {
+    hostname = new URL(databaseUrl).hostname.toLowerCase();
+  } catch {
+    throw new Error('DATABASE_URL is not a valid URL.');
+  }
+
+  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
+  if (!isLocal && !options.confirm && !options.dryRun) {
+    throw new Error(
+      `Refusing to write to non-local database host "${hostname}". ` +
+        `Re-run with --confirm (and usually --reset) after reviewing the data impact. ` +
+        `Docker-internal hosts like crm-db also require --confirm.`
+    );
+  }
+
+  return hostname;
+}
+
+async function getOwner(pool, ownerEmail) {
+  if (ownerEmail) {
+    const { rows } = await pool.query(
+      `
+      SELECT id, email, first_name, last_name, role, status
+      FROM users
+      WHERE lower(email) = lower($1)
+      LIMIT 1
+      `,
+      [ownerEmail]
+    );
+    if (!rows[0]) {
+      throw new Error(`No user found for --owner-email ${ownerEmail}`);
+    }
+    if (rows[0].role !== 'owner' || rows[0].status !== 'active') {
+      throw new Error(
+        `User ${ownerEmail} must be an active owner (found role=${rows[0].role}, status=${rows[0].status}).`
+      );
+    }
+    return rows[0];
+  }
+
   const { rows } = await pool.query(
     `
-    SELECT id, email, first_name, last_name, role
+    SELECT id, email, first_name, last_name, role, status
     FROM users
     WHERE role = 'owner' AND status = 'active'
     ORDER BY created_at ASC
@@ -67,10 +154,66 @@ async function getOwner(pool) {
   );
   if (!rows[0]) {
     throw new Error(
-      'No active owner found. Register a user first, then rerun this seed.'
+      'No active owner found. Register/login once on the hosted site, then rerun this seed.'
     );
   }
   return rows[0];
+}
+
+async function ensureDemoAgents(pool, dryRun) {
+  const agents = [
+    {
+      email: 'alex.morgan@example.com',
+      first_name: 'Alex',
+      last_name: 'Morgan',
+      key: 'alex',
+    },
+    {
+      email: 'sam.lee@example.com',
+      first_name: 'Sam',
+      last_name: 'Lee',
+      key: 'sam',
+    },
+  ];
+
+  const passwordHash = await bcrypt.hash(DEMO_AGENT_PASSWORD, 10);
+  const byKey = {};
+
+  for (const agent of agents) {
+    if (dryRun) {
+      byKey[agent.key] = {
+        id: crypto.randomUUID(),
+        email: agent.email,
+        first_name: agent.first_name,
+        last_name: agent.last_name,
+      };
+      console.log(`[dry-run] ensure agent ${agent.email}`);
+      continue;
+    }
+
+    const existing = await pool.query(
+      `SELECT id, email, first_name, last_name FROM users WHERE lower(email) = lower($1)`,
+      [agent.email]
+    );
+    if (existing.rows[0]) {
+      byKey[agent.key] = existing.rows[0];
+      continue;
+    }
+
+    const { rows } = await pool.query(
+      `
+      INSERT INTO users (
+        first_name, last_name, email, password_hash, role, status,
+        invited_at, password_set_at
+      ) VALUES ($1, $2, $3, $4, 'agent', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      RETURNING id, email, first_name, last_name
+      `,
+      [agent.first_name, agent.last_name, agent.email, passwordHash]
+    );
+    byKey[agent.key] = rows[0];
+  }
+
+  return byKey;
 }
 
 async function resetDemoTables(pool, dryRun) {
@@ -80,7 +223,20 @@ async function resetDemoTables(pool, dryRun) {
     return;
   }
   await pool.query(sql);
-  console.log('Cleared demo tables (users preserved).');
+  console.log('Cleared CRM business tables (users preserved).');
+}
+
+async function walkthroughAlreadyPresent(pool) {
+  const { rows } = await pool.query(
+    `
+    SELECT email
+    FROM leads
+    WHERE lower(email) = ANY($1::text[])
+    LIMIT 1
+    `,
+    [WALKTHROUGH_LEAD_EMAILS]
+  );
+  return Boolean(rows[0]);
 }
 
 async function insertReturning(pool, sql, params, dryRun, label) {
@@ -92,12 +248,21 @@ async function insertReturning(pool, sql, params, dryRun, label) {
   return rows[0];
 }
 
-async function seed(pool, owner, dryRun) {
+async function seed(pool, owner, agents, dryRun, options) {
   const userId = owner.id;
+  const alexId = agents?.alex?.id || userId;
+  const samId = agents?.sam?.id || userId;
+  const frontendBase = (
+    process.env.APP_BASE_URL ||
+    process.env.FRONTEND_URL ||
+    'https://your-crm-host'
+  ).replace(/\/$/, '');
+
   const counts = {
     leads: 0,
     jobs: 0,
     tasks: 0,
+    appointments: 0,
     notes: 0,
     estimates: 0,
     estimate_line_items: 0,
@@ -108,7 +273,12 @@ async function seed(pool, owner, dryRun) {
     notifications: 0,
     saved_views: 0,
     automation_rules: 0,
+    files: 0,
+    portal_tokens: 0,
+    team_agents: agents ? Object.keys(agents).length : 0,
   };
+
+  const publicLinks = {};
 
   // ─── Leads ───────────────────────────────────────────────
   const leadDefs = [
@@ -120,11 +290,16 @@ async function seed(pool, owner, dryRun) {
       phone: '6125550142',
       source: 'Website',
       status: 'New',
+      service_type: 'Roofing',
+      preferred_contact_method: 'phone',
+      urgency: 'high',
       budget_min: 12000,
       budget_max: 18000,
+      assigned_to: alexId,
       notes:
         'Requested a full roof replacement quote after hail damage. Prefers asphalt architectural shingles.',
       created_at: daysAgo(2),
+      status_changed_at: daysAgo(2),
     },
     {
       key: 'patel',
@@ -134,11 +309,16 @@ async function seed(pool, owner, dryRun) {
       phone: '7635550198',
       source: 'Referral',
       status: 'Qualified',
+      service_type: 'Gutters',
+      preferred_contact_method: 'email',
+      urgency: 'medium',
       budget_min: 8000,
       budget_max: 14000,
+      assigned_to: userId,
       notes:
         'Referred by the Andersens. Interested in seamless gutters and partial siding repair on the south wall.',
       created_at: daysAgo(8),
+      status_changed_at: daysAgo(3),
     },
     {
       key: 'brooks',
@@ -148,10 +328,15 @@ async function seed(pool, owner, dryRun) {
       phone: '6515550177',
       source: 'Door Knock',
       status: 'Contacted',
+      service_type: 'Windows',
+      preferred_contact_method: 'text',
+      urgency: 'low',
       budget_min: 4000,
       budget_max: 7500,
+      assigned_to: samId,
       notes: 'Wants energy-efficient window upgrade for living room and master bedroom.',
       created_at: daysAgo(5),
+      status_changed_at: daysAgo(4),
     },
     {
       key: 'chen',
@@ -161,10 +346,15 @@ async function seed(pool, owner, dryRun) {
       phone: '9525550133',
       source: 'Website',
       status: 'New',
+      service_type: 'Gutters',
+      preferred_contact_method: 'email',
+      urgency: 'medium',
       budget_min: 3000,
       budget_max: 5000,
+      assigned_to: samId,
       notes: 'Gutter cleaning + downspout extension inquiry.',
       created_at: daysAgo(1),
+      status_changed_at: daysAgo(1),
     },
     {
       key: 'andersen',
@@ -174,10 +364,15 @@ async function seed(pool, owner, dryRun) {
       phone: '6125550110',
       source: 'Referral',
       status: 'Closed',
+      service_type: 'Roofing',
+      preferred_contact_method: 'phone',
+      urgency: 'medium',
       budget_min: 15000,
       budget_max: 22000,
+      assigned_to: userId,
       notes: 'Completed tear-off and re-roof last month. Happy customer; referred Priya Patel.',
       created_at: daysAgo(45),
+      status_changed_at: daysAgo(12),
     },
     {
       key: 'rivera',
@@ -187,10 +382,34 @@ async function seed(pool, owner, dryRun) {
       phone: '7635550166',
       source: 'Website',
       status: 'Inactive',
+      service_type: 'Roofing',
+      preferred_contact_method: 'email',
+      urgency: 'low',
       budget_min: 2000,
       budget_max: 4000,
+      assigned_to: alexId,
       notes: 'Went quiet after initial estimate request. Revisit in spring.',
       created_at: daysAgo(60),
+      status_changed_at: daysAgo(40),
+    },
+    {
+      key: 'hayes',
+      first_name: 'Jordan',
+      last_name: 'Hayes',
+      email: 'jordan.hayes@example.com',
+      phone: '6125550188',
+      source: 'Website',
+      status: 'Contacted',
+      service_type: 'Siding',
+      preferred_contact_method: 'phone',
+      urgency: 'medium',
+      budget_min: 9000,
+      budget_max: 15000,
+      assigned_to: alexId,
+      notes:
+        'Price-shopped another contractor. Lost on timing after we could not schedule inspection within 10 days.',
+      created_at: daysAgo(21),
+      status_changed_at: daysAgo(14),
     },
   ];
 
@@ -201,16 +420,20 @@ async function seed(pool, owner, dryRun) {
       `
       INSERT INTO leads (
         user_id, assigned_to, first_name, last_name, email, phone,
-        source, status, budget_min, budget_max, notes, created_at, updated_at
+        source, status, budget_min, budget_max, notes,
+        service_type, preferred_contact_method, urgency,
+        created_at, updated_at, status_changed_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6,
-        $7, $8, $9, $10, $11, $12, $12
+        $7, $8, $9, $10, $11,
+        $12, $13, $14,
+        $15, $15, $16
       )
       RETURNING id
       `,
       [
         userId,
-        userId,
+        lead.assigned_to,
         lead.first_name,
         lead.last_name,
         lead.email,
@@ -220,7 +443,11 @@ async function seed(pool, owner, dryRun) {
         lead.budget_min,
         lead.budget_max,
         lead.notes,
+        lead.service_type,
+        lead.preferred_contact_method,
+        lead.urgency,
         lead.created_at,
+        lead.status_changed_at,
       ],
       dryRun,
       `lead ${lead.first_name} ${lead.last_name}`
@@ -239,6 +466,7 @@ async function seed(pool, owner, dryRun) {
         'Install 6" seamless gutters, replace damaged Hardie board on south elevation, touch-up trim.',
       status: 'Proposal Sent',
       address: '1842 Birchwood Ave, Plymouth, MN 55441',
+      assigned_to: userId,
       created_at: daysAgo(7),
     },
     {
@@ -249,6 +477,7 @@ async function seed(pool, owner, dryRun) {
         'Insurance hail claim support. Tear-off existing 3-tab, install architectural shingles, ridge vent, and ice & water shield.',
       status: 'Appointment Scheduled',
       address: '512 Oak Street, Minneapolis, MN 55408',
+      assigned_to: alexId,
       created_at: daysAgo(2),
     },
     {
@@ -258,7 +487,18 @@ async function seed(pool, owner, dryRun) {
       description: 'Full tear-off and re-roof with GAF Timberline HDZ. Final walkthrough completed.',
       status: 'Closed Won',
       address: '903 Lakeview Dr, Edina, MN 55424',
+      assigned_to: userId,
       created_at: daysAgo(40),
+    },
+    {
+      key: 'hayesLost',
+      leadKey: 'hayes',
+      title: 'Hayes residence — siding estimate (lost)',
+      description: 'Partial north elevation Hardie replacement. Lost to competitor on schedule.',
+      status: 'Closed Lost',
+      address: '2201 Summit Ave, St Paul, MN 55105',
+      assigned_to: alexId,
+      created_at: daysAgo(18),
     },
   ];
 
@@ -277,7 +517,7 @@ async function seed(pool, owner, dryRun) {
       `,
       [
         userId,
-        userId,
+        job.assigned_to,
         leads[job.leadKey],
         job.title,
         job.description,
@@ -292,7 +532,7 @@ async function seed(pool, owner, dryRun) {
     counts.jobs += 1;
   }
 
-  // ─── Measurements (strong job) ───────────────────────────
+  // ─── Measurements ────────────────────────────────────────
   const measurements = [
     { label: 'Roof squares', value: 28, unit: 'sq', sort: 0 },
     { label: 'Gutter length', value: 145, unit: 'ft', sort: 1 },
@@ -313,7 +553,7 @@ async function seed(pool, owner, dryRun) {
     counts.measurements += 1;
   }
 
-  // ─── Tasks ───────────────────────────────────────────────
+  // ─── Tasks + appointments ────────────────────────────────
   const taskDefs = [
     {
       title: 'Call Marcus Nelson to confirm inspection window',
@@ -321,6 +561,8 @@ async function seed(pool, owner, dryRun) {
       due_date: daysFromNow(0, 15),
       status: 'Pending',
       leadKey: 'nelson',
+      assigned_to: alexId,
+      kind: 'task',
     },
     {
       title: 'Follow up on insurance adjuster photos',
@@ -328,6 +570,8 @@ async function seed(pool, owner, dryRun) {
       due_date: daysAgo(1, 11),
       status: 'Pending',
       leadKey: 'nelson',
+      assigned_to: alexId,
+      kind: 'task',
     },
     {
       title: 'Send Patel proposal PDF after review',
@@ -335,6 +579,8 @@ async function seed(pool, owner, dryRun) {
       due_date: daysFromNow(1, 9),
       status: 'Pending',
       jobKey: 'patelRoof',
+      assigned_to: userId,
+      kind: 'task',
     },
     {
       title: 'Order gutter coils for Patel job',
@@ -342,6 +588,8 @@ async function seed(pool, owner, dryRun) {
       due_date: daysFromNow(3, 10),
       status: 'Pending',
       jobKey: 'patelRoof',
+      assigned_to: userId,
+      kind: 'task',
     },
     {
       title: 'Window quote call — Elena Brooks',
@@ -349,6 +597,8 @@ async function seed(pool, owner, dryRun) {
       due_date: daysFromNow(2, 14),
       status: 'Pending',
       leadKey: 'brooks',
+      assigned_to: samId,
+      kind: 'task',
     },
     {
       title: 'Quick quote reply — David Chen gutters',
@@ -356,6 +606,8 @@ async function seed(pool, owner, dryRun) {
       due_date: daysFromNow(0, 16),
       status: 'Pending',
       leadKey: 'chen',
+      assigned_to: samId,
+      kind: 'task',
     },
     {
       title: 'Andersen final invoice paid confirmation',
@@ -363,6 +615,8 @@ async function seed(pool, owner, dryRun) {
       due_date: daysAgo(5, 12),
       status: 'Completed',
       jobKey: 'andersenDone',
+      assigned_to: userId,
+      kind: 'task',
     },
     {
       title: 'Site photos for Patel south wall',
@@ -370,6 +624,45 @@ async function seed(pool, owner, dryRun) {
       due_date: daysAgo(3, 10),
       status: 'Completed',
       jobKey: 'patelRoof',
+      assigned_to: userId,
+      kind: 'task',
+    },
+    {
+      title: 'On-site roof inspection — Marcus Nelson',
+      description: 'Walk northwest slope hail damage with homeowner; capture measurements.',
+      due_date: daysFromNow(1, 13),
+      end_at: (() => {
+        const end = new Date(daysFromNow(1, 13));
+        end.setMinutes(end.getMinutes() + 90);
+        return end.toISOString();
+      })(),
+      location: '512 Oak Street, Minneapolis, MN 55408',
+      status: 'Pending',
+      leadKey: 'nelson',
+      assigned_to: alexId,
+      kind: 'appointment',
+    },
+    {
+      title: 'Patel material delivery window',
+      description: 'Meet supplier truck; stage coils and Hardie in driveway.',
+      due_date: daysFromNow(4, 9),
+      end_at: daysFromNow(4, 11),
+      location: '1842 Birchwood Ave, Plymouth, MN 55441',
+      status: 'Pending',
+      jobKey: 'patelRoof',
+      assigned_to: userId,
+      kind: 'appointment',
+    },
+    {
+      title: 'Brooks window showroom consult',
+      description: 'Bring vinyl and fiberglass sample boards.',
+      due_date: daysFromNow(0, 10),
+      end_at: daysFromNow(0, 11),
+      location: 'Rooftop Realty office',
+      status: 'Pending',
+      leadKey: 'brooks',
+      assigned_to: samId,
+      kind: 'appointment',
     },
   ];
 
@@ -380,51 +673,78 @@ async function seed(pool, owner, dryRun) {
       `
       INSERT INTO tasks (
         user_id, assigned_to, lead_id, job_id, title, description,
-        due_date, status, created_at, updated_at
+        due_date, end_at, location, kind, status, created_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $9
+        $1, $2, $3, $4, $5, $6,
+        $7, $8, $9, $10, $11, $12, $12
       )
       RETURNING id
       `,
       [
         userId,
-        userId,
+        task.assigned_to,
         task.leadKey ? leads[task.leadKey] : null,
         task.jobKey ? jobs[task.jobKey] : null,
         task.title,
         task.description,
         task.due_date,
+        task.end_at || null,
+        task.location || null,
+        task.kind || 'task',
         task.status,
         daysAgo(4 - (index % 4)),
       ],
       dryRun,
-      `task ${task.title}`
+      `${task.kind || 'task'} ${task.title}`
     );
     tasks[`t${index}`] = row.id;
-    counts.tasks += 1;
+    if (task.kind === 'appointment') counts.appointments += 1;
+    else counts.tasks += 1;
   }
 
-  // ─── Notes ───────────────────────────────────────────────
+  // ─── Notes (typed communication) ─────────────────────────
   const noteDefs = [
     {
       entity_type: 'lead',
       entityKey: 'nelson',
+      type: 'call',
+      direction: 'outbound',
       body: 'Spoke with Marcus — hail hit northwest slope worst. Wants claim assistance and a written estimate before committing.',
     },
     {
       entity_type: 'lead',
+      entityKey: 'nelson',
+      type: 'text',
+      direction: 'inbound',
+      body: 'Marcus texted adjuster photo packet link. Saved to follow-up task.',
+    },
+    {
+      entity_type: 'lead',
       entityKey: 'patel',
-      body: 'Priya asked about financing options and whether we can stage gutters first, siding second if budget is tight.',
+      type: 'email',
+      direction: 'outbound',
+      body: 'Sent financing overview and confirmed we can stage gutters first if budget is tight.',
     },
     {
       entity_type: 'job',
       entityKey: 'patelRoof',
+      type: 'in_person',
+      direction: 'outbound',
       body: 'Measured south wall: ~340 sq ft siding replacement. Gutters continuous run on front and garage.',
     },
     {
       entity_type: 'job',
       entityKey: 'andersenDone',
+      type: 'note',
+      direction: 'internal',
       body: 'Punch list cleared. Homeowner signed completion form and left a Google review.',
+    },
+    {
+      entity_type: 'lead',
+      entityKey: 'brooks',
+      type: 'call',
+      direction: 'outbound',
+      body: 'Left voicemail about showroom consult; she prefers text reminders.',
     },
   ];
 
@@ -434,13 +754,23 @@ async function seed(pool, owner, dryRun) {
     await insertReturning(
       pool,
       `
-      INSERT INTO notes (user_id, entity_type, entity_id, body, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, $5)
+      INSERT INTO notes (
+        user_id, entity_type, entity_id, body, type, direction, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
       RETURNING id
       `,
-      [userId, note.entity_type, entityId, note.body, daysAgo(2)],
+      [
+        userId,
+        note.entity_type,
+        entityId,
+        note.body,
+        note.type,
+        note.direction,
+        daysAgo(2),
+      ],
       dryRun,
-      `note on ${note.entity_type}:${note.entityKey}`
+      `note ${note.type} on ${note.entity_type}:${note.entityKey}`
     );
     counts.notes += 1;
   }
@@ -475,6 +805,13 @@ async function seed(pool, owner, dryRun) {
       message: 'Closed Won — project complete',
       created_at: daysAgo(10),
     },
+    {
+      jobKey: 'hayesLost',
+      type: 'STATUS_CHANGED',
+      title: 'Status updated',
+      message: 'Closed Lost — competitor scheduled sooner',
+      created_at: daysAgo(14),
+    },
   ];
 
   for (const activity of activityDefs) {
@@ -501,17 +838,20 @@ async function seed(pool, owner, dryRun) {
   }
 
   // ─── Estimates ───────────────────────────────────────────
+  const patelShareRaw = randomToken();
   const patelEstimate = await insertReturning(
     pool,
     `
     INSERT INTO estimates (
       user_id, job_id, title, status,
       subtotal, tax_total, discount_total, grand_total, notes,
+      share_token_hash, share_expires_at,
       created_at, updated_at
     ) VALUES (
       $1, $2, $3, 'Sent',
       $4, $5, 0, $6, $7,
-      $8, $8
+      $8, $9,
+      $10, $10
     )
     RETURNING id
     `,
@@ -523,12 +863,15 @@ async function seed(pool, owner, dryRun) {
       786.8,
       12026.8,
       'Includes material, labor, haul-away, and 2-year workmanship warranty.',
+      sha256(patelShareRaw),
+      daysFromNow(21),
       daysAgo(1),
     ],
     dryRun,
     'estimate Patel Sent'
   );
   counts.estimates += 1;
+  publicLinks.estimateShare = `${frontendBase}/public/estimate/${patelShareRaw}`;
 
   const andersenEstimate = await insertReturning(
     pool,
@@ -564,7 +907,7 @@ async function seed(pool, owner, dryRun) {
   );
   counts.estimates += 1;
 
-  const nelsonDraft = await insertReturning(
+  await insertReturning(
     pool,
     `
     INSERT INTO estimates (
@@ -590,6 +933,39 @@ async function seed(pool, owner, dryRun) {
     ],
     dryRun,
     'estimate Nelson Draft'
+  );
+  counts.estimates += 1;
+
+  await insertReturning(
+    pool,
+    `
+    INSERT INTO estimates (
+      user_id, job_id, title, status,
+      subtotal, tax_total, discount_total, grand_total, notes,
+      client_responded_at, client_response_note,
+      created_at, updated_at
+    ) VALUES (
+      $1, $2, $3, 'Rejected',
+      $4, $5, 0, $6, $7,
+      $8, $9,
+      $10, $10
+    )
+    RETURNING id
+    `,
+    [
+      userId,
+      jobs.hayesLost,
+      'Hayes — north elevation siding',
+      11800,
+      826,
+      12626,
+      'Hardie panel + trim package.',
+      daysAgo(15),
+      'Going with another contractor who can start next week.',
+      daysAgo(17),
+    ],
+    dryRun,
+    'estimate Hayes Rejected'
   );
   counts.estimates += 1;
 
@@ -746,8 +1122,34 @@ async function seed(pool, owner, dryRun) {
   );
   counts.invoices += 1;
 
-  // keep nelsonDraft referenced so unused var warning is avoided in dry logic
-  void nelsonDraft;
+  await insertReturning(
+    pool,
+    `
+    INSERT INTO invoices (
+      user_id, job_id, estimate_id, invoice_number, status,
+      subtotal, tax_total, discount_total, grand_total,
+      due_date, notes, created_at, updated_at
+    ) VALUES (
+      $1, $2, NULL, 'INV-0971', 'Overdue',
+      $3, $4, 0, $5,
+      $6, $7, $8, $8
+    )
+    RETURNING id
+    `,
+    [
+      userId,
+      jobs.hayesLost,
+      1500,
+      105,
+      1605,
+      daysAgo(10),
+      'Site visit / design fee left unpaid after job was lost.',
+      daysAgo(25),
+    ],
+    dryRun,
+    'invoice Hayes Overdue'
+  );
+  counts.invoices += 1;
 
   const invoiceLines = [
     {
@@ -802,6 +1204,86 @@ async function seed(pool, owner, dryRun) {
       counts.invoice_line_items += 1;
     }
   }
+
+  // ─── File metadata (binaries not included) ───────────────
+  const fileDefs = [
+    {
+      name: 'patel-south-wall-before-1.jpg',
+      jobKey: 'patelRoof',
+      category: 'before',
+      client_visible: true,
+    },
+    {
+      name: 'patel-south-wall-before-2.jpg',
+      jobKey: 'patelRoof',
+      category: 'before',
+      client_visible: true,
+    },
+    {
+      name: 'andersen-after-front.jpg',
+      jobKey: 'andersenDone',
+      category: 'after',
+      client_visible: true,
+    },
+    {
+      name: 'nelson-adjuster-notes.pdf',
+      leadKey: 'nelson',
+      category: 'other',
+      client_visible: false,
+    },
+  ];
+
+  for (const [index, file] of fileDefs.entries()) {
+    await insertReturning(
+      pool,
+      `
+      INSERT INTO files (
+        uploaded_by_user_id, original_name, storage_key, mime_type, size_bytes,
+        lead_id, job_id, category, client_visible, caption, created_at
+      ) VALUES (
+        $1, $2, $3, $4, $5,
+        $6, $7, $8, $9, $10, $11
+      )
+      RETURNING id
+      `,
+      [
+        userId,
+        file.name,
+        `demo/walkthrough/${file.name}`,
+        file.name.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg',
+        240000 + index * 12000,
+        file.leadKey ? leads[file.leadKey] : null,
+        file.jobKey ? jobs[file.jobKey] : null,
+        file.category,
+        file.client_visible,
+        `Demo placeholder — binary not uploaded (${file.category})`,
+        daysAgo(2),
+      ],
+      dryRun,
+      `file ${file.name}`
+    );
+    counts.files += 1;
+  }
+
+  // ─── Client portal token (Patel job) ─────────────────────
+  const portalRaw = randomToken();
+  await insertReturning(
+    pool,
+    `
+    INSERT INTO portal_tokens (user_id, job_id, token_hash, expires_at)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT (job_id) DO UPDATE SET
+      token_hash = EXCLUDED.token_hash,
+      expires_at = EXCLUDED.expires_at,
+      updated_at = CURRENT_TIMESTAMP
+    RETURNING id
+    `,
+    [userId, jobs.patelRoof, sha256(portalRaw), daysFromNow(30)],
+    dryRun,
+    'portal token Patel'
+  );
+  counts.portal_tokens += 1;
+  publicLinks.portal = `${frontendBase}/public/portal/${portalRaw}`;
 
   // ─── Notifications ───────────────────────────────────────
   const notificationDefs = [
@@ -873,7 +1355,7 @@ async function seed(pool, owner, dryRun) {
         n.entity_type,
         n.entityId,
         n.created_at,
-        `walkthrough:${n.type}:${index}`,
+        `walkthrough:${n.type}:${index}:${Date.now()}`,
       ],
       dryRun,
       `notification ${n.type}`
@@ -889,10 +1371,7 @@ async function seed(pool, owner, dryRun) {
     VALUES ($1, 'leads', 'New website leads', $2::jsonb)
     RETURNING id
     `,
-    [
-      userId,
-      JSON.stringify({ status: 'New', source: 'Website' }),
-    ],
+    [userId, JSON.stringify({ status: 'New', source: 'Website' })],
     dryRun,
     'saved view leads'
   );
@@ -911,7 +1390,20 @@ async function seed(pool, owner, dryRun) {
   );
   counts.saved_views += 1;
 
-  // ─── Automation (one example rule) ───────────────────────
+  await insertReturning(
+    pool,
+    `
+    INSERT INTO saved_views (user_id, entity_type, name, filters)
+    VALUES ($1, 'tasks', 'Appointments this week', $2::jsonb)
+    RETURNING id
+    `,
+    [userId, JSON.stringify({ kind: 'appointment', status: 'Pending' })],
+    dryRun,
+    'saved view appointments'
+  );
+  counts.saved_views += 1;
+
+  // ─── Automation ──────────────────────────────────────────
   await insertReturning(
     pool,
     `
@@ -938,39 +1430,82 @@ async function seed(pool, owner, dryRun) {
   );
   counts.automation_rules += 1;
 
-  return counts;
+  return { counts, publicLinks, options };
 }
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
 
   if (!process.env.DATABASE_URL) {
-    console.error('DATABASE_URL is not set. Add it to .env before seeding.');
+    console.error('DATABASE_URL is not set. Add it to .env or the container environment.');
     process.exit(1);
   }
 
+  const hostname = assertSafeDatabaseTarget(process.env.DATABASE_URL, options);
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
   try {
-    const owner = await getOwner(pool);
+    const owner = await getOwner(pool, options.ownerEmail);
     console.log(
       `Walkthrough seed target owner: ${owner.first_name} ${owner.last_name} <${owner.email}>`
     );
+    console.log(`Database host: ${hostname}`);
+
+    if (!options.reset && !options.force) {
+      const present = await walkthroughAlreadyPresent(pool);
+      if (present) {
+        throw new Error(
+          'Walkthrough leads already exist (@example.com). ' +
+            'Use --reset to wipe CRM business tables and reseed, or --force to append another copy.'
+        );
+      }
+    }
 
     if (options.reset) {
+      if (!options.confirm && hostname !== 'localhost' && hostname !== '127.0.0.1') {
+        throw new Error('--reset on a non-local host also requires --confirm.');
+      }
       await resetDemoTables(pool, options.dryRun);
     }
 
-    const counts = await seed(pool, owner, options.dryRun);
+    const agents = options.includeTeam
+      ? await ensureDemoAgents(pool, options.dryRun)
+      : null;
+
+    const { counts, publicLinks } = await seed(
+      pool,
+      owner,
+      agents,
+      options.dryRun,
+      options
+    );
 
     console.log('');
     console.log(
       options.dryRun ? 'Dry run complete.' : 'Walkthrough seed complete.'
     );
     console.log(JSON.stringify(counts, null, 2));
+
+    if (agents && !options.dryRun) {
+      console.log('');
+      console.log('Demo agent logins (password for both):', DEMO_AGENT_PASSWORD);
+      console.log('  alex.morgan@example.com');
+      console.log('  sam.lee@example.com');
+    }
+
+    if (!options.dryRun) {
+      console.log('');
+      console.log('Public demo links (raw tokens; treat as sensitive):');
+      console.log('  Portal:', publicLinks.portal);
+      console.log('  Estimate share:', publicLinks.estimateShare);
+      console.log(
+        '  Note: file rows are metadata only; photo binaries are not uploaded.'
+      );
+    }
+
     console.log('');
     console.log(
-      'Suggested walkthrough path: Dashboard → Leads (Nelson/Patel) → Jobs → Estimates → Invoices → Tasks/Notifications'
+      'Suggested walkthrough path: Dashboard → Leads (Nelson/Patel) → Jobs → Estimates → Invoices → Tasks/Appointments → Notifications'
     );
   } finally {
     await pool.end();
