@@ -15,6 +15,21 @@ function canViewAll(role?: string) {
   return role === 'owner' || role === 'admin';
 }
 
+// GET /jobs/summary
+jobsRouter.get(
+  '/summary',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.userId;
+    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
+    const summary = await jobsService.getJobSummary(userId, { includeAll });
+
+    res.json({
+      ok: true,
+      ...summary,
+    });
+  })
+);
+
 // GET /jobs?status=New&q=roof&leadId=2&limit=50&offset=0
 jobsRouter.get(
   '/',

@@ -289,4 +289,32 @@ describe('Jobs integration', () => {
 
     expect(getAfterDelete.status).toBe(404);
   });
+
+  it('returns job summary counts by status', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+
+    await request(app).post('/jobs').set(headers).send({
+      lead_id: lead.id,
+      title: 'New roof',
+      status: 'New',
+    });
+    await request(app).post('/jobs').set(headers).send({
+      lead_id: lead.id,
+      title: 'Gutter estimate',
+      status: 'Proposal Sent',
+    });
+
+    const summaryRes = await request(app).get('/jobs/summary').set(headers);
+
+    expect(summaryRes.status).toBe(200);
+    expect(summaryRes.body.ok).toBe(true);
+    expect(summaryRes.body.total).toBe(2);
+    expect(summaryRes.body.byStatus).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: 'New', count: 1 }),
+        expect.objectContaining({ status: 'Proposal Sent', count: 1 }),
+      ]),
+    );
+  });
 });

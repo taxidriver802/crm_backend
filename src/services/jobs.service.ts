@@ -180,6 +180,36 @@ async function validateAssignee(
   }
 }
 
+export async function getJobSummary(
+  userId: string,
+  options: { includeAll?: boolean } = {}
+) {
+  const scopeWhere = options.includeAll ? 'TRUE' : 'user_id = $1';
+  const params = options.includeAll ? [] : [userId];
+
+  const [totalResult, byStatusResult] = await Promise.all([
+    pool.query(
+      `SELECT COUNT(*)::int AS total FROM jobs WHERE ${scopeWhere}`,
+      params
+    ),
+    pool.query(
+      `
+      SELECT status, COUNT(*)::int AS count
+      FROM jobs
+      WHERE ${scopeWhere}
+      GROUP BY status
+      ORDER BY count DESC;
+      `,
+      params
+    ),
+  ]);
+
+  return {
+    total: totalResult.rows[0].total,
+    byStatus: byStatusResult.rows,
+  };
+}
+
 export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
   const params: any[] = [];
   const where: string[] = [];
