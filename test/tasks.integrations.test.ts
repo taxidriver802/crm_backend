@@ -45,16 +45,18 @@ describe('Tasks integration', () => {
     return res.body.job;
   }
 
-  it('creates a lead task and stores a TASK_ASSIGNED notification with lead context', async () => {
-    const { user, headers } = await createAuthedUser('agent');
-    const lead = await createLead(headers);
+  it('notifies the assignee when a lead task is assigned to someone else', async () => {
+    const owner = await createAuthedUser('owner');
+    const agent = await createAuthedUser('agent');
+    const lead = await createLead(owner.headers);
 
-    const createTask = await request(app).post('/tasks').set(headers).send({
+    const createTask = await request(app).post('/tasks').set(owner.headers).send({
       lead_id: lead.id,
       title: 'Call Sarah',
       description: 'Confirm appointment',
       due_date: new Date().toISOString(),
       status: 'Pending',
+      assigned_to: agent.user.id,
     });
 
     expect(createTask.status).toBe(201);
@@ -62,22 +64,28 @@ describe('Tasks integration', () => {
     expect(createTask.body.task.lead_id).toBe(lead.id);
     expect(createTask.body.task.job_id).toBeNull();
 
-    const { rows } = await pool.query(
+    const assigneeNotes = await pool.query(
       `
-        SELECT type, title, message, entity_type, entity_id, metadata
+        SELECT type, title, message, entity_type, entity_id
         FROM notifications
         WHERE user_id = $1
         ORDER BY created_at DESC
       `,
-      [user.id]
+      [agent.user.id]
     );
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0].type).toBe('TASK_ASSIGNED');
-    expect(rows[0].entity_type).toBe('lead');
-    expect(rows[0].entity_id).toBe(lead.id);
-    expect(rows[0].title).toBe('New task assigned');
-    expect(rows[0].message).toContain('Call Sarah');
+    expect(assigneeNotes.rows).toHaveLength(1);
+    expect(assigneeNotes.rows[0].type).toBe('TASK_ASSIGNED');
+    expect(assigneeNotes.rows[0].entity_type).toBe('lead');
+    expect(assigneeNotes.rows[0].entity_id).toBe(lead.id);
+    expect(assigneeNotes.rows[0].title).toBe('New task assigned');
+    expect(assigneeNotes.rows[0].message).toContain('Call Sarah');
+
+    const creatorNotes = await pool.query(
+      `SELECT id FROM notifications WHERE user_id = $1 AND type = 'TASK_ASSIGNED'`,
+      [owner.user.id]
+    );
+    expect(creatorNotes.rowCount).toBe(0);
   });
 
   it('creates a job task and writes TASK_CREATED activity plus job-context notification', async () => {
@@ -109,19 +117,14 @@ describe('Tasks integration', () => {
 
     const { rows } = await pool.query(
       `
-        SELECT type, entity_type, entity_id, message
+        SELECT type
         FROM notifications
-        WHERE user_id = $1
-        ORDER BY created_at DESC
+        WHERE user_id = $1 AND type = 'TASK_ASSIGNED'
       `,
       [user.id]
     );
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0].type).toBe('TASK_ASSIGNED');
-    expect(rows[0].entity_type).toBe('job');
-    expect(rows[0].entity_id).toBe(job.id);
-    expect(rows[0].message).toContain('Inspect roof');
+    expect(rows).toHaveLength(0);
   });
 
   it('completing a job task creates TASK_COMPLETED notification and activity', async () => {

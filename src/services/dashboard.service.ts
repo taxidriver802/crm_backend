@@ -52,13 +52,20 @@ export async function getDashboardData(
 ) {
   const scope = await tenantScope(userId, options);
   const includeAll = scope.includeAll;
-  const scopeWhere = includeAll
+  const creatorWhere = includeAll
     ? 'company_id = $1'
     : 'company_id = $1 AND user_id = $2';
-  const aliased = (alias: string) =>
+  const assignedWhere = includeAll
+    ? 'company_id = $1'
+    : 'company_id = $1 AND (assigned_to = $2 OR (assigned_to IS NULL AND user_id = $2))';
+  const creatorAliased = (alias: string) =>
     includeAll
       ? `${alias}.company_id = $1`
       : `${alias}.company_id = $1 AND ${alias}.user_id = $2`;
+  const assignedAliased = (alias: string) =>
+    includeAll
+      ? `${alias}.company_id = $1`
+      : `${alias}.company_id = $1 AND (${alias}.assigned_to = $2 OR (${alias}.assigned_to IS NULL AND ${alias}.user_id = $2))`;
   const scopeParams = includeAll
     ? [scope.companyId]
     : [scope.companyId, userId];
@@ -81,14 +88,14 @@ export async function getDashboardData(
     invoicesDueResult,
   ] = await Promise.all([
     pool.query(
-      `SELECT COUNT(*)::int AS total FROM leads WHERE ${scopeWhere}`,
+      `SELECT COUNT(*)::int AS total FROM leads WHERE ${assignedWhere}`,
       scopeParams
     ),
     pool.query(
       `
         SELECT status, COUNT(*)::int AS count
         FROM leads
-        WHERE ${scopeWhere}
+        WHERE ${assignedWhere}
         GROUP BY status
         ORDER BY
           CASE status
@@ -105,14 +112,14 @@ export async function getDashboardData(
     ),
     getTaskSummary(userId, { includeAll, companyId: scope.companyId }),
     pool.query(
-      `SELECT COUNT(*)::int AS total FROM jobs WHERE ${scopeWhere}`,
+      `SELECT COUNT(*)::int AS total FROM jobs WHERE ${assignedWhere}`,
       scopeParams
     ),
     pool.query(
       `
         SELECT status, COUNT(*)::int AS count
         FROM jobs
-        WHERE ${scopeWhere}
+        WHERE ${assignedWhere}
         GROUP BY status
         ORDER BY
           CASE status
@@ -129,14 +136,14 @@ export async function getDashboardData(
       scopeParams
     ),
     pool.query(
-      `SELECT COUNT(*)::int AS total FROM estimates WHERE ${scopeWhere}`,
+      `SELECT COUNT(*)::int AS total FROM estimates WHERE ${creatorWhere}`,
       scopeParams
     ),
     pool.query(
       `
         SELECT status, COUNT(*)::int AS count
         FROM estimates
-        WHERE ${scopeWhere}
+        WHERE ${creatorWhere}
         GROUP BY status
         ORDER BY
           CASE status
@@ -166,7 +173,7 @@ export async function getDashboardData(
           WHERE entity_type = 'lead'
           GROUP BY entity_id
         ) ln ON ln.entity_id = l.id
-        WHERE ${aliased('l')}
+        WHERE ${assignedAliased('l')}
           AND l.status NOT IN ('Closed', 'Inactive')
           AND COALESCE(ln.last_note_at, l.status_changed_at) < NOW() - (${ph(1)}::int * INTERVAL '1 day')
         ORDER BY last_comm_at ASC
@@ -185,7 +192,7 @@ export async function getDashboardData(
           j.title AS job_title
         FROM estimates e
         INNER JOIN jobs j ON j.id = e.job_id
-        WHERE ${aliased('e')}
+        WHERE ${creatorAliased('e')}
           AND e.status = 'Sent'
           AND e.client_responded_at IS NULL
         ORDER BY e.updated_at ASC
@@ -208,7 +215,7 @@ export async function getDashboardData(
          AND t.status <> 'Completed'
          AND t.due_date IS NOT NULL
          AND COALESCE(t.end_at, t.due_date) < NOW()
-        WHERE ${aliased('j')}
+        WHERE ${assignedAliased('j')}
           AND j.status NOT IN ('Closed Won', 'Closed Lost')
         GROUP BY j.id
         ORDER BY MIN(COALESCE(t.end_at, t.due_date)) ASC
@@ -227,7 +234,7 @@ export async function getDashboardData(
           j.title AS job_title
         FROM invoices i
         INNER JOIN jobs j ON j.id = i.job_id
-        WHERE ${aliased('i')}
+        WHERE ${creatorAliased('i')}
           AND i.status IN ('Sent', 'Overdue')
           AND i.due_date IS NOT NULL
           AND i.due_date <= NOW() + (${ph(1)}::int * INTERVAL '1 day')

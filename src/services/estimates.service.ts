@@ -11,7 +11,11 @@ import {
 import { evaluateRules } from './automation.service';
 import { trackEvent } from './productEvents.service';
 import { getEstimateTemplateById } from './estimateTemplates.service';
-import { applyTenantScope, tenantScope } from '../lib/tenant';
+import {
+  applyOwnOrAssignedJob,
+  applyTenantScope,
+  tenantScope,
+} from '../lib/tenant';
 
 type ScopeOpts = { includeAll?: boolean; companyId?: string };
 
@@ -172,7 +176,7 @@ async function ensureJobBelongsToUser(
   const scope = await tenantScope(userId, options);
   const params: any[] = [jobId];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
     `SELECT id FROM jobs WHERE ${where.join(' AND ')}`,
     params
@@ -192,7 +196,7 @@ async function ensureEstimateBelongsToUser(
   const scope = await tenantScope(userId, options);
   const params: any[] = [estimateId];
   const where: string[] = ['e.id = $1'];
-  applyTenantScope(where, params, scope, { alias: 'e' });
+  applyOwnOrAssignedJob(where, params, scope, { alias: 'e' });
   const result = await pool.query(
     `
       SELECT e.id
@@ -298,7 +302,7 @@ export async function getEstimatesByJobId(
 
   const params: any[] = [jobId];
   const where: string[] = ['e.job_id = $1'];
-  applyTenantScope(where, params, scope, { alias: 'e' });
+  applyTenantScope(where, params, scope, { alias: 'e', companyOnly: true });
   const result = await pool.query(
     `
       ${ESTIMATE_SELECT}
@@ -319,7 +323,7 @@ export async function getEstimateById(
   const scope = await tenantScope(userId, options);
   const params: any[] = [id];
   const where: string[] = ['e.id = $1'];
-  applyTenantScope(where, params, scope, { alias: 'e' });
+  applyOwnOrAssignedJob(where, params, scope, { alias: 'e' });
   const result = await pool.query(
     `
       ${ESTIMATE_SELECT}
@@ -432,7 +436,7 @@ export async function updateEstimate(
 
   setParts.push('updated_at = CURRENT_TIMESTAMP');
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, values, scope);
+  applyTenantScope(where, values, scope, { companyOnly: true });
 
   const result = await pool.query(
     `
@@ -513,7 +517,7 @@ export async function deleteEstimate(
   const scope = await tenantScope(userId, options);
   const params: any[] = [id];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { companyOnly: true });
 
   const result = await pool.query(
     `

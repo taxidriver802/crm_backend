@@ -1,5 +1,5 @@
 import { pool } from '../db';
-import { createNotification } from '../lib/notifications';
+import { createNotification, notifyAssigneeChange } from '../lib/notifications';
 import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
 import * as activityService from '../services/jobActivity.service';
 
@@ -60,7 +60,7 @@ async function ensureJobBelongsToUser(
   const scope = await tenantScope(userId, options);
   const params: any[] = [jobId];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
     `SELECT id FROM jobs WHERE ${where.join(' AND ')}`,
     params
@@ -79,7 +79,7 @@ async function ensureLeadBelongsToUser(
   const scope = await tenantScope(userId, options);
   const params: any[] = [leadId];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
     `SELECT id FROM leads WHERE ${where.join(' AND ')}`,
     params
@@ -351,10 +351,11 @@ export async function getTaskSummary(
 ) {
   const scope = await tenantScope(userId, options);
   const scopeParams: unknown[] = [];
-  const scopeWhere = tenantPredicate(scopeParams, scope);
+  const scopeWhere = tenantPredicate(scopeParams, scope, { assignedWork: true });
   const taskSelectParams: unknown[] = [];
   const taskSelectWhere = tenantPredicate(taskSelectParams, scope, {
     alias: 't',
+    assignedWork: true,
   });
 
   const [countsResult, overdueTasks, dueTodayTasks, upcomingResult] =
@@ -439,7 +440,7 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
   const params: any[] = [];
   const where: string[] = [];
   const scope = await tenantScope(userId, filters);
-  applyTenantScope(where, params, scope, { alias: 't' });
+  applyTenantScope(where, params, scope, { alias: 't', assignedWork: true });
 
   if (filters.status) {
     params.push(filters.status);
@@ -656,17 +657,16 @@ export async function createTask(
     companyId: scope.companyId,
   });
 
-  if (task.user_id) {
-    await createNotification({
-      userId: task.user_id,
-      type: 'TASK_ASSIGNED',
-      title: 'New task assigned',
-      message: buildTaskNotificationMessage('assigned', fullTask),
-      entityType: getTaskContextType(fullTask),
-      entityId: getTaskContextEntityId(fullTask),
-      metadata: buildTaskNotificationMetadata(fullTask),
-    });
-  }
+  await notifyAssigneeChange({
+    actorUserId: userId,
+    assignedTo: task.assigned_to,
+    type: 'TASK_ASSIGNED',
+    title: 'New task assigned',
+    message: buildTaskNotificationMessage('assigned', fullTask),
+    entityType: getTaskContextType(fullTask) ?? 'task',
+    entityId: getTaskContextEntityId(fullTask) ?? fullTask.id,
+    metadata: buildTaskNotificationMetadata(fullTask),
+  });
 
   return fullTask;
 }
@@ -679,7 +679,7 @@ export async function getTaskById(
   const params: any[] = [id];
   const where: string[] = ['t.id = $1'];
   const scope = await tenantScope(userId, options);
-  applyTenantScope(where, params, scope, { alias: 't' });
+  applyTenantScope(where, params, scope, { alias: 't', assignedWork: true });
 
   const result = await pool.query(
     `
@@ -707,7 +707,7 @@ export async function getTasksByJobId(
 
   const params: any[] = [jobId];
   const where: string[] = ['t.job_id = $1'];
-  applyTenantScope(where, params, scope, { alias: 't' });
+  applyTenantScope(where, params, scope, { alias: 't', assignedWork: true });
 
   const result = await pool.query(
     `
@@ -829,7 +829,7 @@ export async function updateTask(
   setParts.push(`updated_at = CURRENT_TIMESTAMP`);
 
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, values, scope);
+  applyTenantScope(where, values, scope, { assignedWork: true });
 
   const sql = `
     UPDATE tasks
@@ -904,6 +904,18 @@ export async function updateTask(
     companyId: scope.companyId,
   });
 
+  await notifyAssigneeChange({
+    actorUserId: userId,
+    assignedTo: fullUpdatedTask.assigned_to,
+    previousAssignedTo: existingTask.assigned_to ?? null,
+    type: 'TASK_ASSIGNED',
+    title: 'New task assigned',
+    message: buildTaskNotificationMessage('assigned', fullUpdatedTask),
+    entityType: getTaskContextType(fullUpdatedTask) ?? 'task',
+    entityId: getTaskContextEntityId(fullUpdatedTask) ?? fullUpdatedTask.id,
+    metadata: buildTaskNotificationMetadata(fullUpdatedTask),
+  });
+
   if (
     existingTask.status !== fullUpdatedTask.status &&
     fullUpdatedTask.status === 'Completed'
@@ -935,7 +947,7 @@ export async function deleteTask(
 
   const params: any[] = [id];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
 
   const result = await pool.query(
     `DELETE FROM tasks WHERE ${where.join(' AND ')} RETURNING id`,

@@ -1,5 +1,9 @@
 import { pool } from '../db';
-import { applyTenantScope, tenantScope } from '../lib/tenant';
+import {
+  applyTenantScope,
+  assignedRecordVisible,
+  tenantScope,
+} from '../lib/tenant';
 
 export type JobActivityMetadata = Record<string, unknown> | null;
 
@@ -103,9 +107,13 @@ export async function getJobActivitiesByJob(
   options: { includeAll?: boolean; companyId?: string } = {}
 ) {
   const scope = await tenantScope(userId, options);
+  const visible = await assignedRecordVisible('jobs', jobId, scope);
+  if (!visible) {
+    return { activity: [], hasMore: false };
+  }
   const params: unknown[] = [jobId];
   const where: string[] = ['job_id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { companyOnly: true });
   params.push(limit + 1);
   const { rows } = await pool.query(
     `

@@ -6,7 +6,7 @@ type ReportScope = { includeAll?: boolean; companyId?: string };
 export async function getLeadFunnel(userId: string, options: ReportScope = {}) {
   const scope = await tenantScope(userId, options);
   const params: unknown[] = [];
-  const where = tenantPredicate(params, scope);
+  const where = tenantPredicate(params, scope, { assignedWork: true });
   const result = await pool.query(
     `
     SELECT status, COUNT(*)::int AS count
@@ -77,7 +77,7 @@ export async function getEstimateOutcomes(
 export async function getJobPipeline(userId: string, options: ReportScope = {}) {
   const scope = await tenantScope(userId, options);
   const params: unknown[] = [];
-  const where = tenantPredicate(params, scope);
+  const where = tenantPredicate(params, scope, { assignedWork: true });
   const result = await pool.query(
     `
     SELECT status, COUNT(*)::int AS count
@@ -97,7 +97,7 @@ export async function getMonthlyTrends(
 ) {
   const scope = await tenantScope(userId, options);
   const leadParams: unknown[] = [];
-  const leadWhere = tenantPredicate(leadParams, scope);
+  const leadWhere = tenantPredicate(leadParams, scope, { assignedWork: true });
   const leadsResult = await pool.query(
     `
     SELECT

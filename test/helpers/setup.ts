@@ -169,6 +169,17 @@ export async function ensureSchema() {
       'utf8'
     );
     await client.query(patchPhase21CompanyBrandingSql);
+
+    const patchAssignmentNotificationsPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_assignment_notifications.sql'
+    );
+    const patchAssignmentNotificationsSql = fs.readFileSync(
+      patchAssignmentNotificationsPath,
+      'utf8'
+    );
+    await client.query(patchAssignmentNotificationsSql);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

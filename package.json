@@ -26,6 +26,7 @@
     "db:patch-phase19-appointments-workload": "node scripts/apply-phase19-appointments-workload-patch.js",
     "db:patch-phase20-companies": "node scripts/apply-phase20-companies-patch.js",
     "db:patch-phase21-company-branding": "node scripts/apply-phase21-company-branding-patch.js",
+    "db:patch-assignment-notifications": "node scripts/apply-assignment-notifications-patch.js",
     "db:seed-demo": "node scripts/seed-demo-data.js",
     "db:seed-walkthrough": "node scripts/seed-walkthrough-data.js"
   },

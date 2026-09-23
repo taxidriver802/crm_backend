@@ -1,5 +1,6 @@
 import { pool } from '../db';
 import { daysInStatus } from '../lib/aging';
+import { notifyAssigneeChange } from '../lib/notifications';
 import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
 import { trackEvent } from './productEvents.service';
 
@@ -113,7 +114,7 @@ export async function getLeadSummary(
 ) {
   const scope = await tenantScope(userId, options);
   const params: unknown[] = [];
-  const scopeWhere = tenantPredicate(params, scope);
+  const scopeWhere = tenantPredicate(params, scope, { assignedWork: true });
 
   const [totalResult, byStatusResult] = await Promise.all([
     pool.query(
@@ -142,7 +143,7 @@ export async function getLeads(userId: string, filters: GetLeadsFilters) {
   const params: any[] = [];
   const where: string[] = [];
   const scope = await tenantScope(userId, filters);
-  applyTenantScope(where, params, scope, { alias: 't' });
+  applyTenantScope(where, params, scope, { alias: 't', assignedWork: true });
 
   if (filters.status) {
     params.push(filters.status);
@@ -187,7 +188,7 @@ export async function getLeadById(
   const params: any[] = [id];
   const where: string[] = ['t.id = $1'];
   const scope = await tenantScope(userId, options);
-  applyTenantScope(where, params, scope, { alias: 't' });
+  applyTenantScope(where, params, scope, { alias: 't', assignedWork: true });
 
   const result = await pool.query(
     `
@@ -254,6 +255,17 @@ export async function createLead(
 
   trackEvent('lead_created', { userId, entityType: 'lead', entityId: lead.id });
 
+  const leadName = `${lead.first_name} ${lead.last_name}`.trim();
+  await notifyAssigneeChange({
+    actorUserId: userId,
+    assignedTo: lead.assigned_to,
+    type: 'LEAD_ASSIGNED',
+    title: 'New lead assigned',
+    message: `${leadName} was assigned to you`,
+    entityType: 'lead',
+    entityId: lead.id,
+  });
+
   return lead;
 }
 
@@ -304,7 +316,7 @@ export async function updateLead(
   setParts.push(`updated_at = CURRENT_TIMESTAMP`);
 
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, values, scope);
+  applyTenantScope(where, values, scope, { assignedWork: true });
 
   const sql = `
     UPDATE leads
@@ -319,10 +331,24 @@ export async function updateLead(
     throw new LeadNotFoundError();
   }
 
-  return getLeadById(userId, result.rows[0].id, {
+  const updated = await getLeadById(userId, result.rows[0].id, {
     includeAll: options.includeAll,
     companyId: scope.companyId,
   });
+
+  const leadName = `${updated.first_name} ${updated.last_name}`.trim();
+  await notifyAssigneeChange({
+    actorUserId: userId,
+    assignedTo: updated.assigned_to,
+    previousAssignedTo: existingLead.assigned_to ?? null,
+    type: 'LEAD_ASSIGNED',
+    title: 'New lead assigned',
+    message: `${leadName} was assigned to you`,
+    entityType: 'lead',
+    entityId: updated.id,
+  });
+
+  return updated;
 }
 
 export async function deleteLead(
@@ -333,7 +359,7 @@ export async function deleteLead(
   const scope = await tenantScope(userId, options);
   const params: any[] = [id];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
 
   const result = await pool.query(
     `DELETE FROM leads WHERE ${where.join(' AND ')} RETURNING id`,

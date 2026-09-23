@@ -1,5 +1,10 @@
 import { pool } from '../db';
-import { applyTenantScope, tenantScope, type TenantScope } from '../lib/tenant';
+import {
+  applyTenantScope,
+  assignedRecordVisible,
+  tenantScope,
+  type TenantScope,
+} from '../lib/tenant';
 
 type SearchResult = {
   leads: Array<{
@@ -104,11 +109,12 @@ async function searchRelatedContext(
   const jobs: Array<Promise<void>> = [];
 
   if (contextType === 'job') {
+    const jobVisible = await assignedRecordVisible('jobs', contextId, scope);
     jobs.push(
       (async () => {
         const params: unknown[] = [contextId];
         const where = ['job_id = $1'];
-        applyTenantScope(where, params, scope);
+        applyTenantScope(where, params, scope, { assignedWork: true });
         if (term) {
           params.push(term);
           where.push(
@@ -127,13 +133,14 @@ async function searchRelatedContext(
           params
         );
         related.tasks = rows;
-      })(),
+      })()
+    );
+    if (jobVisible) {
+      jobs.push(
       (async () => {
         const params: unknown[] = [contextId];
         const where = ['job_id = $1'];
-        applyTenantScope(where, params, scope, {
-          userColumn: 'uploaded_by_user_id',
-        });
+        applyTenantScope(where, params, scope, { companyOnly: true });
         if (term) {
           params.push(term);
           where.push(
@@ -156,7 +163,7 @@ async function searchRelatedContext(
       (async () => {
         const params: unknown[] = [contextId];
         const where = ['job_id = $1'];
-        applyTenantScope(where, params, scope);
+        applyTenantScope(where, params, scope, { companyOnly: true });
         if (term) {
           params.push(term);
           where.push(
@@ -179,7 +186,7 @@ async function searchRelatedContext(
       (async () => {
         const params: unknown[] = [contextId];
         const where = ['job_id = $1'];
-        applyTenantScope(where, params, scope);
+        applyTenantScope(where, params, scope, { companyOnly: true });
         if (term) {
           params.push(term);
           where.push(
@@ -199,15 +206,17 @@ async function searchRelatedContext(
         );
         related.estimates = rows;
       })()
-    );
+      );
+    }
   }
 
   if (contextType === 'lead') {
+    const leadVisible = await assignedRecordVisible('leads', contextId, scope);
     jobs.push(
       (async () => {
         const params: unknown[] = [contextId];
         const where = ['lead_id = $1'];
-        applyTenantScope(where, params, scope);
+        applyTenantScope(where, params, scope, { assignedWork: true });
         if (term) {
           params.push(term);
           where.push(
@@ -230,7 +239,7 @@ async function searchRelatedContext(
       (async () => {
         const params: unknown[] = [contextId];
         const where = ['lead_id = $1'];
-        applyTenantScope(where, params, scope);
+        applyTenantScope(where, params, scope, { assignedWork: true });
         if (term) {
           params.push(term);
           where.push(
@@ -249,13 +258,14 @@ async function searchRelatedContext(
           params
         );
         related.tasks = rows;
-      })(),
+      })()
+    );
+    if (leadVisible) {
+      jobs.push(
       (async () => {
         const params: unknown[] = [contextId];
         const where = ['lead_id = $1'];
-        applyTenantScope(where, params, scope, {
-          userColumn: 'uploaded_by_user_id',
-        });
+        applyTenantScope(where, params, scope, { companyOnly: true });
         if (term) {
           params.push(term);
           where.push(
@@ -275,7 +285,8 @@ async function searchRelatedContext(
         );
         related.files = rows;
       })()
-    );
+      );
+    }
   }
 
   await Promise.all(jobs);
@@ -315,7 +326,7 @@ export async function searchWorkspace(
       (async () => {
         const params: unknown[] = [];
         const where: string[] = [];
-        applyTenantScope(where, params, scope);
+        applyTenantScope(where, params, scope, { assignedWork: true });
 
         if (term) {
           params.push(term);
@@ -353,7 +364,7 @@ export async function searchWorkspace(
       (async () => {
         const params: unknown[] = [];
         const where: string[] = [];
-        applyTenantScope(where, params, scope);
+        applyTenantScope(where, params, scope, { assignedWork: true });
 
         if (term) {
           params.push(term);
@@ -391,7 +402,7 @@ export async function searchWorkspace(
       (async () => {
         const params: unknown[] = [];
         const where: string[] = [];
-        applyTenantScope(where, params, scope);
+        applyTenantScope(where, params, scope, { assignedWork: true });
 
         if (term) {
           params.push(term);

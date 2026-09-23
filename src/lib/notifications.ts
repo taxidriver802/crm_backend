@@ -13,7 +13,9 @@ export type NotificationType =
   | 'INVOICE_CREATED'
   | 'INVOICE_STATUS_CHANGED'
   | 'INVOICE_PAID'
-  | 'LEAD_CREATED';
+  | 'LEAD_CREATED'
+  | 'LEAD_ASSIGNED'
+  | 'JOB_ASSIGNED';
 
 export type NotificationEntityType =
   | 'task'
@@ -80,4 +82,36 @@ export async function createNotification(input: CreateNotificationInput) {
   );
 
   return rows[0] ?? null;
+}
+
+/** Notify the new assignee. Skips self-assignment and unchanged assignees. */
+export async function notifyAssigneeChange(input: {
+  actorUserId: string;
+  assignedTo: string | null | undefined;
+  previousAssignedTo?: string | null;
+  type: NotificationType;
+  title: string;
+  message: string;
+  entityType: NotificationEntityType;
+  entityId: number;
+  metadata?: Record<string, unknown> | null;
+}) {
+  const next = input.assignedTo ?? null;
+  if (!next || next === input.actorUserId) return;
+  if (
+    input.previousAssignedTo !== undefined &&
+    next === (input.previousAssignedTo ?? null)
+  ) {
+    return;
+  }
+
+  return createNotification({
+    userId: next,
+    type: input.type,
+    title: input.title,
+    message: input.message,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    metadata: input.metadata ?? null,
+  });
 }

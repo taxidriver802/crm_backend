@@ -1,6 +1,7 @@
 import { pool } from '../db';
 import { daysInStatus } from '../lib/aging';
 import { computeJobHealth } from '../lib/jobHealth';
+import { notifyAssigneeChange } from '../lib/notifications';
 import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
 import * as activityService from '../services/jobActivity.service';
 import { evaluateRules } from './automation.service';
@@ -70,7 +71,7 @@ async function ensureLeadBelongsToUser(
   const scope = await tenantScope(userId, options);
   const params: any[] = [leadId];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
     `SELECT id FROM leads WHERE ${where.join(' AND ')}`,
     params
@@ -197,7 +198,7 @@ export async function getJobSummary(
 ) {
   const scope = await tenantScope(userId, options);
   const params: unknown[] = [];
-  const scopeWhere = tenantPredicate(params, scope);
+  const scopeWhere = tenantPredicate(params, scope, { assignedWork: true });
 
   const [totalResult, byStatusResult] = await Promise.all([
     pool.query(
@@ -226,7 +227,7 @@ export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
   const params: any[] = [];
   const where: string[] = [];
   const scope = await tenantScope(userId, filters);
-  applyTenantScope(where, params, scope, { alias: 'j' });
+  applyTenantScope(where, params, scope, { alias: 'j', assignedWork: true });
 
   if (filters.status) {
     params.push(filters.status);
@@ -276,7 +277,7 @@ export async function getJobById(
   const params: any[] = [id];
   const where: string[] = ['j.id = $1'];
   const scope = await tenantScope(userId, options);
-  applyTenantScope(where, params, scope, { alias: 'j' });
+  applyTenantScope(where, params, scope, { alias: 'j', assignedWork: true });
 
   const result = await pool.query(
     `
@@ -362,10 +363,22 @@ export async function createJob(
     status: job.status,
   }).catch((err) => console.error('JOB_CREATED automation failed:', err));
 
-  return getJobById(userId, job.id, {
+  const created = await getJobById(userId, job.id, {
     includeAll: actor.role === 'owner' || actor.role === 'admin',
     companyId: scope.companyId,
   });
+
+  await notifyAssigneeChange({
+    actorUserId: userId,
+    assignedTo: created.assigned_to,
+    type: 'JOB_ASSIGNED',
+    title: 'New job assigned',
+    message: `${created.title} was assigned to you`,
+    entityType: 'job',
+    entityId: created.id,
+  });
+
+  return created;
 }
 
 export async function updateJob(
@@ -420,7 +433,7 @@ export async function updateJob(
   }
 
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, values, scope);
+  applyTenantScope(where, values, scope, { assignedWork: true });
 
   const sql = `
     UPDATE jobs
@@ -463,10 +476,23 @@ export async function updateJob(
     }).catch((err) => console.error('Automation evaluation failed:', err));
   }
 
-  return getJobById(userId, updatedJob.id, {
+  const updated = await getJobById(userId, updatedJob.id, {
     includeAll: options.includeAll,
     companyId: scope.companyId,
   });
+
+  await notifyAssigneeChange({
+    actorUserId: userId,
+    assignedTo: updated.assigned_to,
+    previousAssignedTo: existingJob.assigned_to ?? null,
+    type: 'JOB_ASSIGNED',
+    title: 'New job assigned',
+    message: `${updated.title} was assigned to you`,
+    entityType: 'job',
+    entityId: updated.id,
+  });
+
+  return updated;
 }
 
 export async function deleteJob(
@@ -477,7 +503,7 @@ export async function deleteJob(
   const scope = await tenantScope(userId, options);
   const params: any[] = [id];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
 
   const result = await pool.query(
     `DELETE FROM jobs WHERE ${where.join(' AND ')} RETURNING id`,

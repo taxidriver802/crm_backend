@@ -10,6 +10,7 @@ import {
 } from './estimateCalculations';
 import { trackEvent } from './productEvents.service';
 import {
+  applyOwnOrAssignedJob,
   applyTenantScope,
   tenantScope,
   type TenantScope,
@@ -175,7 +176,7 @@ async function ensureJobBelongsToUser(
   const scope = await tenantScope(userId, options);
   const params: any[] = [jobId];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
     `SELECT id FROM jobs WHERE ${where.join(' AND ')}`,
     params
@@ -192,7 +193,7 @@ async function ensureInvoiceBelongsToUser(
   const scope = await tenantScope(userId, options);
   const params: any[] = [invoiceId];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyOwnOrAssignedJob(where, params, scope);
   const result = await pool.query(
     `SELECT id FROM invoices WHERE ${where.join(' AND ')} LIMIT 1`,
     params
@@ -263,7 +264,7 @@ export async function getInvoicesByJobId(
   const scope = await ensureJobBelongsToUser(jobId, userId, options);
   const params: any[] = [jobId];
   const where: string[] = ['i.job_id = $1'];
-  applyTenantScope(where, params, scope, { alias: 'i' });
+  applyTenantScope(where, params, scope, { alias: 'i', companyOnly: true });
   const result = await pool.query(
     `${INVOICE_SELECT} WHERE ${where.join(' AND ')} ORDER BY i.created_at DESC`,
     params
@@ -279,7 +280,7 @@ export async function getInvoiceById(
   const scope = await tenantScope(userId, options);
   const params: any[] = [id];
   const where: string[] = ['i.id = $1'];
-  applyTenantScope(where, params, scope, { alias: 'i' });
+  applyOwnOrAssignedJob(where, params, scope, { alias: 'i' });
   const result = await pool.query(
     `${INVOICE_SELECT} WHERE ${where.join(' AND ')} LIMIT 1`,
     params
@@ -364,7 +365,7 @@ export async function createInvoiceFromEstimate(
   // Idempotency: return existing invoice if one was already created from this estimate
   const existingParams: any[] = [estimateId];
   const existingWhere = ['estimate_id = $1'];
-  applyTenantScope(existingWhere, existingParams, scope);
+  applyTenantScope(existingWhere, existingParams, scope, { companyOnly: true });
   const existing = await pool.query(
     `SELECT id FROM invoices WHERE ${existingWhere.join(' AND ')} LIMIT 1`,
     existingParams
@@ -375,7 +376,7 @@ export async function createInvoiceFromEstimate(
 
   const estParams: any[] = [estimateId];
   const estWhere = [`e.id = $1`, `e.status = 'Approved'`];
-  applyTenantScope(estWhere, estParams, scope, { alias: 'e' });
+  applyOwnOrAssignedJob(estWhere, estParams, scope, { alias: 'e' });
   const estRes = await pool.query(
     `SELECT e.*, j.id AS jid FROM estimates e
      INNER JOIN jobs j ON j.id = e.job_id

@@ -1,5 +1,4 @@
 import { pool } from '../db';
-import { createNotification } from '../lib/notifications';
 import { createJobActivity } from './jobActivity.service';
 import { applyTenantScope, tenantScope } from '../lib/tenant';
 
@@ -105,7 +104,7 @@ async function loadEntityForUser(
   if (entityType === 'lead') {
     const params: any[] = [entityId];
     const where: string[] = ['id = $1'];
-    applyTenantScope(where, params, scope);
+    applyTenantScope(where, params, scope, { assignedWork: true });
     const result = await pool.query(
       `SELECT id, first_name, last_name FROM leads WHERE ${where.join(' AND ')}`,
       params
@@ -121,7 +120,7 @@ async function loadEntityForUser(
 
   const params: any[] = [entityId];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
     `SELECT id, title FROM jobs WHERE ${where.join(' AND ')}`,
     params
@@ -300,21 +299,6 @@ export async function createNote(
         },
       });
     }
-  }
-
-  if (followUpTask) {
-    await createNotification({
-      userId,
-      type: 'TASK_ASSIGNED',
-      title: 'New task assigned',
-      message: followUpTask.title,
-      entityType: 'task',
-      entityId: followUpTask.id,
-      metadata: {
-        taskId: followUpTask.id,
-        taskTitle: followUpTask.title,
-      },
-    });
   }
 
   return fetchNoteById(noteId);

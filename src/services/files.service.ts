@@ -104,7 +104,7 @@ async function ensureLeadBelongsToUser(
   const scope = await tenantScope(userId, options);
   const params: any[] = [leadId];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
     `SELECT id FROM leads WHERE ${where.join(' AND ')}`,
     params
@@ -123,7 +123,7 @@ async function ensureJobBelongsToUser(
   const scope = await tenantScope(userId, options);
   const params: any[] = [jobId];
   const where: string[] = ['id = $1'];
-  applyTenantScope(where, params, scope);
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
     `SELECT id FROM jobs WHERE ${where.join(' AND ')}`,
     params
@@ -268,10 +268,15 @@ export async function getFiles(
 
   const params: any[] = [];
   const where: string[] = [];
-  applyTenantScope(where, params, scope, {
-    alias: 'f',
-    userColumn: 'uploaded_by_user_id',
-  });
+  const scopedToParent = leadId != null || jobId != null;
+  applyTenantScope(
+    where,
+    params,
+    scope,
+    scopedToParent
+      ? { alias: 'f', companyOnly: true }
+      : { alias: 'f', userColumn: 'uploaded_by_user_id' }
+  );
 
   if (leadId != null) {
     params.push(leadId);
