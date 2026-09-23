@@ -11,6 +11,9 @@ import {
 import { evaluateRules } from './automation.service';
 import { trackEvent } from './productEvents.service';
 import { getEstimateTemplateById } from './estimateTemplates.service';
+import { applyTenantScope, tenantScope } from '../lib/tenant';
+
+type ScopeOpts = { includeAll?: boolean; companyId?: string };
 
 export class EstimateNotFoundError extends Error {
   constructor(message = 'Estimate not found') {
@@ -89,6 +92,7 @@ const ESTIMATE_SELECT = `
     e.client_response_note,
     e.created_at,
     e.updated_at,
+    e.company_id,
 
     j.title AS job_title,
     j.status AS job_status,
@@ -129,6 +133,7 @@ function normalizeEstimate(row: any, lineItems: any[] = []) {
     client_response_note: row.client_response_note ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    company_id: row.company_id ?? null,
 
     job: {
       id: row.job_id,
@@ -159,31 +164,49 @@ function normalizeEstimateLineItem(row: any) {
   };
 }
 
-async function ensureJobBelongsToUser(jobId: number, userId: string) {
+async function ensureJobBelongsToUser(
+  jobId: number,
+  userId: string,
+  options: ScopeOpts = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [jobId];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope);
   const result = await pool.query(
-    `SELECT id FROM jobs WHERE id = $1 AND user_id = $2`,
-    [jobId, userId]
+    `SELECT id FROM jobs WHERE ${where.join(' AND ')}`,
+    params
   );
 
   if (result.rowCount === 0) {
     throw new JobNotFoundError();
   }
+  return scope;
 }
 
-async function ensureEstimateBelongsToUser(userId: string, estimateId: number) {
+async function ensureEstimateBelongsToUser(
+  userId: string,
+  estimateId: number,
+  options: ScopeOpts = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [estimateId];
+  const where: string[] = ['e.id = $1'];
+  applyTenantScope(where, params, scope, { alias: 'e' });
   const result = await pool.query(
     `
       SELECT e.id
       FROM estimates e
-      WHERE e.id = $1 AND e.user_id = $2
+      WHERE ${where.join(' AND ')}
       LIMIT 1
     `,
-    [estimateId, userId]
+    params
   );
 
   if (result.rowCount === 0) {
     throw new EstimateNotFoundError();
   }
+  return scope;
 }
 
 async function getEstimateLineItemsRaw(estimateId: number) {
@@ -214,8 +237,10 @@ async function getEstimateLineItemsRaw(estimateId: number) {
 async function recalculateEstimateTotals(
   client: any,
   estimateId: number,
-  userId: string
+  userId: string,
+  options: ScopeOpts = {}
 ) {
+  const scope = await tenantScope(userId, options);
   const totalsRes = await client.query(
     `
       SELECT
@@ -232,10 +257,10 @@ async function recalculateEstimateTotals(
     `
       SELECT tax_total, discount_total
       FROM estimates
-      WHERE id = $1 AND user_id = $2
+      WHERE id = $1 AND company_id = $2
       LIMIT 1
     `,
-    [estimateId, userId]
+    [estimateId, scope.companyId]
   );
 
   if (estimateRes.rowCount === 0) {
@@ -258,35 +283,50 @@ async function recalculateEstimateTotals(
         subtotal = $3,
         grand_total = $4,
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $1 AND user_id = $2
+      WHERE id = $1 AND company_id = $2
     `,
-    [estimateId, userId, totals.subtotal, totals.grand_total]
+    [estimateId, scope.companyId, totals.subtotal, totals.grand_total]
   );
 }
 
-export async function getEstimatesByJobId(userId: string, jobId: number) {
-  await ensureJobBelongsToUser(jobId, userId);
+export async function getEstimatesByJobId(
+  userId: string,
+  jobId: number,
+  options: ScopeOpts = {}
+) {
+  const scope = await ensureJobBelongsToUser(jobId, userId, options);
 
+  const params: any[] = [jobId];
+  const where: string[] = ['e.job_id = $1'];
+  applyTenantScope(where, params, scope, { alias: 'e' });
   const result = await pool.query(
     `
       ${ESTIMATE_SELECT}
-      WHERE e.user_id = $1 AND e.job_id = $2
+      WHERE ${where.join(' AND ')}
       ORDER BY e.created_at DESC
     `,
-    [userId, jobId]
+    params
   );
 
   return result.rows.map((row: any) => normalizeEstimate(row, []));
 }
 
-export async function getEstimateById(userId: string, id: number) {
+export async function getEstimateById(
+  userId: string,
+  id: number,
+  options: ScopeOpts = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [id];
+  const where: string[] = ['e.id = $1'];
+  applyTenantScope(where, params, scope, { alias: 'e' });
   const result = await pool.query(
     `
       ${ESTIMATE_SELECT}
-      WHERE e.user_id = $1 AND e.id = $2
+      WHERE ${where.join(' AND ')}
       LIMIT 1
     `,
-    [userId, id]
+    params
   );
 
   if (result.rowCount === 0) {
@@ -299,9 +339,10 @@ export async function getEstimateById(userId: string, id: number) {
 
 export async function createEstimate(
   userId: string,
-  input: CreateEstimateInput
+  input: CreateEstimateInput,
+  options: ScopeOpts = {}
 ) {
-  await ensureJobBelongsToUser(input.job_id, userId);
+  await ensureJobBelongsToUser(input.job_id, userId, options);
 
   const result = await pool.query(
     `
@@ -310,9 +351,12 @@ export async function createEstimate(
         job_id,
         title,
         status,
-        notes
+        notes,
+        company_id
       )
-      VALUES ($1, $2, $3, $4, $5)
+      SELECT $1, $2, $3, $4, $5, u.company_id
+      FROM users u
+      WHERE u.id = $1
       RETURNING id
     `,
     [
@@ -324,7 +368,7 @@ export async function createEstimate(
     ]
   );
 
-  const estimate = await getEstimateById(userId, result.rows[0].id);
+  const estimate = await getEstimateById(userId, result.rows[0].id, options);
 
   await createJobActivity({
     userId,
@@ -359,9 +403,10 @@ export async function createEstimate(
 export async function updateEstimate(
   userId: string,
   id: number,
-  updates: UpdateEstimateInput
+  updates: UpdateEstimateInput,
+  options: ScopeOpts = {}
 ) {
-  const existing = await getEstimateById(userId, id);
+  const existing = await getEstimateById(userId, id, options);
 
   if ('job_id' in updates && updates.job_id !== existing.job_id) {
     throw new EstimateOwnershipError(
@@ -377,7 +422,8 @@ export async function updateEstimate(
   }
 
   const setParts: string[] = [];
-  const values: any[] = [userId, id];
+  const scope = await tenantScope(userId, options);
+  const values: any[] = [id];
 
   for (const key of keys) {
     values.push((updates as any)[key] ?? null);
@@ -385,12 +431,14 @@ export async function updateEstimate(
   }
 
   setParts.push('updated_at = CURRENT_TIMESTAMP');
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, values, scope);
 
   const result = await pool.query(
     `
       UPDATE estimates
       SET ${setParts.join(', ')}
-      WHERE user_id = $1 AND id = $2
+      WHERE ${where.join(' AND ')}
       RETURNING id
     `,
     values
@@ -400,7 +448,7 @@ export async function updateEstimate(
     throw new EstimateNotFoundError();
   }
 
-  const updated = await getEstimateById(userId, id);
+  const updated = await getEstimateById(userId, id, options);
 
   const statusChanged =
     'status' in updates && updates.status !== existing.status;
@@ -456,16 +504,24 @@ export async function updateEstimate(
   return updated;
 }
 
-export async function deleteEstimate(userId: string, id: number) {
-  const existing = await getEstimateById(userId, id);
+export async function deleteEstimate(
+  userId: string,
+  id: number,
+  options: ScopeOpts = {}
+) {
+  const existing = await getEstimateById(userId, id, options);
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [id];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope);
 
   const result = await pool.query(
     `
       DELETE FROM estimates
-      WHERE user_id = $1 AND id = $2
+      WHERE ${where.join(' AND ')}
       RETURNING id
     `,
-    [userId, id]
+    params
   );
 
   if (result.rowCount === 0) {
@@ -492,9 +548,10 @@ export async function deleteEstimate(userId: string, id: number) {
 export async function addEstimateLineItem(
   userId: string,
   estimateId: number,
-  input: CreateEstimateLineItemInput
+  input: CreateEstimateLineItemInput,
+  options: ScopeOpts = {}
 ) {
-  await ensureEstimateBelongsToUser(userId, estimateId);
+  await ensureEstimateBelongsToUser(userId, estimateId, options);
 
   const { quantity, unit_price, line_total } = calculateLineItem({
     quantity: input.quantity,
@@ -516,9 +573,12 @@ export async function addEstimateLineItem(
           unit_price,
           line_total,
           sort_order,
-          source
+          source,
+          company_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        SELECT $1, $2, $3, $4, $5, $6, $7, $8, e.company_id
+        FROM estimates e
+        WHERE e.id = $1
       `,
       [
         estimateId,
@@ -532,7 +592,7 @@ export async function addEstimateLineItem(
       ]
     );
 
-    await recalculateEstimateTotals(client, estimateId, userId);
+    await recalculateEstimateTotals(client, estimateId, userId, options);
 
     await client.query('COMMIT');
   } catch (error) {
@@ -542,32 +602,22 @@ export async function addEstimateLineItem(
     client.release();
   }
 
-  return getEstimateById(userId, estimateId);
+  return getEstimateById(userId, estimateId, options);
 }
 
 export async function applyTemplateToEstimate(
   userId: string,
   estimateId: number,
-  templateId: number
+  templateId: number,
+  options: ScopeOpts = {}
 ) {
-  const existing = await pool.query(
-    `
-    SELECT id, status, title, job_id
-    FROM estimates
-    WHERE id = $1 AND user_id = $2
-    LIMIT 1
-    `,
-    [estimateId, userId]
-  );
-  if (existing.rowCount === 0) {
-    throw new EstimateNotFoundError();
-  }
-  const estimate = existing.rows[0];
-  if (estimate.status !== 'Draft') {
+  const existing = await getEstimateById(userId, estimateId, options);
+  if (existing.status !== 'Draft') {
     throw new EstimateNotDraftError();
   }
 
-  const template = await getEstimateTemplateById(templateId);
+  const scope = await tenantScope(userId, options);
+  const template = await getEstimateTemplateById(templateId, scope.companyId);
 
   const client = await pool.connect();
   try {
@@ -598,9 +648,12 @@ export async function applyTemplateToEstimate(
           unit_price,
           line_total,
           sort_order,
-          source
+          source,
+          company_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'manual')
+        SELECT $1, $2, $3, $4, $5, $6, $7, 'manual', e.company_id
+        FROM estimates e
+        WHERE e.id = $1
         `,
         [
           estimateId,
@@ -615,7 +668,7 @@ export async function applyTemplateToEstimate(
       nextSort += 1;
     }
 
-    await recalculateEstimateTotals(client, estimateId, userId);
+    await recalculateEstimateTotals(client, estimateId, userId, options);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -624,14 +677,14 @@ export async function applyTemplateToEstimate(
     client.release();
   }
 
-  const updated = await getEstimateById(userId, estimateId);
+  const updated = await getEstimateById(userId, estimateId, options);
 
   await createJobActivity({
     userId,
-    jobId: estimate.job_id,
+    jobId: existing.job_id,
     type: 'ESTIMATE_UPDATED',
     title: 'Estimate updated',
-    message: `${estimate.title} was updated`,
+    message: `${existing.title} was updated`,
     entityType: 'estimate',
     entityId: estimateId,
     metadata: {
@@ -648,9 +701,10 @@ export async function updateEstimateLineItem(
   userId: string,
   estimateId: number,
   lineItemId: number,
-  updates: UpdateEstimateLineItemInput
+  updates: UpdateEstimateLineItemInput,
+  options: ScopeOpts = {}
 ) {
-  await ensureEstimateBelongsToUser(userId, estimateId);
+  await ensureEstimateBelongsToUser(userId, estimateId, options);
 
   const existingRes = await pool.query(
     `
@@ -729,7 +783,7 @@ export async function updateEstimateLineItem(
       values
     );
 
-    await recalculateEstimateTotals(client, estimateId, userId);
+    await recalculateEstimateTotals(client, estimateId, userId, options);
 
     await client.query('COMMIT');
   } catch (error) {
@@ -739,15 +793,16 @@ export async function updateEstimateLineItem(
     client.release();
   }
 
-  return getEstimateById(userId, estimateId);
+  return getEstimateById(userId, estimateId, options);
 }
 
 export async function deleteEstimateLineItem(
   userId: string,
   estimateId: number,
-  lineItemId: number
+  lineItemId: number,
+  options: ScopeOpts = {}
 ) {
-  await ensureEstimateBelongsToUser(userId, estimateId);
+  await ensureEstimateBelongsToUser(userId, estimateId, options);
 
   const client = await pool.connect();
 
@@ -767,7 +822,7 @@ export async function deleteEstimateLineItem(
       throw new EstimateLineItemNotFoundError();
     }
 
-    await recalculateEstimateTotals(client, estimateId, userId);
+    await recalculateEstimateTotals(client, estimateId, userId, options);
 
     await client.query('COMMIT');
 
@@ -793,9 +848,10 @@ export class InvalidShareTokenError extends Error {
 
 export async function rotateEstimateShareToken(
   userId: string,
-  estimateId: number
+  estimateId: number,
+  options: ScopeOpts = {}
 ) {
-  await ensureEstimateBelongsToUser(userId, estimateId);
+  const scope = await ensureEstimateBelongsToUser(userId, estimateId, options);
   const raw = crypto.randomBytes(32).toString('hex');
   const hash = sha256(raw);
   const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
@@ -803,11 +859,11 @@ export async function rotateEstimateShareToken(
     `
     UPDATE estimates
     SET share_token_hash = $1, share_expires_at = $2, updated_at = CURRENT_TIMESTAMP
-    WHERE id = $3 AND user_id = $4
+    WHERE id = $3 AND company_id = $4
     `,
-    [hash, expires, estimateId, userId]
+    [hash, expires, estimateId, scope.companyId]
   );
-  const estimate = await getEstimateById(userId, estimateId);
+  const estimate = await getEstimateById(userId, estimateId, options);
   return { token: raw, share_expires_at: expires, estimate };
 }
 
@@ -824,9 +880,10 @@ export class EstimateResendNotApplicableError extends Error {
  */
 export async function resendEstimateToClient(
   userId: string,
-  estimateId: number
+  estimateId: number,
+  options: ScopeOpts = {}
 ) {
-  const existing = await getEstimateById(userId, estimateId);
+  const existing = await getEstimateById(userId, estimateId, options);
 
   if (!existing.client_responded_at) {
     throw new EstimateResendNotApplicableError(
@@ -844,6 +901,7 @@ export async function resendEstimateToClient(
   const hash = sha256(raw);
   const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
 
+  const scope = await tenantScope(userId, options);
   await pool.query(
     `
     UPDATE estimates
@@ -854,12 +912,12 @@ export async function resendEstimateToClient(
       client_response_note = NULL,
       status = 'Sent',
       updated_at = CURRENT_TIMESTAMP
-    WHERE id = $3 AND user_id = $4
+    WHERE id = $3 AND company_id = $4
     `,
-    [hash, expires, estimateId, userId]
+    [hash, expires, estimateId, scope.companyId]
   );
 
-  const estimate = await getEstimateById(userId, estimateId);
+  const estimate = await getEstimateById(userId, estimateId, options);
 
   await createJobActivity({
     userId,
@@ -995,9 +1053,10 @@ function toPdfPayload(estimate: ReturnType<typeof normalizeEstimate>) {
 
 export async function renderEstimatePdfForUser(
   userId: string,
-  estimateId: number
+  estimateId: number,
+  options: ScopeOpts = {}
 ) {
-  const estimate = await getEstimateById(userId, estimateId);
+  const estimate = await getEstimateById(userId, estimateId, options);
   return buildEstimatePdfBuffer(toPdfPayload(estimate));
 }
 

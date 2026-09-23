@@ -5,6 +5,7 @@ import * as estimatesService from '../services/estimates.service';
 import { env } from '../config/env';
 import { applyTemplateSchema } from '../validators/estimateTemplates.schemas';
 import { EstimateTemplateNotFoundError } from '../services/estimateTemplates.service';
+import { requestScope } from '../lib/tenant';
 
 export const estimatesRouter = Router();
 
@@ -70,7 +71,7 @@ estimatesRouter.use(requireAuth);
 estimatesRouter.get(
   '/job/:jobId',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const jobId = parseId(req.params.jobId);
 
     if (jobId == null) {
@@ -80,7 +81,8 @@ estimatesRouter.get(
     try {
       const estimates = await estimatesService.getEstimatesByJobId(
         userId,
-        jobId
+        jobId,
+        { companyId, includeAll }
       );
       res.json({ ok: true, estimates });
     } catch (error) {
@@ -96,7 +98,7 @@ estimatesRouter.get(
 estimatesRouter.post(
   '/',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const jobId = parseOptionalNumber(req.body.job_id);
 
     if (jobId == null) {
@@ -114,12 +116,16 @@ estimatesRouter.post(
     }
 
     try {
-      const estimate = await estimatesService.createEstimate(userId, {
-        job_id: jobId,
-        title: title.trim(),
-        status,
-        notes: parseString(req.body.notes) ?? null,
-      });
+      const estimate = await estimatesService.createEstimate(
+        userId,
+        {
+          job_id: jobId,
+          title: title.trim(),
+          status,
+          notes: parseString(req.body.notes) ?? null,
+        },
+        { companyId, includeAll }
+      );
 
       res.status(201).json({ ok: true, estimate });
     } catch (error) {
@@ -135,7 +141,7 @@ estimatesRouter.post(
 estimatesRouter.get(
   '/:id/pdf',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
 
     if (id == null) {
@@ -143,7 +149,10 @@ estimatesRouter.get(
     }
 
     try {
-      const buf = await estimatesService.renderEstimatePdfForUser(userId, id);
+      const buf = await estimatesService.renderEstimatePdfForUser(userId, id, {
+        companyId,
+        includeAll,
+      });
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader(
         'Content-Disposition',
@@ -163,7 +172,7 @@ estimatesRouter.get(
 estimatesRouter.post(
   '/:id/share',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
 
     if (id == null) {
@@ -171,7 +180,10 @@ estimatesRouter.post(
     }
 
     try {
-      const out = await estimatesService.rotateEstimateShareToken(userId, id);
+      const out = await estimatesService.rotateEstimateShareToken(userId, id, {
+        companyId,
+        includeAll,
+      });
       const shareUrl = `${env.frontendUrl.replace(/\/$/, '')}/public/estimate/${out.token}`;
       res.json({
         ok: true,
@@ -192,7 +204,7 @@ estimatesRouter.post(
 estimatesRouter.post(
   '/:id/resend',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
 
     if (id == null) {
@@ -200,7 +212,10 @@ estimatesRouter.post(
     }
 
     try {
-      const out = await estimatesService.resendEstimateToClient(userId, id);
+      const out = await estimatesService.resendEstimateToClient(userId, id, {
+        companyId,
+        includeAll,
+      });
       const shareUrl = `${env.frontendUrl.replace(/\/$/, '')}/public/estimate/${out.token}`;
       res.json({
         ok: true,
@@ -224,7 +239,7 @@ estimatesRouter.post(
 estimatesRouter.post(
   '/:id/apply-template',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
 
     if (id == null) {
@@ -240,7 +255,8 @@ estimatesRouter.post(
       const estimate = await estimatesService.applyTemplateToEstimate(
         userId,
         id,
-        parsed.data.template_id
+        parsed.data.template_id,
+        { companyId, includeAll }
       );
       res.json({ ok: true, estimate });
     } catch (error) {
@@ -262,7 +278,7 @@ estimatesRouter.post(
 estimatesRouter.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
 
     if (id == null) {
@@ -270,7 +286,10 @@ estimatesRouter.get(
     }
 
     try {
-      const estimate = await estimatesService.getEstimateById(userId, id);
+      const estimate = await estimatesService.getEstimateById(userId, id, {
+        companyId,
+        includeAll,
+      });
       res.json({ ok: true, estimate });
     } catch (error) {
       if (error instanceof estimatesService.EstimateNotFoundError) {
@@ -285,7 +304,7 @@ estimatesRouter.get(
 estimatesRouter.patch(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
 
     if (id == null) {
@@ -323,7 +342,8 @@ estimatesRouter.patch(
       const estimate = await estimatesService.updateEstimate(
         userId,
         id,
-        updates
+        updates,
+        { companyId, includeAll }
       );
 
       res.json({ ok: true, estimate });
@@ -345,7 +365,7 @@ estimatesRouter.patch(
 estimatesRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
 
     if (id == null) {
@@ -353,7 +373,10 @@ estimatesRouter.delete(
     }
 
     try {
-      const deletedId = await estimatesService.deleteEstimate(userId, id);
+      const deletedId = await estimatesService.deleteEstimate(userId, id, {
+        companyId,
+        includeAll,
+      });
       res.json({ ok: true, deletedId });
     } catch (error) {
       if (error instanceof estimatesService.EstimateNotFoundError) {
@@ -368,7 +391,7 @@ estimatesRouter.delete(
 estimatesRouter.post(
   '/:id/line-items',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const estimateId = parseId(req.params.id);
 
     if (estimateId == null) {
@@ -396,7 +419,8 @@ estimatesRouter.post(
           unit_price: req.body.unit_price,
           sort_order: parseOptionalNumber(req.body.sort_order),
           source,
-        }
+        },
+        { companyId, includeAll }
       );
 
       res.status(201).json({ ok: true, estimate });
@@ -413,7 +437,7 @@ estimatesRouter.post(
 estimatesRouter.patch(
   '/:id/line-items/:lineItemId',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const estimateId = parseId(req.params.id);
     const lineItemId = parseId(req.params.lineItemId);
 
@@ -441,7 +465,8 @@ estimatesRouter.patch(
           unit_price: req.body.unit_price,
           sort_order: parseOptionalNumber(req.body.sort_order),
           source,
-        }
+        },
+        { companyId, includeAll }
       );
 
       res.json({ ok: true, estimate });
@@ -463,7 +488,7 @@ estimatesRouter.patch(
 estimatesRouter.delete(
   '/:id/line-items/:lineItemId',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const estimateId = parseId(req.params.id);
     const lineItemId = parseId(req.params.lineItemId);
 
@@ -475,7 +500,8 @@ estimatesRouter.delete(
       const deletedId = await estimatesService.deleteEstimateLineItem(
         userId,
         estimateId,
-        lineItemId
+        lineItemId,
+        { companyId, includeAll }
       );
 
       res.json({ ok: true, deletedId });

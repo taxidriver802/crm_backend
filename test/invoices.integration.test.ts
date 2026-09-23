@@ -18,6 +18,7 @@ async function register() {
       last_name: 'Tester',
       email: `inv-${Date.now()}@test.com`,
       password: 'Testpass1!',
+      company_name: 'Invoice Test Co',
     });
   return res.headers['set-cookie']?.[0] ?? '';
 }

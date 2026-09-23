@@ -25,8 +25,10 @@ export async function trackEvent(
 ) {
   try {
     await pool.query(
-      `INSERT INTO product_events (user_id, event_name, entity_type, entity_id, metadata)
-       VALUES ($1, $2, $3, $4, $5::jsonb)`,
+      `INSERT INTO product_events (user_id, event_name, entity_type, entity_id, metadata, company_id)
+       SELECT $1, $2, $3, $4, $5::jsonb, u.company_id
+       FROM users u
+       WHERE u.id = $1`,
       [
         options.userId ?? null,
         eventName,
@@ -40,50 +42,56 @@ export async function trackEvent(
   }
 }
 
-export async function getEventCounts(days = 30) {
+export async function getEventCounts(days = 30, companyId?: string) {
   const result = await pool.query(
     `SELECT event_name, COUNT(*)::int AS count
      FROM product_events
      WHERE created_at >= NOW() - ($1 || ' days')::interval
+       AND ($2::uuid IS NULL OR company_id = $2)
      GROUP BY event_name
      ORDER BY count DESC`,
-    [days]
+    [days, companyId ?? null]
   );
   return result.rows;
 }
 
-export async function getEventTimeline(eventName: string, days = 30) {
+export async function getEventTimeline(
+  eventName: string,
+  days = 30,
+  companyId?: string
+) {
   const result = await pool.query(
     `SELECT DATE(created_at) AS day, COUNT(*)::int AS count
      FROM product_events
      WHERE event_name = $1 AND created_at >= NOW() - ($2 || ' days')::interval
+       AND ($3::uuid IS NULL OR company_id = $3)
      GROUP BY DATE(created_at)
      ORDER BY day`,
-    [eventName, days]
+    [eventName, days, companyId ?? null]
   );
   return result.rows;
 }
 
-export async function getConversionFunnel(days = 30) {
+export async function getConversionFunnel(days = 30, companyId?: string) {
   const result = await pool.query(
     `SELECT
-       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'lead_created' AND created_at >= NOW() - ($1 || ' days')::interval) AS leads_created,
-       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'estimate_approved' AND created_at >= NOW() - ($1 || ' days')::interval) AS estimates_approved,
-       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'invoice_created' AND created_at >= NOW() - ($1 || ' days')::interval) AS invoices_created,
-       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'invoice_marked_paid' AND created_at >= NOW() - ($1 || ' days')::interval) AS invoices_paid`,
-    [days]
+       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'lead_created' AND created_at >= NOW() - ($1 || ' days')::interval AND ($2::uuid IS NULL OR company_id = $2)) AS leads_created,
+       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'estimate_approved' AND created_at >= NOW() - ($1 || ' days')::interval AND ($2::uuid IS NULL OR company_id = $2)) AS estimates_approved,
+       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'invoice_created' AND created_at >= NOW() - ($1 || ' days')::interval AND ($2::uuid IS NULL OR company_id = $2)) AS invoices_created,
+       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'invoice_marked_paid' AND created_at >= NOW() - ($1 || ' days')::interval AND ($2::uuid IS NULL OR company_id = $2)) AS invoices_paid`,
+    [days, companyId ?? null]
   );
   return result.rows[0];
 }
 
-export async function getAutomationStats(days = 30) {
+export async function getAutomationStats(days = 30, companyId?: string) {
   const result = await pool.query(
     `SELECT
-       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'automation_rule_triggered' AND created_at >= NOW() - ($1 || ' days')::interval) AS triggered,
-       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'quickbooks_sync_success' AND created_at >= NOW() - ($1 || ' days')::interval) AS qb_success,
-       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'quickbooks_sync_failed' AND created_at >= NOW() - ($1 || ' days')::interval) AS qb_failed,
-       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'portal_viewed' AND created_at >= NOW() - ($1 || ' days')::interval) AS portal_views`,
-    [days]
+       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'automation_rule_triggered' AND created_at >= NOW() - ($1 || ' days')::interval AND ($2::uuid IS NULL OR company_id = $2)) AS triggered,
+       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'quickbooks_sync_success' AND created_at >= NOW() - ($1 || ' days')::interval AND ($2::uuid IS NULL OR company_id = $2)) AS qb_success,
+       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'quickbooks_sync_failed' AND created_at >= NOW() - ($1 || ' days')::interval AND ($2::uuid IS NULL OR company_id = $2)) AS qb_failed,
+       (SELECT COUNT(*)::int FROM product_events WHERE event_name = 'portal_viewed' AND created_at >= NOW() - ($1 || ' days')::interval AND ($2::uuid IS NULL OR company_id = $2)) AS portal_views`,
+    [days, companyId ?? null]
   );
   return result.rows[0];
 }

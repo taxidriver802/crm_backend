@@ -9,6 +9,13 @@ import {
   calculateEstimateTotals,
 } from './estimateCalculations';
 import { trackEvent } from './productEvents.service';
+import {
+  applyTenantScope,
+  tenantScope,
+  type TenantScope,
+} from '../lib/tenant';
+
+type ScopeOpts = { includeAll?: boolean; companyId?: string };
 
 export class InvoiceNotFoundError extends Error {
   constructor(message = 'Invoice not found') {
@@ -160,20 +167,38 @@ function normalizeLineItem(row: any) {
   };
 }
 
-async function ensureJobBelongsToUser(jobId: number, userId: string) {
+async function ensureJobBelongsToUser(
+  jobId: number,
+  userId: string,
+  options: ScopeOpts = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [jobId];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope);
   const result = await pool.query(
-    `SELECT id FROM jobs WHERE id = $1 AND user_id = $2`,
-    [jobId, userId]
+    `SELECT id FROM jobs WHERE ${where.join(' AND ')}`,
+    params
   );
   if (result.rowCount === 0) throw new JobNotFoundError();
+  return scope;
 }
 
-async function ensureInvoiceBelongsToUser(userId: string, invoiceId: number) {
+async function ensureInvoiceBelongsToUser(
+  userId: string,
+  invoiceId: number,
+  options: ScopeOpts = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [invoiceId];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope);
   const result = await pool.query(
-    `SELECT id FROM invoices WHERE id = $1 AND user_id = $2 LIMIT 1`,
-    [invoiceId, userId]
+    `SELECT id FROM invoices WHERE ${where.join(' AND ')} LIMIT 1`,
+    params
   );
   if (result.rowCount === 0) throw new InvoiceNotFoundError();
+  return scope;
 }
 
 async function getInvoiceLineItemsRaw(invoiceId: number) {
@@ -195,7 +220,7 @@ async function nextInvoiceNumber(userId: string): Promise<string> {
 async function recalculateTotals(
   client: any,
   invoiceId: number,
-  userId: string
+  scope: TenantScope
 ) {
   const totalsRes = await client.query(
     `SELECT COALESCE(SUM(line_total), 0)::numeric AS subtotal
@@ -206,8 +231,8 @@ async function recalculateTotals(
 
   const invoiceRes = await client.query(
     `SELECT tax_total, discount_total FROM invoices
-     WHERE id = $1 AND user_id = $2 LIMIT 1`,
-    [invoiceId, userId]
+     WHERE id = $1 AND company_id = $2 LIMIT 1`,
+    [invoiceId, scope.companyId]
   );
   if (invoiceRes.rowCount === 0) throw new InvoiceNotFoundError();
 
@@ -223,40 +248,62 @@ async function recalculateTotals(
   await client.query(
     `UPDATE invoices
      SET subtotal = $3, grand_total = $4, updated_at = CURRENT_TIMESTAMP
-     WHERE id = $1 AND user_id = $2`,
-    [invoiceId, userId, totals.subtotal, totals.grand_total]
+     WHERE id = $1 AND company_id = $2`,
+    [invoiceId, scope.companyId, totals.subtotal, totals.grand_total]
   );
 }
 
 // ─── CRUD ──────────────────────────────────────────────
 
-export async function getInvoicesByJobId(userId: string, jobId: number) {
-  await ensureJobBelongsToUser(jobId, userId);
+export async function getInvoicesByJobId(
+  userId: string,
+  jobId: number,
+  options: ScopeOpts = {}
+) {
+  const scope = await ensureJobBelongsToUser(jobId, userId, options);
+  const params: any[] = [jobId];
+  const where: string[] = ['i.job_id = $1'];
+  applyTenantScope(where, params, scope, { alias: 'i' });
   const result = await pool.query(
-    `${INVOICE_SELECT} WHERE i.user_id = $1 AND i.job_id = $2 ORDER BY i.created_at DESC`,
-    [userId, jobId]
+    `${INVOICE_SELECT} WHERE ${where.join(' AND ')} ORDER BY i.created_at DESC`,
+    params
   );
   return result.rows.map((r: any) => normalizeInvoice(r, []));
 }
 
-export async function getInvoiceById(userId: string, id: number) {
+export async function getInvoiceById(
+  userId: string,
+  id: number,
+  options: ScopeOpts = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [id];
+  const where: string[] = ['i.id = $1'];
+  applyTenantScope(where, params, scope, { alias: 'i' });
   const result = await pool.query(
-    `${INVOICE_SELECT} WHERE i.user_id = $1 AND i.id = $2 LIMIT 1`,
-    [userId, id]
+    `${INVOICE_SELECT} WHERE ${where.join(' AND ')} LIMIT 1`,
+    params
   );
   if (result.rowCount === 0) throw new InvoiceNotFoundError();
   const lineItems = await getInvoiceLineItemsRaw(id);
   return normalizeInvoice(result.rows[0], lineItems);
 }
 
-export async function createInvoice(userId: string, input: CreateInvoiceInput) {
-  await ensureJobBelongsToUser(input.job_id, userId);
+export async function createInvoice(
+  userId: string,
+  input: CreateInvoiceInput,
+  options: ScopeOpts = {}
+) {
+  await ensureJobBelongsToUser(input.job_id, userId, options);
   const invoiceNumber = await nextInvoiceNumber(userId);
 
   const result = await pool.query(
     `INSERT INTO invoices (
-       user_id, job_id, estimate_id, invoice_number, status, due_date, notes
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+       user_id, job_id, estimate_id, invoice_number, status, due_date, notes, company_id
+     )
+     SELECT $1, $2, $3, $4, $5, $6, $7, u.company_id
+     FROM users u
+     WHERE u.id = $1
      RETURNING id`,
     [
       userId,
@@ -269,7 +316,7 @@ export async function createInvoice(userId: string, input: CreateInvoiceInput) {
     ]
   );
 
-  const invoice = await getInvoiceById(userId, result.rows[0].id);
+  const invoice = await getInvoiceById(userId, result.rows[0].id, options);
 
   await createJobActivity({
     userId,
@@ -310,23 +357,31 @@ export async function createInvoice(userId: string, input: CreateInvoiceInput) {
 export async function createInvoiceFromEstimate(
   userId: string,
   estimateId: number,
-  options?: { due_date?: string | null }
+  options: ScopeOpts & { due_date?: string | null } = {}
 ) {
+  const scope = await tenantScope(userId, options);
+
   // Idempotency: return existing invoice if one was already created from this estimate
+  const existingParams: any[] = [estimateId];
+  const existingWhere = ['estimate_id = $1'];
+  applyTenantScope(existingWhere, existingParams, scope);
   const existing = await pool.query(
-    `SELECT id FROM invoices WHERE user_id = $1 AND estimate_id = $2 LIMIT 1`,
-    [userId, estimateId]
+    `SELECT id FROM invoices WHERE ${existingWhere.join(' AND ')} LIMIT 1`,
+    existingParams
   );
   if (existing.rowCount! > 0) {
-    return getInvoiceById(userId, existing.rows[0].id);
+    return getInvoiceById(userId, existing.rows[0].id, options);
   }
 
+  const estParams: any[] = [estimateId];
+  const estWhere = [`e.id = $1`, `e.status = 'Approved'`];
+  applyTenantScope(estWhere, estParams, scope, { alias: 'e' });
   const estRes = await pool.query(
     `SELECT e.*, j.id AS jid FROM estimates e
      INNER JOIN jobs j ON j.id = e.job_id
-     WHERE e.id = $1 AND e.user_id = $2 AND e.status = 'Approved'
+     WHERE ${estWhere.join(' AND ')}
      LIMIT 1`,
-    [estimateId, userId]
+    estParams
   );
   if (estRes.rowCount === 0) throw new EstimateNotFoundError();
   const est = estRes.rows[0];
@@ -341,8 +396,11 @@ export async function createInvoiceFromEstimate(
       `INSERT INTO invoices (
          user_id, job_id, estimate_id, invoice_number, status,
          subtotal, tax_total, discount_total, grand_total,
-         due_date, notes
-       ) VALUES ($1, $2, $3, $4, 'Draft', $5, $6, $7, $8, $9, $10)
+         due_date, notes, company_id
+       )
+       SELECT $1, $2, $3, $4, 'Draft', $5, $6, $7, $8, $9, $10, u.company_id
+       FROM users u
+       WHERE u.id = $1
        RETURNING id`,
       [
         userId,
@@ -353,7 +411,7 @@ export async function createInvoiceFromEstimate(
         est.tax_total,
         est.discount_total,
         est.grand_total,
-        options?.due_date ?? null,
+        options.due_date ?? null,
         est.notes,
       ]
     );
@@ -367,8 +425,11 @@ export async function createInvoiceFromEstimate(
     for (const item of items.rows) {
       await client.query(
         `INSERT INTO invoice_line_items (
-           invoice_id, name, description, quantity, unit_price, line_total, sort_order
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+           invoice_id, name, description, quantity, unit_price, line_total, sort_order, company_id
+         )
+         SELECT $1, $2, $3, $4, $5, $6, $7, i.company_id
+         FROM invoices i
+         WHERE i.id = $1`,
         [
           invoiceId,
           item.name,
@@ -383,7 +444,7 @@ export async function createInvoiceFromEstimate(
 
     await client.query('COMMIT');
 
-    const invoice = await getInvoiceById(userId, invoiceId);
+    const invoice = await getInvoiceById(userId, invoiceId, options);
 
     await createJobActivity({
       userId,
@@ -433,16 +494,18 @@ export async function createInvoiceFromEstimate(
 export async function updateInvoice(
   userId: string,
   id: number,
-  updates: UpdateInvoiceInput
+  updates: UpdateInvoiceInput,
+  options: ScopeOpts = {}
 ) {
-  const existing = await getInvoiceById(userId, id);
+  const scope = await ensureInvoiceBelongsToUser(userId, id, options);
+  const existing = await getInvoiceById(userId, id, options);
 
   const allowedKeys = ['status', 'due_date', 'notes'] as const;
   const keys = allowedKeys.filter((k) => k in updates);
   if (keys.length === 0) throw new Error('No fields to update');
 
   const setParts: string[] = [];
-  const values: any[] = [userId, id];
+  const values: any[] = [id, scope.companyId];
 
   for (const key of keys) {
     values.push((updates as any)[key] ?? null);
@@ -461,12 +524,12 @@ export async function updateInvoice(
   setParts.push('updated_at = CURRENT_TIMESTAMP');
 
   const result = await pool.query(
-    `UPDATE invoices SET ${setParts.join(', ')} WHERE user_id = $1 AND id = $2 RETURNING id`,
+    `UPDATE invoices SET ${setParts.join(', ')} WHERE id = $1 AND company_id = $2 RETURNING id`,
     values
   );
   if (result.rowCount === 0) throw new InvoiceNotFoundError();
 
-  const updated = await getInvoiceById(userId, id);
+  const updated = await getInvoiceById(userId, id, options);
   const statusChanged =
     'status' in updates && updates.status !== existing.status;
 
@@ -516,11 +579,16 @@ export async function updateInvoice(
   return updated;
 }
 
-export async function deleteInvoice(userId: string, id: number) {
-  const existing = await getInvoiceById(userId, id);
+export async function deleteInvoice(
+  userId: string,
+  id: number,
+  options: ScopeOpts = {}
+) {
+  const scope = await ensureInvoiceBelongsToUser(userId, id, options);
+  const existing = await getInvoiceById(userId, id, options);
   const result = await pool.query(
-    `DELETE FROM invoices WHERE user_id = $1 AND id = $2 RETURNING id`,
-    [userId, id]
+    `DELETE FROM invoices WHERE id = $1 AND company_id = $2 RETURNING id`,
+    [id, scope.companyId]
   );
   if (result.rowCount === 0) throw new InvoiceNotFoundError();
 
@@ -546,9 +614,10 @@ export async function deleteInvoice(userId: string, id: number) {
 export async function addInvoiceLineItem(
   userId: string,
   invoiceId: number,
-  input: CreateInvoiceLineItemInput
+  input: CreateInvoiceLineItemInput,
+  options: ScopeOpts = {}
 ) {
-  await ensureInvoiceBelongsToUser(userId, invoiceId);
+  const scope = await ensureInvoiceBelongsToUser(userId, invoiceId, options);
   const { quantity, unit_price, line_total } = calculateLineItem({
     quantity: input.quantity,
     unit_price: input.unit_price,
@@ -559,8 +628,11 @@ export async function addInvoiceLineItem(
     await client.query('BEGIN');
     await client.query(
       `INSERT INTO invoice_line_items (
-         invoice_id, name, description, quantity, unit_price, line_total, sort_order
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+         invoice_id, name, description, quantity, unit_price, line_total, sort_order, company_id
+       )
+       SELECT $1, $2, $3, $4, $5, $6, $7, i.company_id
+       FROM invoices i
+       WHERE i.id = $1`,
       [
         invoiceId,
         input.name,
@@ -571,7 +643,7 @@ export async function addInvoiceLineItem(
         input.sort_order ?? 0,
       ]
     );
-    await recalculateTotals(client, invoiceId, userId);
+    await recalculateTotals(client, invoiceId, scope);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -579,16 +651,17 @@ export async function addInvoiceLineItem(
   } finally {
     client.release();
   }
-  return getInvoiceById(userId, invoiceId);
+  return getInvoiceById(userId, invoiceId, options);
 }
 
 export async function updateInvoiceLineItem(
   userId: string,
   invoiceId: number,
   lineItemId: number,
-  updates: UpdateInvoiceLineItemInput
+  updates: UpdateInvoiceLineItemInput,
+  options: ScopeOpts = {}
 ) {
-  await ensureInvoiceBelongsToUser(userId, invoiceId);
+  const scope = await ensureInvoiceBelongsToUser(userId, invoiceId, options);
 
   const existingRes = await pool.query(
     `SELECT * FROM invoice_line_items WHERE id = $1 AND invoice_id = $2 LIMIT 1`,
@@ -638,7 +711,7 @@ export async function updateInvoiceLineItem(
       `UPDATE invoice_line_items SET ${setParts.join(', ')} WHERE id = $1 AND invoice_id = $2`,
       values
     );
-    await recalculateTotals(client, invoiceId, userId);
+    await recalculateTotals(client, invoiceId, scope);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
@@ -646,15 +719,16 @@ export async function updateInvoiceLineItem(
   } finally {
     client.release();
   }
-  return getInvoiceById(userId, invoiceId);
+  return getInvoiceById(userId, invoiceId, options);
 }
 
 export async function deleteInvoiceLineItem(
   userId: string,
   invoiceId: number,
-  lineItemId: number
+  lineItemId: number,
+  options: ScopeOpts = {}
 ) {
-  await ensureInvoiceBelongsToUser(userId, invoiceId);
+  const scope = await ensureInvoiceBelongsToUser(userId, invoiceId, options);
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -663,7 +737,7 @@ export async function deleteInvoiceLineItem(
       [lineItemId, invoiceId]
     );
     if (delRes.rowCount === 0) throw new InvoiceLineItemNotFoundError();
-    await recalculateTotals(client, invoiceId, userId);
+    await recalculateTotals(client, invoiceId, scope);
     await client.query('COMMIT');
     return delRes.rows[0].id;
   } catch (err) {
@@ -689,19 +763,20 @@ export class InvalidShareTokenError extends Error {
 
 export async function rotateInvoiceShareToken(
   userId: string,
-  invoiceId: number
+  invoiceId: number,
+  options: ScopeOpts = {}
 ) {
-  await ensureInvoiceBelongsToUser(userId, invoiceId);
+  const scope = await ensureInvoiceBelongsToUser(userId, invoiceId, options);
   const raw = crypto.randomBytes(32).toString('hex');
   const hash = sha256(raw);
   const expires = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   await pool.query(
     `UPDATE invoices
      SET share_token_hash = $1, share_expires_at = $2, updated_at = CURRENT_TIMESTAMP
-     WHERE id = $3 AND user_id = $4`,
-    [hash, expires, invoiceId, userId]
+     WHERE id = $3 AND company_id = $4`,
+    [hash, expires, invoiceId, scope.companyId]
   );
-  const invoice = await getInvoiceById(userId, invoiceId);
+  const invoice = await getInvoiceById(userId, invoiceId, options);
   return { token: raw, share_expires_at: expires, invoice };
 }
 
@@ -746,8 +821,12 @@ function toPdfPayload(invoice: ReturnType<typeof normalizeInvoice>) {
   };
 }
 
-export async function renderInvoicePdf(userId: string, invoiceId: number) {
-  const invoice = await getInvoiceById(userId, invoiceId);
+export async function renderInvoicePdf(
+  userId: string,
+  invoiceId: number,
+  options: ScopeOpts = {}
+) {
+  const invoice = await getInvoiceById(userId, invoiceId, options);
   return buildInvoicePdfBuffer(toPdfPayload(invoice));
 }
 

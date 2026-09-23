@@ -1,6 +1,12 @@
 import crypto from 'crypto';
 import { pool } from '../db';
 import { trackEvent } from './productEvents.service';
+import { tenantScope } from '../lib/tenant';
+import {
+  absoluteUploadPath,
+  FileNotFoundError,
+} from './files.service';
+import { loadPublicBrandingByCompanyId } from '../lib/companySlug';
 
 export class PortalTokenError extends Error {
   constructor(message = 'Invalid or expired portal link') {
@@ -15,11 +21,16 @@ function sha256(value: string) {
 
 export async function generatePortalToken(
   userId: string,
-  jobId: number
+  jobId: number,
+  options: { companyId?: string } = {}
 ): Promise<{ token: string; expires_at: Date }> {
+  const scope = await tenantScope(userId, {
+    companyId: options.companyId,
+    includeAll: true,
+  });
   const jobRes = await pool.query(
-    `SELECT id FROM jobs WHERE id = $1 AND user_id = $2`,
-    [jobId, userId]
+    `SELECT id FROM jobs WHERE id = $1 AND company_id = $2`,
+    [jobId, scope.companyId]
   );
   if (jobRes.rowCount === 0) throw new Error('Job not found');
 
@@ -28,11 +39,11 @@ export async function generatePortalToken(
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
   await pool.query(
-    `INSERT INTO portal_tokens (user_id, job_id, token_hash, expires_at)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO portal_tokens (user_id, job_id, token_hash, expires_at, company_id)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (job_id) DO UPDATE SET
-       token_hash = $3, expires_at = $4, updated_at = CURRENT_TIMESTAMP`,
-    [userId, jobId, hash, expiresAt]
+       token_hash = $3, expires_at = $4, company_id = $5, updated_at = CURRENT_TIMESTAMP`,
+    [userId, jobId, hash, expiresAt, scope.companyId]
   );
 
   return { token: raw, expires_at: expiresAt };
@@ -50,7 +61,7 @@ export async function getPortalData(rawToken: string) {
   );
   if (tokenRes.rowCount === 0) throw new PortalTokenError();
 
-  const { job_id, user_id } = tokenRes.rows[0];
+  const { job_id, user_id, company_id } = tokenRes.rows[0];
 
   const jobRes = await pool.query(
     `SELECT j.id, j.title, j.description, j.status, j.address, j.created_at,
@@ -58,33 +69,33 @@ export async function getPortalData(rawToken: string) {
             l.email AS lead_email, l.phone AS lead_phone
      FROM jobs j
      LEFT JOIN leads l ON l.id = j.lead_id
-     WHERE j.id = $1`,
-    [job_id]
+     WHERE j.id = $1 AND j.company_id = $2`,
+    [job_id, company_id]
   );
   if (jobRes.rowCount === 0) throw new PortalTokenError();
   const job = jobRes.rows[0];
 
   const estimatesRes = await pool.query(
     `SELECT id, title, status, grand_total, created_at, updated_at
-     FROM estimates WHERE job_id = $1 AND user_id = $2
+     FROM estimates WHERE job_id = $1 AND company_id = $2
      ORDER BY created_at DESC`,
-    [job_id, user_id]
+    [job_id, company_id]
   );
 
   const invoicesRes = await pool.query(
     `SELECT id, invoice_number, status, grand_total, due_date, paid_at, created_at
-     FROM invoices WHERE job_id = $1 AND user_id = $2
+     FROM invoices WHERE job_id = $1 AND company_id = $2
      ORDER BY created_at DESC`,
-    [job_id, user_id]
+    [job_id, company_id]
   );
 
   const filesRes = await pool.query(
     `SELECT id, original_name, mime_type, size_bytes, storage_key, created_at,
             caption, category, client_visible
      FROM files
-     WHERE job_id = $1 AND client_visible = TRUE
+     WHERE job_id = $1 AND company_id = $2 AND client_visible = TRUE
      ORDER BY created_at DESC`,
-    [job_id]
+    [job_id, company_id]
   );
 
   const activityRes = await pool.query(
@@ -181,6 +192,7 @@ export async function getPortalData(rawToken: string) {
       category: f.category ?? 'other',
     })),
     timeline: activityRes.rows.map(mapPortalTimelineItem),
+    company: await loadPublicBrandingByCompanyId(company_id),
   };
 }
 
@@ -223,9 +235,44 @@ function mapPortalTimelineItem(row: any) {
   };
 }
 
-export async function revokePortalToken(userId: string, jobId: number) {
+export async function revokePortalToken(
+  userId: string,
+  jobId: number,
+  options: { companyId?: string } = {}
+) {
+  const scope = await tenantScope(userId, {
+    companyId: options.companyId,
+    includeAll: true,
+  });
   await pool.query(
-    `DELETE FROM portal_tokens WHERE job_id = $1 AND user_id = $2`,
-    [jobId, userId]
+    `DELETE FROM portal_tokens WHERE job_id = $1 AND company_id = $2`,
+    [jobId, scope.companyId]
   );
+}
+
+export async function getPortalFile(rawToken: string, fileId: number) {
+  const hash = sha256(String(rawToken).trim());
+  const result = await pool.query(
+    `
+    SELECT f.*
+    FROM portal_tokens p
+    INNER JOIN files f
+      ON f.job_id = p.job_id
+     AND f.company_id = p.company_id
+    WHERE p.token_hash = $1
+      AND f.id = $2
+      AND f.client_visible = TRUE
+      AND (p.expires_at IS NULL OR p.expires_at > CURRENT_TIMESTAMP)
+    LIMIT 1
+    `,
+    [hash, fileId]
+  );
+  if (result.rowCount === 0) {
+    throw new FileNotFoundError();
+  }
+  const file = result.rows[0];
+  return {
+    file,
+    filePath: absoluteUploadPath(file.storage_key),
+  };
 }

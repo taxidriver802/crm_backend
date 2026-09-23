@@ -4,6 +4,8 @@ import { createNotification } from '../lib/notifications';
 import { createLead } from './leads.service';
 import { createNote } from './notes.service';
 import { env } from '../config/env';
+import { resolveCompanyId } from '../lib/tenant';
+import { loadPublicBrandingByCompanyId } from '../lib/companySlug';
 
 export class IntakeTokenNotFoundError extends Error {
   constructor(message = 'Intake link not found') {
@@ -44,11 +46,13 @@ function publicIntakeUrl(rawToken: string) {
 }
 
 async function upsertIntakeToken(userId: string) {
+  const companyId = await resolveCompanyId(userId);
   const raw = crypto.randomBytes(32).toString('hex');
   const hash = sha256(raw);
 
   const existing = await pool.query(
-    `SELECT id FROM intake_tokens WHERE singleton = TRUE LIMIT 1`
+    `SELECT id FROM intake_tokens WHERE company_id = $1 AND singleton = TRUE LIMIT 1`,
+    [companyId]
   );
 
   if ((existing.rowCount ?? 0) > 0) {
@@ -59,17 +63,17 @@ async function upsertIntakeToken(userId: string) {
           token_hash = $2,
           enabled = TRUE,
           updated_at = CURRENT_TIMESTAMP
-      WHERE singleton = TRUE
+      WHERE company_id = $3 AND singleton = TRUE
       `,
-      [userId, hash]
+      [userId, hash, companyId]
     );
   } else {
     await pool.query(
       `
-      INSERT INTO intake_tokens (user_id, token_hash, enabled, singleton)
-      VALUES ($1, $2, TRUE, TRUE)
+      INSERT INTO intake_tokens (user_id, token_hash, enabled, singleton, company_id)
+      VALUES ($1, $2, TRUE, TRUE, $3)
       `,
-      [userId, hash]
+      [userId, hash, companyId]
     );
   }
 
@@ -89,13 +93,15 @@ export async function regenerateIntakeToken(userId: string) {
 }
 
 export async function getIntakeStatus(userId: string) {
+  const companyId = await resolveCompanyId(userId);
   const result = await pool.query(
     `
     SELECT id, user_id, enabled, created_at, updated_at
     FROM intake_tokens
-    WHERE singleton = TRUE
+    WHERE company_id = $1 AND singleton = TRUE
     LIMIT 1
-    `
+    `,
+    [companyId]
   );
 
   if (result.rowCount === 0) {
@@ -122,13 +128,15 @@ export async function getIntakeStatus(userId: string) {
 }
 
 export async function disableIntakeToken(userId: string) {
+  const companyId = await resolveCompanyId(userId);
   const result = await pool.query(
     `
     UPDATE intake_tokens
     SET enabled = FALSE, updated_at = CURRENT_TIMESTAMP
-    WHERE singleton = TRUE
+    WHERE company_id = $1 AND singleton = TRUE
     RETURNING id
-    `
+    `,
+    [companyId]
   );
   if (result.rowCount === 0) {
     throw new IntakeTokenNotFoundError();
@@ -137,16 +145,17 @@ export async function disableIntakeToken(userId: string) {
 }
 
 export async function enableIntakeToken(userId: string) {
+  const companyId = await resolveCompanyId(userId);
   const result = await pool.query(
     `
     UPDATE intake_tokens
     SET enabled = TRUE,
         user_id = $1,
         updated_at = CURRENT_TIMESTAMP
-    WHERE singleton = TRUE
+    WHERE company_id = $2 AND singleton = TRUE
     RETURNING id
     `,
-    [userId]
+    [userId, companyId]
   );
   if (result.rowCount === 0) {
     throw new IntakeTokenNotFoundError();
@@ -158,7 +167,7 @@ async function resolveIntakeToken(rawToken: string) {
   const hash = sha256(String(rawToken).trim());
   const result = await pool.query(
     `
-    SELECT id, user_id, enabled
+    SELECT id, user_id, enabled, company_id
     FROM intake_tokens
     WHERE token_hash = $1
     LIMIT 1
@@ -207,17 +216,21 @@ export async function submitPublicIntake(
       service_type: blankToNull(input.service_type),
       preferred_contact_method: blankToNull(input.preferred_contact_method),
     },
-    { role: 'owner' }
+    { role: 'owner', companyId: String(tokenRow.company_id) }
   );
 
   if (message) {
-    await createNote(ownerId, {
-      entity_type: 'lead',
-      entity_id: lead.id,
-      body: message,
-      type: 'note',
-      direction: 'inbound',
-    });
+    await createNote(
+      ownerId,
+      {
+        entity_type: 'lead',
+        entity_id: lead.id,
+        body: message,
+        type: 'note',
+        direction: 'inbound',
+      },
+      { includeAll: true, companyId: String(tokenRow.company_id) }
+    );
   }
 
   const contactBits = [email, phone].filter(Boolean).join(' · ');
@@ -237,4 +250,9 @@ export async function submitPublicIntake(
   });
 
   return { ok: true, lead_id: lead.id };
+}
+
+export async function getPublicIntakeBranding(rawToken: string) {
+  const tokenRow = await resolveIntakeToken(rawToken);
+  return loadPublicBrandingByCompanyId(String(tokenRow.company_id));
 }

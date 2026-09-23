@@ -24,6 +24,8 @@
     "db:patch-phase17-quotes-photos": "node scripts/apply-phase17-quotes-photos-patch.js",
     "db:patch-phase18-acquisition-portal": "node scripts/apply-phase18-acquisition-portal-patch.js",
     "db:patch-phase19-appointments-workload": "node scripts/apply-phase19-appointments-workload-patch.js",
+    "db:patch-phase20-companies": "node scripts/apply-phase20-companies-patch.js",
+    "db:patch-phase21-company-branding": "node scripts/apply-phase21-company-branding-patch.js",
     "db:seed-demo": "node scripts/seed-demo-data.js",
     "db:seed-walkthrough": "node scripts/seed-walkthrough-data.js"
   },

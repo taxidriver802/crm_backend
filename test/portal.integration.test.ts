@@ -17,6 +17,7 @@ async function register() {
       last_name: 'Tester',
       email: `portal-${Date.now()}@test.com`,
       password: 'Testpass1!',
+      company_name: 'Portal Test Co',
     });
   return res.headers['set-cookie']?.[0] ?? '';
 }

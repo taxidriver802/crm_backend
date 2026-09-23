@@ -80,13 +80,15 @@ async function getLineItems(templateId: number) {
   return result.rows;
 }
 
-export async function listEstimateTemplates() {
+export async function listEstimateTemplates(companyId: string) {
   const result = await pool.query(
     `
     SELECT *
     FROM estimate_templates
+    WHERE company_id = $1
     ORDER BY name ASC, id ASC
-    `
+    `,
+    [companyId]
   );
 
   const templates = [];
@@ -97,10 +99,10 @@ export async function listEstimateTemplates() {
   return templates;
 }
 
-export async function getEstimateTemplateById(id: number) {
+export async function getEstimateTemplateById(id: number, companyId: string) {
   const result = await pool.query(
-    `SELECT * FROM estimate_templates WHERE id = $1 LIMIT 1`,
-    [id]
+    `SELECT * FROM estimate_templates WHERE id = $1 AND company_id = $2 LIMIT 1`,
+    [id, companyId]
   );
   if (result.rowCount === 0) {
     throw new EstimateTemplateNotFoundError();
@@ -109,15 +111,18 @@ export async function getEstimateTemplateById(id: number) {
   return mapTemplate(result.rows[0], lines);
 }
 
-export async function createEstimateTemplate(input: CreateEstimateTemplateInput) {
+export async function createEstimateTemplate(
+  input: CreateEstimateTemplateInput,
+  companyId: string
+) {
   try {
     const result = await pool.query(
       `
-      INSERT INTO estimate_templates (name, description)
-      VALUES ($1, $2)
+      INSERT INTO estimate_templates (name, description, company_id)
+      VALUES ($1, $2, $3)
       RETURNING *
       `,
-      [input.name, input.description ?? null]
+      [input.name, input.description ?? null, companyId]
     );
     return mapTemplate(result.rows[0], []);
   } catch (error: any) {
@@ -130,13 +135,14 @@ export async function createEstimateTemplate(input: CreateEstimateTemplateInput)
 
 export async function updateEstimateTemplate(
   id: number,
-  updates: UpdateEstimateTemplateInput
+  updates: UpdateEstimateTemplateInput,
+  companyId: string
 ) {
-  await getEstimateTemplateById(id);
+  await getEstimateTemplateById(id, companyId);
 
   const keys = Object.keys(updates) as (keyof UpdateEstimateTemplateInput)[];
   if (keys.length === 0) {
-    return getEstimateTemplateById(id);
+    return getEstimateTemplateById(id, companyId);
   }
 
   const setParts: string[] = [];
@@ -152,9 +158,9 @@ export async function updateEstimateTemplate(
       `
       UPDATE estimate_templates
       SET ${setParts.join(', ')}
-      WHERE id = $1
+      WHERE id = $1 AND company_id = $${values.length + 1}
       `,
-      values
+      [...values, companyId]
     );
   } catch (error: any) {
     if (error?.code === '23505') {
@@ -163,13 +169,13 @@ export async function updateEstimateTemplate(
     throw error;
   }
 
-  return getEstimateTemplateById(id);
+  return getEstimateTemplateById(id, companyId);
 }
 
-export async function deleteEstimateTemplate(id: number) {
+export async function deleteEstimateTemplate(id: number, companyId: string) {
   const result = await pool.query(
-    `DELETE FROM estimate_templates WHERE id = $1 RETURNING id`,
-    [id]
+    `DELETE FROM estimate_templates WHERE id = $1 AND company_id = $2 RETURNING id`,
+    [id, companyId]
   );
   if (result.rowCount === 0) {
     throw new EstimateTemplateNotFoundError();
@@ -179,9 +185,10 @@ export async function deleteEstimateTemplate(id: number) {
 
 export async function addTemplateLineItem(
   templateId: number,
-  input: CreateTemplateLineItemInput
+  input: CreateTemplateLineItemInput,
+  companyId: string
 ) {
-  await getEstimateTemplateById(templateId);
+  await getEstimateTemplateById(templateId, companyId);
   const { quantity, unit_price } = calculateLineItem({
     quantity: input.quantity,
     unit_price: input.unit_price,
@@ -190,9 +197,9 @@ export async function addTemplateLineItem(
   await pool.query(
     `
     INSERT INTO estimate_template_line_items (
-      template_id, name, description, quantity, unit_price, sort_order
+      template_id, name, description, quantity, unit_price, sort_order, company_id
     )
-    VALUES ($1, $2, $3, $4, $5, $6)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     `,
     [
       templateId,
@@ -201,6 +208,7 @@ export async function addTemplateLineItem(
       quantity,
       unit_price,
       input.sort_order ?? 0,
+      companyId,
     ]
   );
 
@@ -209,14 +217,16 @@ export async function addTemplateLineItem(
     [templateId]
   );
 
-  return getEstimateTemplateById(templateId);
+  return getEstimateTemplateById(templateId, companyId);
 }
 
 export async function updateTemplateLineItem(
   templateId: number,
   lineItemId: number,
-  updates: UpdateTemplateLineItemInput
+  updates: UpdateTemplateLineItemInput,
+  companyId: string
 ) {
+  await getEstimateTemplateById(templateId, companyId);
   const existingRes = await pool.query(
     `
     SELECT *
@@ -281,13 +291,15 @@ export async function updateTemplateLineItem(
     [templateId]
   );
 
-  return getEstimateTemplateById(templateId);
+  return getEstimateTemplateById(templateId, companyId);
 }
 
 export async function deleteTemplateLineItem(
   templateId: number,
-  lineItemId: number
+  lineItemId: number,
+  companyId: string
 ) {
+  await getEstimateTemplateById(templateId, companyId);
   const result = await pool.query(
     `
     DELETE FROM estimate_template_line_items
@@ -305,7 +317,7 @@ export async function deleteTemplateLineItem(
     [templateId]
   );
 
-  return getEstimateTemplateById(templateId);
+  return getEstimateTemplateById(templateId, companyId);
 }
 
 export { normalizeMoney };

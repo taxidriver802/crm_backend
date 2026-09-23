@@ -1,5 +1,6 @@
 import { pool } from '../db';
 import { buildStartHere, type ActionItem } from '../lib/startHere';
+import { tenantScope } from '../lib/tenant';
 import { getTaskSummary } from './tasks.service';
 
 export const STALE_LEAD_DAYS = 7;
@@ -47,16 +48,24 @@ function mapTaskAction(task: any, reason: string): ActionItem {
 
 export async function getDashboardData(
   userId: string,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
-  const includeAll = Boolean(options.includeAll);
-  const scopeWhere = includeAll ? 'TRUE' : 'user_id = $1';
+  const scope = await tenantScope(userId, options);
+  const includeAll = scope.includeAll;
+  const scopeWhere = includeAll
+    ? 'company_id = $1'
+    : 'company_id = $1 AND user_id = $2';
   const aliased = (alias: string) =>
-    includeAll ? 'TRUE' : `${alias}.user_id = $1`;
-  const scopeParams = includeAll ? [] : [userId];
-  const ph = (extraIndex: number) => `$${includeAll ? extraIndex : extraIndex + 1}`;
+    includeAll
+      ? `${alias}.company_id = $1`
+      : `${alias}.company_id = $1 AND ${alias}.user_id = $2`;
+  const scopeParams = includeAll
+    ? [scope.companyId]
+    : [scope.companyId, userId];
+  const ph = (extraIndex: number) =>
+    `$${includeAll ? extraIndex + 1 : extraIndex + 2}`;
   const extras = (...values: unknown[]) =>
-    (includeAll ? values : [userId, ...values]) as any[];
+    [...scopeParams, ...values] as any[];
 
   const [
     leadsTotalResult,
@@ -94,7 +103,7 @@ export async function getDashboardData(
         `,
       scopeParams
     ),
-    getTaskSummary(userId, { includeAll }),
+    getTaskSummary(userId, { includeAll, companyId: scope.companyId }),
     pool.query(
       `SELECT COUNT(*)::int AS total FROM jobs WHERE ${scopeWhere}`,
       scopeParams
@@ -334,20 +343,21 @@ export type WorkloadRow = {
   tasks_overdue: number;
 };
 
-export async function getWorkload(): Promise<WorkloadRow[]> {
+export async function getWorkload(companyId: string): Promise<WorkloadRow[]> {
   const result = await pool.query(
     `
     WITH active_users AS (
       SELECT id, first_name, last_name, email
       FROM users
-      WHERE status = 'active'
+      WHERE status = 'active' AND company_id = $1
     ),
     lead_counts AS (
       SELECT
         assigned_to AS user_id,
         COUNT(*)::int AS leads_open
       FROM leads
-      WHERE status NOT IN ('Closed', 'Inactive')
+      WHERE company_id = $1
+        AND status NOT IN ('Closed', 'Inactive')
       GROUP BY assigned_to
     ),
     job_counts AS (
@@ -355,7 +365,8 @@ export async function getWorkload(): Promise<WorkloadRow[]> {
         assigned_to AS user_id,
         COUNT(*)::int AS jobs_open
       FROM jobs
-      WHERE status NOT IN ('Closed Won', 'Closed Lost')
+      WHERE company_id = $1
+        AND status NOT IN ('Closed Won', 'Closed Lost')
       GROUP BY assigned_to
     ),
     task_counts AS (
@@ -368,6 +379,7 @@ export async function getWorkload(): Promise<WorkloadRow[]> {
             AND COALESCE(end_at, due_date) < NOW()
         )::int AS tasks_overdue
       FROM tasks
+      WHERE company_id = $1
       GROUP BY assigned_to
     ),
     rows AS (
@@ -400,7 +412,8 @@ export async function getWorkload(): Promise<WorkloadRow[]> {
     SELECT *
     FROM rows
     ORDER BY is_unassigned ASC, tasks_overdue DESC, tasks_open DESC, name ASC;
-    `
+    `,
+    [companyId]
   );
 
   return result.rows.map((row) => {

@@ -147,6 +147,28 @@ export async function ensureSchema() {
       'utf8'
     );
     await client.query(patchPhase19AppointmentsWorkloadSql);
+
+    const patchPhase20CompaniesPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase20_companies.sql'
+    );
+    const patchPhase20CompaniesSql = fs.readFileSync(
+      patchPhase20CompaniesPath,
+      'utf8'
+    );
+    await client.query(patchPhase20CompaniesSql);
+
+    const patchPhase21CompanyBrandingPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase21_company_branding.sql'
+    );
+    const patchPhase21CompanyBrandingSql = fs.readFileSync(
+      patchPhase21CompanyBrandingPath,
+      'utf8'
+    );
+    await client.query(patchPhase21CompanyBrandingSql);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

@@ -1,6 +1,7 @@
 import { pool } from '../db';
 import { daysInStatus } from '../lib/aging';
 import { computeJobHealth } from '../lib/jobHealth';
+import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
 import * as activityService from '../services/jobActivity.service';
 import { evaluateRules } from './automation.service';
 
@@ -45,6 +46,7 @@ export type GetJobsFilters = {
   q?: string;
   leadId?: number;
   includeAll?: boolean;
+  companyId?: string;
   limit?: number;
   offset?: number;
 };
@@ -60,10 +62,18 @@ export type CreateJobInput = {
 
 export type UpdateJobInput = Partial<Omit<CreateJobInput, 'lead_id'>>;
 
-async function ensureLeadBelongsToUser(leadId: number, userId: string) {
+async function ensureLeadBelongsToUser(
+  leadId: number,
+  userId: string,
+  options: { includeAll?: boolean; companyId?: string } = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [leadId];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope);
   const result = await pool.query(
-    `SELECT id FROM leads WHERE id = $1 AND user_id = $2`,
-    [leadId, userId]
+    `SELECT id FROM leads WHERE ${where.join(' AND ')}`,
+    params
   );
 
   if (result.rowCount === 0) {
@@ -156,7 +166,8 @@ const JOB_SELECT = `
 async function validateAssignee(
   assignedTo: string | null | undefined,
   actorUserId: string,
-  actorRole?: string
+  actorRole: string | undefined,
+  companyId: string
 ) {
   if (assignedTo == null) return;
 
@@ -169,10 +180,10 @@ async function validateAssignee(
     `
     SELECT id
     FROM users
-    WHERE id = $1 AND status = 'active'
+    WHERE id = $1 AND status = 'active' AND company_id = $2
     LIMIT 1
     `,
-    [assignedTo]
+    [assignedTo, companyId]
   );
 
   if (assignee.rowCount === 0) {
@@ -182,10 +193,11 @@ async function validateAssignee(
 
 export async function getJobSummary(
   userId: string,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
-  const scopeWhere = options.includeAll ? 'TRUE' : 'user_id = $1';
-  const params = options.includeAll ? [] : [userId];
+  const scope = await tenantScope(userId, options);
+  const params: unknown[] = [];
+  const scopeWhere = tenantPredicate(params, scope);
 
   const [totalResult, byStatusResult] = await Promise.all([
     pool.query(
@@ -213,11 +225,8 @@ export async function getJobSummary(
 export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
   const params: any[] = [];
   const where: string[] = [];
-
-  if (!filters.includeAll) {
-    params.push(userId);
-    where.push(`j.user_id = $${params.length}`);
-  }
+  const scope = await tenantScope(userId, filters);
+  applyTenantScope(where, params, scope, { alias: 'j' });
 
   if (filters.status) {
     params.push(filters.status);
@@ -262,14 +271,12 @@ export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
 export async function getJobById(
   userId: string,
   id: number,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
   const params: any[] = [id];
   const where: string[] = ['j.id = $1'];
-  if (!options.includeAll) {
-    params.push(userId);
-    where.push(`j.user_id = $${params.length}`);
-  }
+  const scope = await tenantScope(userId, options);
+  applyTenantScope(where, params, scope, { alias: 'j' });
 
   const result = await pool.query(
     `
@@ -290,10 +297,14 @@ export async function getJobById(
 export async function createJob(
   userId: string,
   input: CreateJobInput,
-  actor: { role?: string } = {}
+  actor: { role?: string; companyId?: string } = {}
 ) {
-  await ensureLeadBelongsToUser(input.lead_id, userId);
-  await validateAssignee(input.assigned_to, userId, actor.role);
+  const scope = await tenantScope(userId, {
+    companyId: actor.companyId,
+    includeAll: actor.role === 'owner' || actor.role === 'admin',
+  });
+  await ensureLeadBelongsToUser(input.lead_id, userId, scope);
+  await validateAssignee(input.assigned_to, userId, actor.role, scope.companyId);
 
   const result = await pool.query(
     `
@@ -304,9 +315,12 @@ export async function createJob(
       title,
       description,
       status,
-      address
+      address,
+      company_id
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    SELECT $1, $2, $3, $4, $5, $6, $7, u.company_id
+    FROM users u
+    WHERE u.id = $1
     RETURNING *;
     `,
     [
@@ -321,6 +335,9 @@ export async function createJob(
   );
 
   const job = result.rows[0];
+  if (!job) {
+    throw new JobNotFoundError();
+  }
 
   await activityService.createJobActivity({
     userId,
@@ -347,6 +364,7 @@ export async function createJob(
 
   return getJobById(userId, job.id, {
     includeAll: actor.role === 'owner' || actor.role === 'admin',
+    companyId: scope.companyId,
   });
 }
 
@@ -354,10 +372,12 @@ export async function updateJob(
   userId: string,
   id: number,
   updates: UpdateJobInput & { lead_id?: number | null },
-  options: { includeAll?: boolean; actorRole?: string } = {}
+  options: { includeAll?: boolean; actorRole?: string; companyId?: string } = {}
 ) {
+  const scope = await tenantScope(userId, options);
   const existingJob = await getJobById(userId, id, {
     includeAll: options.includeAll,
+    companyId: scope.companyId,
   });
 
   if ('lead_id' in updates) {
@@ -377,7 +397,12 @@ export async function updateJob(
   }
 
   if ('assigned_to' in updates) {
-    await validateAssignee(updates.assigned_to, userId, options.actorRole);
+    await validateAssignee(
+      updates.assigned_to,
+      userId,
+      options.actorRole,
+      scope.companyId
+    );
   }
 
   const setParts: string[] = [];
@@ -394,16 +419,13 @@ export async function updateJob(
     setParts.push(`status_changed_at = CURRENT_TIMESTAMP`);
   }
 
-  let whereClause = 'id = $1';
-  if (!options.includeAll) {
-    values.push(userId);
-    whereClause += ` AND user_id = $${values.length}`;
-  }
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, values, scope);
 
   const sql = `
     UPDATE jobs
     SET ${setParts.join(', ')}
-    WHERE ${whereClause}
+    WHERE ${where.join(' AND ')}
     RETURNING *;
   `;
 
@@ -441,23 +463,24 @@ export async function updateJob(
     }).catch((err) => console.error('Automation evaluation failed:', err));
   }
 
-  return getJobById(userId, updatedJob.id, { includeAll: options.includeAll });
+  return getJobById(userId, updatedJob.id, {
+    includeAll: options.includeAll,
+    companyId: scope.companyId,
+  });
 }
 
 export async function deleteJob(
   userId: string,
   id: number,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
+  const scope = await tenantScope(userId, options);
   const params: any[] = [id];
-  let whereClause = 'id = $1';
-  if (!options.includeAll) {
-    params.push(userId);
-    whereClause += ` AND user_id = $${params.length}`;
-  }
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope);
 
   const result = await pool.query(
-    `DELETE FROM jobs WHERE ${whereClause} RETURNING id`,
+    `DELETE FROM jobs WHERE ${where.join(' AND ')} RETURNING id`,
     params
   );
 

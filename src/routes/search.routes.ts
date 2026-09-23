@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { searchWorkspace } from '../services/search.service';
+import { requestScope } from '../lib/tenant';
 
 export const searchRouter = Router();
 
@@ -73,11 +74,13 @@ searchRouter.get(
       return res.json({ ok: true, ...EMPTY_SEARCH });
     }
 
-    const role = req.user?.role;
-    const includeUsers = role === 'owner' || role === 'admin';
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const includeUsers = includeAll;
 
-    const results = await searchWorkspace(req.user!.userId, q, 5, {
+    const results = await searchWorkspace(userId, q, 5, {
       includeUsers,
+      includeAll,
+      companyId,
       types,
       status,
       assigned,

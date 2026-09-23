@@ -7,11 +7,12 @@ import {
 } from '../validators/tasks.schemas';
 import * as tasksService from '../services/tasks.service';
 import type { TaskDuePreset } from '../services/tasks.service';
+import { requestScope } from '../lib/tenant';
 
 export const tasksRouter = Router();
 
-function canViewAll(role?: string) {
-  return role === 'owner' || role === 'admin';
+function viewAllRequested(req: { query: { view?: unknown } }) {
+  return req.query.view === 'all';
 }
 
 function parseDuePresetQuery(
@@ -38,9 +39,14 @@ tasksRouter.use(requireAuth);
 tasksRouter.get(
   '/summary',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
-    const summary = await tasksService.getTaskSummary(userId, { includeAll });
+    const { userId, companyId, includeAll } = requestScope(
+      req,
+      viewAllRequested(req)
+    );
+    const summary = await tasksService.getTaskSummary(userId, {
+      includeAll,
+      companyId,
+    });
 
     res.json({ ok: true, ...summary });
   })
@@ -50,9 +56,10 @@ tasksRouter.get(
 tasksRouter.get(
   '/',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const role = req.user?.role;
-    const includeAll = req.query.view === 'all' && canViewAll(role);
+    const { userId, companyId, includeAll } = requestScope(
+      req,
+      viewAllRequested(req)
+    );
     const q = typeof req.query.q === 'string' ? req.query.q : undefined;
     const status =
       typeof req.query.status === 'string' ? req.query.status : undefined;
@@ -99,6 +106,7 @@ tasksRouter.get(
       linkedTo,
       assignedTo,
       includeAll,
+      companyId,
       limit,
       offset,
     });
@@ -111,7 +119,7 @@ tasksRouter.get(
 tasksRouter.post(
   '/',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId } = requestScope(req);
     const role = req.user?.role;
 
     const parsed = createTaskSchema.safeParse(req.body);
@@ -120,7 +128,10 @@ tasksRouter.post(
     }
 
     try {
-      const task = await tasksService.createTask(userId, parsed.data, { role });
+      const task = await tasksService.createTask(userId, parsed.data, {
+        role,
+        companyId,
+      });
       res.status(201).json({ ok: true, task });
     } catch (error) {
       if (error instanceof tasksService.LeadNotFoundError) {
@@ -149,8 +160,7 @@ tasksRouter.post(
 tasksRouter.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = canViewAll(req.user?.role);
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -158,7 +168,10 @@ tasksRouter.get(
     }
 
     try {
-      const task = await tasksService.getTaskById(userId, id, { includeAll });
+      const task = await tasksService.getTaskById(userId, id, {
+        includeAll,
+        companyId,
+      });
       res.json({ ok: true, task });
     } catch (error) {
       if (error instanceof tasksService.TaskNotFoundError) {
@@ -174,9 +187,8 @@ tasksRouter.get(
 tasksRouter.patch(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const role = req.user?.role;
-    const includeAll = canViewAll(role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -192,6 +204,7 @@ tasksRouter.patch(
       const task = await tasksService.updateTask(userId, id, parsed.data, {
         includeAll,
         actorRole: role,
+        companyId,
       });
 
       res.json({ ok: true, task });
@@ -226,8 +239,7 @@ tasksRouter.patch(
 tasksRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = canViewAll(req.user?.role);
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -237,6 +249,7 @@ tasksRouter.delete(
     try {
       const deletedId = await tasksService.deleteTask(userId, id, {
         includeAll,
+        companyId,
       });
       res.json({ ok: true, deletedId });
     } catch (error) {

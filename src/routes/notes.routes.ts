@@ -3,6 +3,7 @@ import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { createNoteSchema, listNotesSchema } from '../validators/notes.schemas';
 import * as notesService from '../services/notes.service';
+import { requestScope } from '../lib/tenant';
 
 export const notesRouter = Router();
 
@@ -28,7 +29,8 @@ notesRouter.get(
       const notes = await notesService.listNotes(
         req.user!.userId,
         parsed.data.entity_type,
-        parsed.data.entity_id
+        parsed.data.entity_id,
+        requestScope(req, true)
       );
       return res.json({ ok: true, notes });
     } catch (error) {
@@ -50,7 +52,11 @@ notesRouter.post(
     }
 
     try {
-      const note = await notesService.createNote(req.user!.userId, parsed.data);
+      const note = await notesService.createNote(
+        req.user!.userId,
+        parsed.data,
+        requestScope(req, true)
+      );
       return res.status(201).json({ ok: true, note });
     } catch (error) {
       if (error instanceof notesService.NoteEntityNotFoundError) {
@@ -74,7 +80,11 @@ notesRouter.delete(
     }
 
     try {
-      const deletedId = await notesService.deleteNote(req.user!.userId, id);
+      const deletedId = await notesService.deleteNote(
+        req.user!.userId,
+        id,
+        requestScope(req, true)
+      );
       return res.json({ ok: true, deletedId });
     } catch (error) {
       if (error instanceof notesService.NoteNotFoundError) {

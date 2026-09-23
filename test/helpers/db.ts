@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { pool } from '../../src/db';
+import { DEFAULT_COMPANY_ID } from './auth';
 
 export async function resetDb() {
   await pool.query(`
@@ -27,9 +28,19 @@ export async function resetDb() {
       supplier_orders,
       supplier_accounts,
       supplier_connections,
-      users
+      users,
+      companies
     RESTART IDENTITY CASCADE;
   `);
+
+  await pool.query(
+    `
+    INSERT INTO companies (id, name, slug, palette_id)
+    VALUES ($1, 'Rooftop Realty', 'rooftop', 'rooftop')
+    ON CONFLICT (id) DO NOTHING
+    `,
+    [DEFAULT_COMPANY_ID]
+  );
 
   const uploadsDir = path.join(process.cwd(), 'uploads');
 
@@ -37,9 +48,7 @@ export async function resetDb() {
     for (const name of fs.readdirSync(uploadsDir)) {
       const filePath = path.join(uploadsDir, name);
       try {
-        if (fs.statSync(filePath).isFile()) {
-          fs.unlinkSync(filePath);
-        }
+        fs.rmSync(filePath, { recursive: true, force: true });
       } catch {
         // ignore cleanup failures for test temp files
       }
@@ -53,5 +62,23 @@ export async function resetDb() {
   );
   if (fs.existsSync(seedPath)) {
     await pool.query(fs.readFileSync(seedPath, 'utf8'));
+  }
+
+  const companiesPatchPath = path.join(
+    process.cwd(),
+    'sql',
+    'patch_phase20_companies.sql'
+  );
+  if (fs.existsSync(companiesPatchPath)) {
+    await pool.query(fs.readFileSync(companiesPatchPath, 'utf8'));
+  }
+
+  const brandingPatchPath = path.join(
+    process.cwd(),
+    'sql',
+    'patch_phase21_company_branding.sql'
+  );
+  if (fs.existsSync(brandingPatchPath)) {
+    await pool.query(fs.readFileSync(brandingPatchPath, 'utf8'));
   }
 }

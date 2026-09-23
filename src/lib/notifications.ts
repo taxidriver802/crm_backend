@@ -56,10 +56,13 @@ export async function createNotification(input: CreateNotificationInput) {
         entity_type,
         entity_id,
         metadata,
-        dedupe_key
+        dedupe_key,
+        company_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
-      ON CONFLICT (dedupe_key)
+      SELECT $1, $2, $3, $4, $5, $6, $7::jsonb, $8, u.company_id
+      FROM users u
+      WHERE u.id = $1
+      ON CONFLICT (company_id, dedupe_key)
       WHERE dedupe_key IS NOT NULL
       DO NOTHING
       RETURNING *

@@ -1,4 +1,5 @@
 import { pool } from '../db';
+import { applyTenantScope, tenantScope, type TenantScope } from '../lib/tenant';
 
 type SearchResult = {
   leads: Array<{
@@ -53,6 +54,8 @@ export type SearchFilters = {
   status?: string | null;
   assigned?: string | null;
   includeUsers?: boolean;
+  includeAll?: boolean;
+  companyId?: string;
   contextType?: string | null;
   contextId?: number | null;
 };
@@ -89,7 +92,7 @@ function wantsType(types: string[] | undefined, type: string) {
 }
 
 async function searchRelatedContext(
-  userId: string,
+  scope: TenantScope,
   contextType: string,
   contextId: number,
   query: string,
@@ -103,8 +106,9 @@ async function searchRelatedContext(
   if (contextType === 'job') {
     jobs.push(
       (async () => {
-        const params: unknown[] = [userId, contextId];
-        const where = ['user_id = $1', 'job_id = $2'];
+        const params: unknown[] = [contextId];
+        const where = ['job_id = $1'];
+        applyTenantScope(where, params, scope);
         if (term) {
           params.push(term);
           where.push(
@@ -125,8 +129,11 @@ async function searchRelatedContext(
         related.tasks = rows;
       })(),
       (async () => {
-        const params: unknown[] = [userId, contextId];
-        const where = ['uploaded_by_user_id = $1', 'job_id = $2'];
+        const params: unknown[] = [contextId];
+        const where = ['job_id = $1'];
+        applyTenantScope(where, params, scope, {
+          userColumn: 'uploaded_by_user_id',
+        });
         if (term) {
           params.push(term);
           where.push(
@@ -147,8 +154,9 @@ async function searchRelatedContext(
         related.files = rows;
       })(),
       (async () => {
-        const params: unknown[] = [userId, contextId];
-        const where = ['user_id = $1', 'job_id = $2'];
+        const params: unknown[] = [contextId];
+        const where = ['job_id = $1'];
+        applyTenantScope(where, params, scope);
         if (term) {
           params.push(term);
           where.push(
@@ -169,8 +177,9 @@ async function searchRelatedContext(
         related.invoices = rows;
       })(),
       (async () => {
-        const params: unknown[] = [userId, contextId];
-        const where = ['user_id = $1', 'job_id = $2'];
+        const params: unknown[] = [contextId];
+        const where = ['job_id = $1'];
+        applyTenantScope(where, params, scope);
         if (term) {
           params.push(term);
           where.push(
@@ -196,8 +205,9 @@ async function searchRelatedContext(
   if (contextType === 'lead') {
     jobs.push(
       (async () => {
-        const params: unknown[] = [userId, contextId];
-        const where = ['user_id = $1', 'lead_id = $2'];
+        const params: unknown[] = [contextId];
+        const where = ['lead_id = $1'];
+        applyTenantScope(where, params, scope);
         if (term) {
           params.push(term);
           where.push(
@@ -218,8 +228,9 @@ async function searchRelatedContext(
         related.jobs = rows;
       })(),
       (async () => {
-        const params: unknown[] = [userId, contextId];
-        const where = ['user_id = $1', 'lead_id = $2'];
+        const params: unknown[] = [contextId];
+        const where = ['lead_id = $1'];
+        applyTenantScope(where, params, scope);
         if (term) {
           params.push(term);
           where.push(
@@ -240,8 +251,11 @@ async function searchRelatedContext(
         related.tasks = rows;
       })(),
       (async () => {
-        const params: unknown[] = [userId, contextId];
-        const where = ['uploaded_by_user_id = $1', 'lead_id = $2'];
+        const params: unknown[] = [contextId];
+        const where = ['lead_id = $1'];
+        applyTenantScope(where, params, scope, {
+          userColumn: 'uploaded_by_user_id',
+        });
         if (term) {
           params.push(term);
           where.push(
@@ -283,6 +297,7 @@ export async function searchWorkspace(
     contextType = null,
     contextId = null,
   } = options;
+  const scope = await tenantScope(userId, options);
   const types = (options.types || [])
     .map((t) => t.trim().toLowerCase())
     .filter(Boolean);
@@ -298,8 +313,9 @@ export async function searchWorkspace(
   if (shouldRunGlobal && wantsType(types, 'leads')) {
     tasks.push(
       (async () => {
-        const params: unknown[] = [userId];
-        const where = ['user_id = $1'];
+        const params: unknown[] = [];
+        const where: string[] = [];
+        applyTenantScope(where, params, scope);
 
         if (term) {
           params.push(term);
@@ -335,8 +351,9 @@ export async function searchWorkspace(
   if (shouldRunGlobal && wantsType(types, 'jobs')) {
     tasks.push(
       (async () => {
-        const params: unknown[] = [userId];
-        const where = ['user_id = $1'];
+        const params: unknown[] = [];
+        const where: string[] = [];
+        applyTenantScope(where, params, scope);
 
         if (term) {
           params.push(term);
@@ -372,8 +389,9 @@ export async function searchWorkspace(
   if (shouldRunGlobal && wantsType(types, 'tasks')) {
     tasks.push(
       (async () => {
-        const params: unknown[] = [userId];
-        const where = ['user_id = $1'];
+        const params: unknown[] = [];
+        const where: string[] = [];
+        applyTenantScope(where, params, scope);
 
         if (term) {
           params.push(term);
@@ -409,8 +427,9 @@ export async function searchWorkspace(
   if (shouldRunGlobal && wantsType(types, 'invoices')) {
     tasks.push(
       (async () => {
-        const params: unknown[] = [userId];
-        const where = ['user_id = $1'];
+        const params: unknown[] = [];
+        const where: string[] = [];
+        applyTenantScope(where, params, scope);
 
         if (term) {
           params.push(term);
@@ -442,8 +461,9 @@ export async function searchWorkspace(
   if (shouldRunGlobal && wantsType(types, 'estimates')) {
     tasks.push(
       (async () => {
-        const params: unknown[] = [userId];
-        const where = ['user_id = $1'];
+        const params: unknown[] = [];
+        const where: string[] = [];
+        applyTenantScope(where, params, scope);
 
         if (term) {
           params.push(term);
@@ -475,8 +495,11 @@ export async function searchWorkspace(
   if (shouldRunGlobal && wantsType(types, 'files')) {
     tasks.push(
       (async () => {
-        const params: unknown[] = [userId];
-        const where = ['uploaded_by_user_id = $1'];
+        const params: unknown[] = [];
+        const where: string[] = [];
+        applyTenantScope(where, params, scope, {
+          userColumn: 'uploaded_by_user_id',
+        });
 
         if (term) {
           params.push(term);
@@ -504,8 +527,8 @@ export async function searchWorkspace(
   if (shouldRunGlobal && includeUsers && wantsType(types, 'users')) {
     tasks.push(
       (async () => {
-        const params: unknown[] = [];
-        const where = [`status = 'active'`];
+        const params: unknown[] = [scope.companyId];
+        const where = [`status = 'active'`, `company_id = $1`];
 
         if (term) {
           params.push(term);
@@ -537,7 +560,7 @@ export async function searchWorkspace(
   let related = emptyResult();
   if (contextType && contextId && Number.isFinite(contextId)) {
     related = await searchRelatedContext(
-      userId,
+      scope,
       contextType,
       contextId,
       trimmed,

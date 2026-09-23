@@ -9,6 +9,7 @@ import {
   updateTemplateLineItemSchema,
 } from '../validators/estimateTemplates.schemas';
 import * as templatesService from '../services/estimateTemplates.service';
+import { requestScope } from '../lib/tenant';
 
 export const estimateTemplatesRouter = Router();
 
@@ -36,8 +37,9 @@ function handleTemplateError(res: any, error: unknown) {
 
 estimateTemplatesRouter.get(
   '/',
-  asyncHandler(async (_req, res) => {
-    const templates = await templatesService.listEstimateTemplates();
+  asyncHandler(async (req, res) => {
+    const { companyId } = requestScope(req);
+    const templates = await templatesService.listEstimateTemplates(companyId);
     res.json({ ok: true, templates });
   })
 );
@@ -50,7 +52,10 @@ estimateTemplatesRouter.get(
       return res.status(400).json({ ok: false, error: 'Invalid id' });
     }
     try {
-      const template = await templatesService.getEstimateTemplateById(id);
+      const template = await templatesService.getEstimateTemplateById(
+        id,
+        requestScope(req).companyId
+      );
       res.json({ ok: true, template });
     } catch (error) {
       handleTemplateError(res, error);
@@ -67,7 +72,10 @@ estimateTemplatesRouter.post(
       return res.status(400).json({ ok: false, error: parsed.error.flatten() });
     }
     try {
-      const template = await templatesService.createEstimateTemplate(parsed.data);
+      const template = await templatesService.createEstimateTemplate(
+        parsed.data,
+        requestScope(req).companyId
+      );
       res.status(201).json({ ok: true, template });
     } catch (error) {
       handleTemplateError(res, error);
@@ -90,7 +98,8 @@ estimateTemplatesRouter.patch(
     try {
       const template = await templatesService.updateEstimateTemplate(
         id,
-        parsed.data
+        parsed.data,
+        requestScope(req).companyId
       );
       res.json({ ok: true, template });
     } catch (error) {
@@ -108,7 +117,10 @@ estimateTemplatesRouter.delete(
       return res.status(400).json({ ok: false, error: 'Invalid id' });
     }
     try {
-      const deletedId = await templatesService.deleteEstimateTemplate(id);
+      const deletedId = await templatesService.deleteEstimateTemplate(
+        id,
+        requestScope(req).companyId
+      );
       res.json({ ok: true, deletedId });
     } catch (error) {
       handleTemplateError(res, error);
@@ -129,7 +141,11 @@ estimateTemplatesRouter.post(
       return res.status(400).json({ ok: false, error: parsed.error.flatten() });
     }
     try {
-      const template = await templatesService.addTemplateLineItem(id, parsed.data);
+      const template = await templatesService.addTemplateLineItem(
+        id,
+        parsed.data,
+        requestScope(req).companyId
+      );
       res.status(201).json({ ok: true, template });
     } catch (error) {
       handleTemplateError(res, error);
@@ -154,7 +170,8 @@ estimateTemplatesRouter.patch(
       const template = await templatesService.updateTemplateLineItem(
         id,
         lineItemId,
-        parsed.data
+        parsed.data,
+        requestScope(req).companyId
       );
       res.json({ ok: true, template });
     } catch (error) {
@@ -175,7 +192,8 @@ estimateTemplatesRouter.delete(
     try {
       const template = await templatesService.deleteTemplateLineItem(
         id,
-        lineItemId
+        lineItemId,
+        requestScope(req).companyId
       );
       res.json({ ok: true, template });
     } catch (error) {

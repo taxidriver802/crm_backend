@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../utils/asyncHandler';
 import * as estimatesService from '../services/estimates.service';
+import { loadPublicBrandingByCompanyId } from '../lib/companySlug';
 
 export const publicEstimatesRouter = Router();
 
@@ -14,7 +15,10 @@ publicEstimatesRouter.get(
 
     try {
       const estimate = await estimatesService.getEstimateByShareToken(token);
-      res.json({ ok: true, estimate });
+      const company = estimate.company_id
+        ? await loadPublicBrandingByCompanyId(estimate.company_id)
+        : null;
+      res.json({ ok: true, estimate, company });
     } catch (error) {
       if (error instanceof estimatesService.InvalidShareTokenError) {
         return res.status(404).json({ ok: false, error: error.message });

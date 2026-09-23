@@ -21,8 +21,12 @@ function normalizeRow(row: any) {
   };
 }
 
-export async function listJobMeasurements(userId: string, jobId: number) {
-  await jobsService.getJobById(userId, jobId);
+export async function listJobMeasurements(
+  userId: string,
+  jobId: number,
+  options: { includeAll?: boolean; companyId?: string } = {}
+) {
+  await jobsService.getJobById(userId, jobId, options);
   const result = await pool.query(
     `
     SELECT * FROM job_measurements
@@ -37,13 +41,16 @@ export async function listJobMeasurements(userId: string, jobId: number) {
 export async function createJobMeasurement(
   userId: string,
   jobId: number,
-  input: { label: string; value: number; unit?: string; sort_order?: number }
+  input: { label: string; value: number; unit?: string; sort_order?: number },
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
-  await jobsService.getJobById(userId, jobId);
+  await jobsService.getJobById(userId, jobId, options);
   const result = await pool.query(
     `
-    INSERT INTO job_measurements (job_id, label, value, unit, sort_order)
-    VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO job_measurements (job_id, label, value, unit, sort_order, company_id)
+    SELECT $1, $2, $3, $4, $5, j.company_id
+    FROM jobs j
+    WHERE j.id = $1
     RETURNING *
     `,
     [
@@ -66,9 +73,10 @@ export async function updateJobMeasurement(
     value: number;
     unit: string;
     sort_order: number;
-  }>
+  }>,
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
-  await jobsService.getJobById(userId, jobId);
+  await jobsService.getJobById(userId, jobId, options);
   const existing = await pool.query(
     `SELECT id FROM job_measurements WHERE id = $1 AND job_id = $2`,
     [measurementId, jobId]
@@ -124,9 +132,10 @@ export async function updateJobMeasurement(
 export async function deleteJobMeasurement(
   userId: string,
   jobId: number,
-  measurementId: number
+  measurementId: number,
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
-  await jobsService.getJobById(userId, jobId);
+  await jobsService.getJobById(userId, jobId, options);
   const result = await pool.query(
     `DELETE FROM job_measurements WHERE id = $1 AND job_id = $2 RETURNING id`,
     [measurementId, jobId]

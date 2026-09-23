@@ -6,22 +6,28 @@ import * as jobsService from '../services/jobs.service';
 import * as tasksService from '../services/tasks.service';
 import * as activityService from '../services/jobActivity.service';
 import * as jobMeasurementsService from '../services/jobMeasurements.service';
+import { requestScope } from '../lib/tenant';
 
 export const jobsRouter = Router();
 
 jobsRouter.use(requireAuth);
 
-function canViewAll(role?: string) {
-  return role === 'owner' || role === 'admin';
+function viewAllRequested(req: { query: { view?: unknown } }) {
+  return req.query.view === 'all';
 }
 
 // GET /jobs/summary
 jobsRouter.get(
   '/summary',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
-    const summary = await jobsService.getJobSummary(userId, { includeAll });
+    const { userId, companyId, includeAll } = requestScope(
+      req,
+      viewAllRequested(req)
+    );
+    const summary = await jobsService.getJobSummary(userId, {
+      includeAll,
+      companyId,
+    });
 
     res.json({
       ok: true,
@@ -34,8 +40,10 @@ jobsRouter.get(
 jobsRouter.get(
   '/',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
+    const { userId, companyId, includeAll } = requestScope(
+      req,
+      viewAllRequested(req)
+    );
 
     const status =
       typeof req.query.status === 'string' ? req.query.status : undefined;
@@ -63,6 +71,7 @@ jobsRouter.get(
       q,
       leadId,
       includeAll,
+      companyId,
       limit,
       offset,
     });
@@ -75,7 +84,7 @@ jobsRouter.get(
 jobsRouter.post(
   '/',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId } = requestScope(req);
     const role = req.user?.role;
 
     const parsed = createJobSchema.safeParse(req.body);
@@ -84,7 +93,10 @@ jobsRouter.post(
     }
 
     try {
-      const job = await jobsService.createJob(userId, parsed.data, { role });
+      const job = await jobsService.createJob(userId, parsed.data, {
+        role,
+        companyId,
+      });
       res.status(201).json({ ok: true, job });
     } catch (error) {
       if (error instanceof jobsService.AssigneeNotFoundError) {
@@ -102,8 +114,7 @@ jobsRouter.post(
 jobsRouter.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = canViewAll(req.user?.role);
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -111,7 +122,10 @@ jobsRouter.get(
     }
 
     try {
-      const job = await jobsService.getJobById(userId, id, { includeAll });
+      const job = await jobsService.getJobById(userId, id, {
+        includeAll,
+        companyId,
+      });
       res.json({ ok: true, job });
     } catch (error) {
       if (error instanceof jobsService.JobNotFoundError) {
@@ -127,8 +141,7 @@ jobsRouter.get(
 jobsRouter.get(
   '/:id/tasks',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = canViewAll(req.user?.role);
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -138,6 +151,7 @@ jobsRouter.get(
     try {
       const tasks = await tasksService.getTasksByJobId(userId, id, {
         includeAll,
+        companyId,
       });
       res.json({ ok: true, tasks });
     } catch (error) {
@@ -157,9 +171,7 @@ jobsRouter.get(
 jobsRouter.get(
   '/:id/activity',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const role = req.user?.role;
-    const includeAll = canViewAll(role);
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
     let limit = parseInt(req.query.limit as string, 10);
     if (isNaN(limit) || limit <= 0) {
@@ -169,7 +181,8 @@ jobsRouter.get(
     const result = await activityService.getJobActivitiesByJob(
       userId,
       id,
-      limit
+      limit,
+      { includeAll, companyId }
     );
 
     res.json({
@@ -184,7 +197,7 @@ jobsRouter.get(
 jobsRouter.get(
   '/:id/measurements',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -194,7 +207,8 @@ jobsRouter.get(
     try {
       const measurements = await jobMeasurementsService.listJobMeasurements(
         userId,
-        id
+        id,
+        { includeAll, companyId }
       );
       res.json({ ok: true, measurements });
     } catch (error) {
@@ -210,7 +224,7 @@ jobsRouter.get(
 jobsRouter.post(
   '/:id/measurements',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -243,7 +257,8 @@ jobsRouter.post(
           value,
           unit,
           sort_order: Number.isFinite(sort_order) ? sort_order : 0,
-        }
+        },
+        { includeAll, companyId }
       );
       res.status(201).json({ ok: true, measurement });
     } catch (error) {
@@ -259,7 +274,7 @@ jobsRouter.post(
 jobsRouter.patch(
   '/:id/measurements/:measurementId',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
     const measurementId = Number(req.params.measurementId);
 
@@ -300,7 +315,8 @@ jobsRouter.patch(
         userId,
         id,
         measurementId,
-        updates
+        updates,
+        { includeAll, companyId }
       );
       res.json({ ok: true, measurement });
     } catch (error) {
@@ -319,7 +335,7 @@ jobsRouter.patch(
 jobsRouter.delete(
   '/:id/measurements/:measurementId',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
     const measurementId = Number(req.params.measurementId);
 
@@ -331,7 +347,8 @@ jobsRouter.delete(
       const deletedId = await jobMeasurementsService.deleteJobMeasurement(
         userId,
         id,
-        measurementId
+        measurementId,
+        { includeAll, companyId }
       );
       res.json({ ok: true, deletedId });
     } catch (error) {
@@ -350,9 +367,8 @@ jobsRouter.delete(
 jobsRouter.patch(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const role = req.user?.role;
-    const includeAll = canViewAll(role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -368,6 +384,7 @@ jobsRouter.patch(
       const job = await jobsService.updateJob(userId, id, parsed.data, {
         includeAll,
         actorRole: role,
+        companyId,
       });
 
       res.json({ ok: true, job });
@@ -391,8 +408,7 @@ jobsRouter.patch(
 jobsRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = canViewAll(req.user?.role);
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -400,7 +416,10 @@ jobsRouter.delete(
     }
 
     try {
-      const deletedId = await jobsService.deleteJob(userId, id, { includeAll });
+      const deletedId = await jobsService.deleteJob(userId, id, {
+        includeAll,
+        companyId,
+      });
       res.json({ ok: true, deletedId });
     } catch (error) {
       if (error instanceof jobsService.JobNotFoundError) {

@@ -61,8 +61,10 @@ export async function createSavedView(
   try {
     const result = await pool.query(
       `
-      INSERT INTO saved_views (user_id, entity_type, name, filters)
-      VALUES ($1, $2, $3, $4::jsonb)
+      INSERT INTO saved_views (user_id, entity_type, name, filters, company_id)
+      SELECT $1, $2, $3, $4::jsonb, u.company_id
+      FROM users u
+      WHERE u.id = $1
       RETURNING id, user_id, entity_type, name, filters, created_at, updated_at
       `,
       [

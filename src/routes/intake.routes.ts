@@ -66,6 +66,29 @@ intakeRouter.delete(
   })
 );
 
+publicIntakeRouter.get(
+  '/:token',
+  asyncHandler(async (req, res) => {
+    const token = String(req.params.token || '').trim();
+    if (!token) {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+
+    try {
+      const company = await intakeService.getPublicIntakeBranding(token);
+      res.json({ ok: true, company });
+    } catch (error) {
+      if (
+        error instanceof intakeService.IntakeTokenNotFoundError ||
+        error instanceof intakeService.IntakeDisabledError
+      ) {
+        return res.status(404).json({ ok: false, error: 'Not found' });
+      }
+      throw error;
+    }
+  })
+);
+
 publicIntakeRouter.post(
   '/:token',
   asyncHandler(async (req, res) => {

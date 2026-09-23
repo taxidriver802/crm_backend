@@ -1,5 +1,6 @@
 import { pool } from '../db';
 import { daysInStatus } from '../lib/aging';
+import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
 import { trackEvent } from './productEvents.service';
 
 export class LeadNotFoundError extends Error {
@@ -28,6 +29,7 @@ export type GetLeadsFilters = {
   assignedTo?: string;
   q?: string;
   includeAll?: boolean;
+  companyId?: string;
   limit?: number;
   offset?: number;
 };
@@ -80,7 +82,8 @@ function normalizeLead(row: any) {
 async function validateAssignee(
   assignedTo: string | null | undefined,
   actorUserId: string,
-  actorRole?: string
+  actorRole: string | undefined,
+  companyId: string
 ) {
   if (assignedTo == null) return;
 
@@ -93,10 +96,10 @@ async function validateAssignee(
     `
     SELECT id
     FROM users
-    WHERE id = $1 AND status = 'active'
+    WHERE id = $1 AND status = 'active' AND company_id = $2
     LIMIT 1
     `,
-    [assignedTo]
+    [assignedTo, companyId]
   );
 
   if (assignee.rowCount === 0) {
@@ -106,10 +109,11 @@ async function validateAssignee(
 
 export async function getLeadSummary(
   userId: string,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
-  const scopeWhere = options.includeAll ? 'TRUE' : 'user_id = $1';
-  const params = options.includeAll ? [] : [userId];
+  const scope = await tenantScope(userId, options);
+  const params: unknown[] = [];
+  const scopeWhere = tenantPredicate(params, scope);
 
   const [totalResult, byStatusResult] = await Promise.all([
     pool.query(
@@ -137,11 +141,8 @@ export async function getLeadSummary(
 export async function getLeads(userId: string, filters: GetLeadsFilters) {
   const params: any[] = [];
   const where: string[] = [];
-
-  if (!filters.includeAll) {
-    params.push(userId);
-    where.push(`t.user_id = $${params.length}`);
-  }
+  const scope = await tenantScope(userId, filters);
+  applyTenantScope(where, params, scope, { alias: 't' });
 
   if (filters.status) {
     params.push(filters.status);
@@ -181,14 +182,12 @@ export async function getLeads(userId: string, filters: GetLeadsFilters) {
 export async function getLeadById(
   userId: string,
   id: number,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
   const params: any[] = [id];
   const where: string[] = ['t.id = $1'];
-  if (!options.includeAll) {
-    params.push(userId);
-    where.push(`t.user_id = $${params.length}`);
-  }
+  const scope = await tenantScope(userId, options);
+  applyTenantScope(where, params, scope, { alias: 't' });
 
   const result = await pool.query(
     `
@@ -209,17 +208,21 @@ export async function getLeadById(
 export async function createLead(
   userId: string,
   input: CreateLeadInput,
-  actor: { role?: string } = {}
+  actor: { role?: string; companyId?: string } = {}
 ) {
-  await validateAssignee(input.assigned_to, userId, actor.role);
+  const scope = await tenantScope(userId, actor);
+  await validateAssignee(input.assigned_to, userId, actor.role, scope.companyId);
 
   const result = await pool.query(
     `
     INSERT INTO leads (
       user_id, assigned_to, first_name, last_name, email, phone, source, status,
-      budget_min, budget_max, notes, service_type, preferred_contact_method, urgency
+      budget_min, budget_max, notes, service_type, preferred_contact_method, urgency,
+      company_id
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+    SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, u.company_id
+    FROM users u
+    WHERE u.id = $1
     RETURNING *;
     `,
     [
@@ -240,8 +243,13 @@ export async function createLead(
     ]
   );
 
+  if (result.rowCount === 0) {
+    throw new LeadNotFoundError();
+  }
+
   const lead = await getLeadById(userId, result.rows[0].id, {
     includeAll: actor.role === 'owner' || actor.role === 'admin',
+    companyId: scope.companyId,
   });
 
   trackEvent('lead_created', { userId, entityType: 'lead', entityId: lead.id });
@@ -253,14 +261,21 @@ export async function updateLead(
   userId: string,
   id: number,
   updates: UpdateLeadInput,
-  options: { includeAll?: boolean; actorRole?: string } = {}
+  options: { includeAll?: boolean; actorRole?: string; companyId?: string } = {}
 ) {
+  const scope = await tenantScope(userId, options);
   const existingLead = await getLeadById(userId, id, {
     includeAll: options.includeAll,
+    companyId: scope.companyId,
   });
 
   if ('assigned_to' in updates) {
-    await validateAssignee(updates.assigned_to, userId, options.actorRole);
+    await validateAssignee(
+      updates.assigned_to,
+      userId,
+      options.actorRole,
+      scope.companyId
+    );
   }
 
   const keys = Object.keys(updates) as (keyof UpdateLeadInput)[];
@@ -288,16 +303,13 @@ export async function updateLead(
 
   setParts.push(`updated_at = CURRENT_TIMESTAMP`);
 
-  let whereClause = 'id = $1';
-  if (!options.includeAll) {
-    values.push(userId);
-    whereClause += ` AND user_id = $${values.length}`;
-  }
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, values, scope);
 
   const sql = `
     UPDATE leads
     SET ${setParts.join(', ')}
-    WHERE ${whereClause}
+    WHERE ${where.join(' AND ')}
     RETURNING id;
   `;
 
@@ -309,23 +321,22 @@ export async function updateLead(
 
   return getLeadById(userId, result.rows[0].id, {
     includeAll: options.includeAll,
+    companyId: scope.companyId,
   });
 }
 
 export async function deleteLead(
   userId: string,
   id: number,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
+  const scope = await tenantScope(userId, options);
   const params: any[] = [id];
-  let whereClause = 'id = $1';
-  if (!options.includeAll) {
-    params.push(userId);
-    whereClause += ` AND user_id = $${params.length}`;
-  }
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope);
 
   const result = await pool.query(
-    `DELETE FROM leads WHERE ${whereClause} RETURNING id`,
+    `DELETE FROM leads WHERE ${where.join(' AND ')} RETURNING id`,
     params
   );
 

@@ -4,6 +4,7 @@ import { requireAuth } from '../middleware/auth';
 import { upload } from '../lib/upload';
 import * as filesService from '../services/files.service';
 import { updateFileSchema } from '../validators/files.schemas';
+import { requestScope } from '../lib/tenant';
 
 export const filesRouter = Router();
 
@@ -92,10 +93,13 @@ filesRouter.post(
     }
 
     try {
+      const { userId, companyId, includeAll } = requestScope(req, true);
       const file = await filesService.createFile({
-        uploadedByUserId: req.user.userId,
+        uploadedByUserId: userId,
+        companyId,
+        includeAll,
         originalName: req.file.originalname,
-        storageKey: req.file.filename,
+        storageKey: `${companyId}/${req.file.filename}`,
         mimeType: req.file.mimetype,
         sizeBytes: req.file.size,
         leadId,
@@ -133,10 +137,7 @@ filesRouter.get(
   '/',
   requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.user?.userId;
-    if (!userId) {
-      throw new filesService.UserNotProvidedError();
-    }
+    const { userId, companyId, includeAll } = requestScope(req, true);
 
     const leadId = parseOptionalInt(req.query.lead_id);
     const jobId = parseOptionalInt(req.query.job_id);
@@ -149,7 +150,10 @@ filesRouter.get(
     }
 
     try {
-      const files = await filesService.getFiles(userId, leadId, jobId);
+      const files = await filesService.getFiles(userId, leadId, jobId, {
+        includeAll,
+        companyId,
+      });
 
       res.json({
         ok: true,
@@ -180,10 +184,7 @@ filesRouter.patch(
   requireAuth,
   asyncHandler(async (req: any, res) => {
     const fileId = Number(req.params.id);
-    const userId = String(req.user?.userId || '');
-    if (!userId) {
-      throw new filesService.UserNotProvidedError();
-    }
+    const { userId, companyId, includeAll } = requestScope(req, true);
 
     if (!Number.isInteger(fileId)) {
       return res.status(400).json({ ok: false, error: 'Invalid file id' });
@@ -208,7 +209,10 @@ filesRouter.patch(
     }
 
     try {
-      const file = await filesService.updateFile(userId, fileId, updates);
+      const file = await filesService.updateFile(userId, fileId, updates, {
+        includeAll,
+        companyId,
+      });
       res.json({ ok: true, file });
     } catch (error) {
       if (error instanceof filesService.FileNotFoundError) {
@@ -233,18 +237,15 @@ filesRouter.delete(
       });
     }
 
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const fileId = Number(req.params.id);
-    const userId = String(req.user.userId);
-    if (!userId) {
-      throw new filesService.UserNotProvidedError();
-    }
 
     if (!Number.isInteger(fileId)) {
       return res.status(400).json({ ok: false, error: 'Invalid file id' });
     }
 
     try {
-      await filesService.deleteFile(userId, fileId);
+      await filesService.deleteFile(userId, fileId, { includeAll, companyId });
       res.json({ ok: true });
     } catch (error) {
       if (error instanceof filesService.FileNotFoundError) {

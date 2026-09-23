@@ -106,6 +106,8 @@ schema file and the patches, in this order:
 13. `patch_phase17_quotes_photos.sql`
 14. `patch_phase18_acquisition_portal.sql`
 15. `patch_phase19_appointments_workload.sql`
+16. `patch_phase20_companies.sql`
+17. `patch_phase21_company_branding.sql`
 
 That list is hardcoded in `test/helpers/setup.ts` and duplicated in
 `crm_qa/db/schema.ts` (QA fails if the `sql/` directory drifts). Do not sort
