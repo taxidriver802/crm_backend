@@ -8,8 +8,7 @@ CREATE TABLE IF NOT EXISTS estimate_templates (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_estimate_templates_name
-  ON estimate_templates (lower(name));
+-- Unique name is per company (patch_phase20_companies.sql).
 
 CREATE TABLE IF NOT EXISTS estimate_template_line_items (
   id SERIAL PRIMARY KEY,

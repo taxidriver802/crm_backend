@@ -4,6 +4,7 @@ import { asyncHandler } from '../utils/asyncHandler';
 import * as invoicesService from '../services/invoices.service';
 import { env } from '../config/env';
 import { pool } from '../db';
+import { requestScope } from '../lib/tenant';
 
 export const invoicesRouter = Router();
 
@@ -50,7 +51,7 @@ invoicesRouter.use(requireAuth);
 invoicesRouter.get(
   '/',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const status = parseInvoiceStatus(req.query.status);
     const due = parseString(req.query.due);
 
@@ -59,8 +60,12 @@ invoicesRouter.get(
      FROM invoices i
      INNER JOIN jobs j ON j.id = i.job_id
      LEFT JOIN leads l ON l.id = j.lead_id
-     WHERE i.user_id = $1`;
-    const params: any[] = [userId];
+     WHERE i.company_id = $1`;
+    const params: any[] = [companyId];
+    if (!includeAll) {
+      params.push(userId);
+      query += ` AND i.user_id = $${params.length}`;
+    }
 
     if (status) {
       params.push(status);
@@ -104,7 +109,7 @@ invoicesRouter.get(
 invoicesRouter.post(
   '/from-estimate/:estimateId',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const estimateId = parseId(req.params.estimateId);
     if (estimateId == null) {
       return res.status(400).json({ ok: false, error: 'Invalid estimate id' });
@@ -114,7 +119,11 @@ invoicesRouter.post(
       const invoice = await invoicesService.createInvoiceFromEstimate(
         userId,
         estimateId,
-        { due_date: parseString(req.body?.due_date) ?? null }
+        {
+          due_date: parseString(req.body?.due_date) ?? null,
+          companyId,
+          includeAll,
+        }
       );
       res.status(201).json({ ok: true, invoice });
     } catch (error) {
@@ -130,14 +139,17 @@ invoicesRouter.post(
 invoicesRouter.get(
   '/job/:jobId',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const jobId = parseId(req.params.jobId);
     if (jobId == null) {
       return res.status(400).json({ ok: false, error: 'Invalid job id' });
     }
 
     try {
-      const invoices = await invoicesService.getInvoicesByJobId(userId, jobId);
+      const invoices = await invoicesService.getInvoicesByJobId(userId, jobId, {
+        companyId,
+        includeAll,
+      });
       res.json({ ok: true, invoices });
     } catch (error) {
       if (error instanceof invoicesService.JobNotFoundError) {
@@ -152,7 +164,7 @@ invoicesRouter.get(
 invoicesRouter.post(
   '/',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const jobId = parseOptionalNumber(req.body.job_id);
     if (jobId == null) {
       return res.status(400).json({ ok: false, error: 'job_id is required' });
@@ -164,13 +176,17 @@ invoicesRouter.post(
     }
 
     try {
-      const invoice = await invoicesService.createInvoice(userId, {
-        job_id: jobId,
-        estimate_id: parseOptionalNumber(req.body.estimate_id) ?? null,
-        status,
-        due_date: parseString(req.body.due_date) ?? null,
-        notes: parseString(req.body.notes) ?? null,
-      });
+      const invoice = await invoicesService.createInvoice(
+        userId,
+        {
+          job_id: jobId,
+          estimate_id: parseOptionalNumber(req.body.estimate_id) ?? null,
+          status,
+          due_date: parseString(req.body.due_date) ?? null,
+          notes: parseString(req.body.notes) ?? null,
+        },
+        { companyId, includeAll }
+      );
       res.status(201).json({ ok: true, invoice });
     } catch (error) {
       if (error instanceof invoicesService.JobNotFoundError) {
@@ -185,14 +201,17 @@ invoicesRouter.post(
 invoicesRouter.get(
   '/:id/pdf',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
     if (id == null) {
       return res.status(400).json({ ok: false, error: 'Invalid invoice id' });
     }
 
     try {
-      const buf = await invoicesService.renderInvoicePdf(userId, id);
+      const buf = await invoicesService.renderInvoicePdf(userId, id, {
+        companyId,
+        includeAll,
+      });
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader(
         'Content-Disposition',
@@ -212,14 +231,17 @@ invoicesRouter.get(
 invoicesRouter.post(
   '/:id/share',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
     if (id == null) {
       return res.status(400).json({ ok: false, error: 'Invalid invoice id' });
     }
 
     try {
-      const out = await invoicesService.rotateInvoiceShareToken(userId, id);
+      const out = await invoicesService.rotateInvoiceShareToken(userId, id, {
+        companyId,
+        includeAll,
+      });
       const shareUrl = `${env.frontendUrl.replace(/\/$/, '')}/public/invoice/${out.token}`;
       res.json({
         ok: true,
@@ -240,14 +262,17 @@ invoicesRouter.post(
 invoicesRouter.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
     if (id == null) {
       return res.status(400).json({ ok: false, error: 'Invalid invoice id' });
     }
 
     try {
-      const invoice = await invoicesService.getInvoiceById(userId, id);
+      const invoice = await invoicesService.getInvoiceById(userId, id, {
+        companyId,
+        includeAll,
+      });
       res.json({ ok: true, invoice });
     } catch (error) {
       if (error instanceof invoicesService.InvoiceNotFoundError) {
@@ -262,7 +287,7 @@ invoicesRouter.get(
 invoicesRouter.patch(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
     if (id == null) {
       return res.status(400).json({ ok: false, error: 'Invalid invoice id' });
@@ -287,7 +312,10 @@ invoicesRouter.patch(
     }
 
     try {
-      const invoice = await invoicesService.updateInvoice(userId, id, updates);
+      const invoice = await invoicesService.updateInvoice(userId, id, updates, {
+        companyId,
+        includeAll,
+      });
       res.json({ ok: true, invoice });
     } catch (error) {
       if (error instanceof invoicesService.InvoiceNotFoundError) {
@@ -302,14 +330,17 @@ invoicesRouter.patch(
 invoicesRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = parseId(req.params.id);
     if (id == null) {
       return res.status(400).json({ ok: false, error: 'Invalid invoice id' });
     }
 
     try {
-      const deletedId = await invoicesService.deleteInvoice(userId, id);
+      const deletedId = await invoicesService.deleteInvoice(userId, id, {
+        companyId,
+        includeAll,
+      });
       res.json({ ok: true, deletedId });
     } catch (error) {
       if (error instanceof invoicesService.InvoiceNotFoundError) {
@@ -324,7 +355,7 @@ invoicesRouter.delete(
 invoicesRouter.post(
   '/:id/line-items',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const invoiceId = parseId(req.params.id);
     if (invoiceId == null) {
       return res.status(400).json({ ok: false, error: 'Invalid invoice id' });
@@ -345,7 +376,8 @@ invoicesRouter.post(
           quantity: req.body.quantity,
           unit_price: req.body.unit_price,
           sort_order: parseOptionalNumber(req.body.sort_order),
-        }
+        },
+        { companyId, includeAll }
       );
       res.status(201).json({ ok: true, invoice });
     } catch (error) {
@@ -361,7 +393,7 @@ invoicesRouter.post(
 invoicesRouter.patch(
   '/:id/line-items/:lineItemId',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const invoiceId = parseId(req.params.id);
     const lineItemId = parseId(req.params.lineItemId);
     if (invoiceId == null || lineItemId == null) {
@@ -382,7 +414,8 @@ invoicesRouter.patch(
           quantity: req.body.quantity,
           unit_price: req.body.unit_price,
           sort_order: parseOptionalNumber(req.body.sort_order),
-        }
+        },
+        { companyId, includeAll }
       );
       res.json({ ok: true, invoice });
     } catch (error) {
@@ -401,7 +434,7 @@ invoicesRouter.patch(
 invoicesRouter.delete(
   '/:id/line-items/:lineItemId',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const invoiceId = parseId(req.params.id);
     const lineItemId = parseId(req.params.lineItemId);
     if (invoiceId == null || lineItemId == null) {
@@ -412,7 +445,8 @@ invoicesRouter.delete(
       const deletedId = await invoicesService.deleteInvoiceLineItem(
         userId,
         invoiceId,
-        lineItemId
+        lineItemId,
+        { companyId, includeAll }
       );
       res.json({ ok: true, deletedId });
     } catch (error) {

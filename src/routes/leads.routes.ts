@@ -6,22 +6,28 @@ import {
   updateLeadSchema,
 } from '../validators/leads.schemas';
 import * as leadsService from '../services/leads.service';
+import { requestScope } from '../lib/tenant';
 
 export const leadsRouter = Router();
 
 leadsRouter.use(requireAuth);
 
-function canViewAll(role?: string) {
-  return role === 'owner' || role === 'admin';
+function viewAllRequested(req: { query: { view?: unknown } }) {
+  return req.query.view === 'all';
 }
 
 // GET /leads/summary
 leadsRouter.get(
   '/summary',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
-    const summary = await leadsService.getLeadSummary(userId, { includeAll });
+    const { userId, companyId, includeAll } = requestScope(
+      req,
+      viewAllRequested(req)
+    );
+    const summary = await leadsService.getLeadSummary(userId, {
+      includeAll,
+      companyId,
+    });
 
     res.json({
       ok: true,
@@ -34,8 +40,10 @@ leadsRouter.get(
 leadsRouter.get(
   '/',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = req.query.view === 'all' && canViewAll(req.user?.role);
+    const { userId, companyId, includeAll } = requestScope(
+      req,
+      viewAllRequested(req)
+    );
 
     const status =
       typeof req.query.status === 'string' ? req.query.status : undefined;
@@ -52,6 +60,7 @@ leadsRouter.get(
       assignedTo,
       q,
       includeAll,
+      companyId,
       limit,
       offset,
     });
@@ -64,8 +73,7 @@ leadsRouter.get(
 leadsRouter.get(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = canViewAll(req.user?.role);
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -73,7 +81,10 @@ leadsRouter.get(
     }
 
     try {
-      const lead = await leadsService.getLeadById(userId, id, { includeAll });
+      const lead = await leadsService.getLeadById(userId, id, {
+        includeAll,
+        companyId,
+      });
       res.json({ ok: true, lead });
     } catch (error) {
       if (error instanceof leadsService.LeadNotFoundError) {
@@ -89,8 +100,7 @@ leadsRouter.get(
 leadsRouter.delete(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
-    const includeAll = canViewAll(req.user?.role);
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -100,6 +110,7 @@ leadsRouter.delete(
     try {
       const deletedId = await leadsService.deleteLead(userId, id, {
         includeAll,
+        companyId,
       });
       res.json({ ok: true, deletedId });
     } catch (error) {
@@ -116,7 +127,7 @@ leadsRouter.delete(
 leadsRouter.post(
   '/',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId } = requestScope(req);
     const role = req.user?.role;
 
     const parsed = createLeadSchema.safeParse(req.body);
@@ -125,7 +136,10 @@ leadsRouter.post(
     }
 
     try {
-      const lead = await leadsService.createLead(userId, parsed.data, { role });
+      const lead = await leadsService.createLead(userId, parsed.data, {
+        role,
+        companyId,
+      });
       res.status(201).json({ ok: true, lead });
     } catch (error) {
       if (error instanceof leadsService.AssigneeNotFoundError) {
@@ -143,9 +157,8 @@ leadsRouter.post(
 leadsRouter.patch(
   '/:id',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId, includeAll } = requestScope(req, true);
     const role = req.user?.role;
-    const includeAll = canViewAll(role);
     const id = Number(req.params.id);
 
     if (!Number.isFinite(id)) {
@@ -161,6 +174,7 @@ leadsRouter.patch(
       const lead = await leadsService.updateLead(userId, id, parsed.data, {
         includeAll,
         actorRole: role,
+        companyId,
       });
 
       if (!lead) {

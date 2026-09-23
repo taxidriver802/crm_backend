@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import * as activityService from '../services/jobActivity.service';
 import { createNotification } from '../lib/notifications';
+import { applyTenantScope, tenantScope } from '../lib/tenant';
 
 export class FileNotFoundError extends Error {
   constructor(message = 'File not found') {
@@ -41,6 +42,8 @@ export class FileOwnershipError extends Error {
 
 export type CreateFileInput = {
   uploadedByUserId: string;
+  companyId?: string;
+  includeAll?: boolean;
   originalName: string;
   storageKey: string;
   mimeType: string;
@@ -93,14 +96,18 @@ function buildFileNotificationContext(input: {
   };
 }
 
-async function ensureLeadBelongsToUser(leadId: number, userId: string) {
+async function ensureLeadBelongsToUser(
+  leadId: number,
+  userId: string,
+  options: { includeAll?: boolean; companyId?: string } = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [leadId];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
-    `
-    SELECT id
-    FROM leads
-    WHERE id = $1 AND user_id = $2
-    `,
-    [leadId, userId]
+    `SELECT id FROM leads WHERE ${where.join(' AND ')}`,
+    params
   );
 
   if (result.rowCount === 0) {
@@ -108,14 +115,18 @@ async function ensureLeadBelongsToUser(leadId: number, userId: string) {
   }
 }
 
-async function ensureJobBelongsToUser(jobId: number, userId: string) {
+async function ensureJobBelongsToUser(
+  jobId: number,
+  userId: string,
+  options: { includeAll?: boolean; companyId?: string } = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [jobId];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
-    `
-    SELECT id
-    FROM jobs
-    WHERE id = $1 AND user_id = $2
-    `,
-    [jobId, userId]
+    `SELECT id FROM jobs WHERE ${where.join(' AND ')}`,
+    params
   );
 
   if (result.rowCount === 0) {
@@ -123,8 +134,22 @@ async function ensureJobBelongsToUser(jobId: number, userId: string) {
   }
 }
 
+export function absoluteUploadPath(storageKey: string) {
+  const uploadsRoot = path.resolve(process.cwd(), 'uploads');
+  const resolved = path.resolve(uploadsRoot, storageKey);
+  const relative = path.relative(uploadsRoot, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new FileNotFoundError();
+  }
+  return resolved;
+}
+
 export async function createFile(input: CreateFileInput) {
   const { uploadedByUserId, leadId = null, jobId = null } = input;
+  const scope = await tenantScope(uploadedByUserId, {
+    companyId: input.companyId,
+    includeAll: input.includeAll,
+  });
 
   if (!uploadedByUserId) {
     throw new UserNotProvidedError();
@@ -135,11 +160,11 @@ export async function createFile(input: CreateFileInput) {
   }
 
   if (leadId != null) {
-    await ensureLeadBelongsToUser(leadId, uploadedByUserId);
+    await ensureLeadBelongsToUser(leadId, uploadedByUserId, scope);
   }
 
   if (jobId != null) {
-    await ensureJobBelongsToUser(jobId, uploadedByUserId);
+    await ensureJobBelongsToUser(jobId, uploadedByUserId, scope);
   }
 
   const result = await pool.query(
@@ -154,9 +179,12 @@ export async function createFile(input: CreateFileInput) {
       job_id,
       caption,
       category,
-      client_visible
+      client_visible,
+      company_id
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, u.company_id
+    FROM users u
+    WHERE u.id = $1
     RETURNING *;
     `,
     [
@@ -215,11 +243,14 @@ export async function createFile(input: CreateFileInput) {
 export async function getFiles(
   userId: string,
   leadId?: number | null,
-  jobId?: number | null
+  jobId?: number | null,
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
   if (!userId) {
     throw new UserNotProvidedError();
   }
+
+  const scope = await tenantScope(userId, options);
 
   if (leadId != null && jobId != null) {
     throw new FileOwnershipError(
@@ -228,15 +259,24 @@ export async function getFiles(
   }
 
   if (leadId != null) {
-    await ensureLeadBelongsToUser(leadId, userId);
+    await ensureLeadBelongsToUser(leadId, userId, scope);
   }
 
   if (jobId != null) {
-    await ensureJobBelongsToUser(jobId, userId);
+    await ensureJobBelongsToUser(jobId, userId, scope);
   }
 
-  const params: any[] = [userId];
-  const where: string[] = ['f.uploaded_by_user_id = $1'];
+  const params: any[] = [];
+  const where: string[] = [];
+  const scopedToParent = leadId != null || jobId != null;
+  applyTenantScope(
+    where,
+    params,
+    scope,
+    scopedToParent
+      ? { alias: 'f', companyOnly: true }
+      : { alias: 'f', userColumn: 'uploaded_by_user_id' }
+  );
 
   if (leadId != null) {
     params.push(leadId);
@@ -266,20 +306,28 @@ export async function getFiles(
 export async function updateFile(
   userId: string,
   id: number,
-  updates: UpdateFileInput
+  updates: UpdateFileInput,
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
   if (!userId) {
     throw new UserNotProvidedError();
   }
 
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [id];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope, {
+    userColumn: 'uploaded_by_user_id',
+  });
+
   const existing = await pool.query(
     `
     SELECT *
     FROM files
-    WHERE id = $1 AND uploaded_by_user_id = $2
+    WHERE ${where.join(' AND ')}
     LIMIT 1
     `,
-    [id, userId]
+    params
   );
 
   if (existing.rowCount === 0) {
@@ -319,18 +367,29 @@ export async function updateFile(
   return result.rows[0];
 }
 
-export async function deleteFile(userId: string, id: number) {
+export async function deleteFile(
+  userId: string,
+  id: number,
+  options: { includeAll?: boolean; companyId?: string } = {}
+) {
   if (!userId) {
     throw new UserNotProvidedError();
   }
+
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [id];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope, {
+    userColumn: 'uploaded_by_user_id',
+  });
 
   const result = await pool.query(
     `
     SELECT *
     FROM files
-    WHERE id = $1 AND uploaded_by_user_id = $2
+    WHERE ${where.join(' AND ')}
     `,
-    [id, userId]
+    params
   );
 
   const file = result.rows[0];
@@ -339,7 +398,7 @@ export async function deleteFile(userId: string, id: number) {
     throw new FileNotFoundError();
   }
 
-  const filePath = path.join(process.cwd(), 'uploads', file.storage_key);
+  const filePath = absoluteUploadPath(file.storage_key);
 
   if (fs.existsSync(filePath)) {
     fs.unlinkSync(filePath);
@@ -365,4 +424,20 @@ export async function deleteFile(userId: string, id: number) {
   }
 
   return file;
+}
+
+export async function getFileByStorageKey(companyId: string, storageKey: string) {
+  const result = await pool.query(
+    `
+    SELECT *
+    FROM files
+    WHERE storage_key = $1 AND company_id = $2
+    LIMIT 1
+    `,
+    [storageKey, companyId]
+  );
+  if (result.rowCount === 0) {
+    throw new FileNotFoundError();
+  }
+  return result.rows[0];
 }

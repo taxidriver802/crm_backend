@@ -1,4 +1,9 @@
 import { pool } from '../db';
+import {
+  applyTenantScope,
+  assignedRecordVisible,
+  tenantScope,
+} from '../lib/tenant';
 
 export type JobActivityMetadata = Record<string, unknown> | null;
 
@@ -53,9 +58,12 @@ export async function createJobActivity({
       message,
       entity_type,
       entity_id,
-      metadata
+      metadata,
+      company_id
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+    SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb, u.company_id
+    FROM users u
+    WHERE u.id = $1
     RETURNING *;
     `,
     [
@@ -72,14 +80,21 @@ export async function createJobActivity({
 
   return rows[0];
 }
-export async function getJobActivitiesByUser(userId: string) {
+export async function getJobActivitiesByUser(
+  userId: string,
+  options: { includeAll?: boolean; companyId?: string } = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: unknown[] = [];
+  const where: string[] = [];
+  applyTenantScope(where, params, scope);
   const { rows } = await pool.query(
     `
         SELECT * FROM job_activity
-        WHERE user_id = $1
+        WHERE ${where.join(' AND ')}
         ORDER BY created_at DESC;
         `,
-    [userId]
+    params
   );
 
   return rows;
@@ -88,17 +103,27 @@ export async function getJobActivitiesByUser(userId: string) {
 export async function getJobActivitiesByJob(
   userId: string,
   jobId: number,
-  limit: number
+  limit: number,
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
+  const scope = await tenantScope(userId, options);
+  const visible = await assignedRecordVisible('jobs', jobId, scope);
+  if (!visible) {
+    return { activity: [], hasMore: false };
+  }
+  const params: unknown[] = [jobId];
+  const where: string[] = ['job_id = $1'];
+  applyTenantScope(where, params, scope, { companyOnly: true });
+  params.push(limit + 1);
   const { rows } = await pool.query(
     `
     SELECT *
     FROM job_activity
-    WHERE user_id = $1 AND job_id = $2
+    WHERE ${where.join(' AND ')}
     ORDER BY created_at DESC
-    LIMIT $3
+    LIMIT $${params.length}
     `,
-    [userId, jobId, limit + 1]
+    params
   );
   const hasMore = rows.length > limit;
   const activity = hasMore ? rows.slice(0, limit) : rows;

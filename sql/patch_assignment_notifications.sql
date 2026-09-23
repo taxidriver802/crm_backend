@@ -1,10 +1,11 @@
+-- Allow lead and job assignment notifications.
+
 ALTER TABLE notifications
 DROP CONSTRAINT IF EXISTS notifications_type_check;
 
 ALTER TABLE notifications
-DROP CONSTRAINT IF EXISTS notifications_entity_type_check;
-
-ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (
+ADD CONSTRAINT notifications_type_check
+CHECK (
   type IN (
     'TASK_DUE_SOON',
     'TASK_OVERDUE',
@@ -22,9 +23,4 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (
     'LEAD_ASSIGNED',
     'JOB_ASSIGNED'
   )
-);
-
-ALTER TABLE notifications ADD CONSTRAINT notifications_entity_type_check CHECK (
-  entity_type IS NULL
-  OR entity_type IN ('task', 'lead', 'job', 'invite', 'estimate', 'invoice')
 );

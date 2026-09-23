@@ -1,20 +1,32 @@
 import { pool } from '../db';
+import { tenantPredicate, tenantScope } from '../lib/tenant';
 
-export async function getLeadFunnel(userId: string) {
+type ReportScope = { includeAll?: boolean; companyId?: string };
+
+export async function getLeadFunnel(userId: string, options: ReportScope = {}) {
+  const scope = await tenantScope(userId, options);
+  const params: unknown[] = [];
+  const where = tenantPredicate(params, scope, { assignedWork: true });
   const result = await pool.query(
     `
     SELECT status, COUNT(*)::int AS count
     FROM leads
-    WHERE user_id = $1
+    WHERE ${where}
     GROUP BY status
     ORDER BY count DESC, status ASC
     `,
-    [userId]
+    params
   );
   return result.rows;
 }
 
-export async function getEstimateOutcomes(userId: string) {
+export async function getEstimateOutcomes(
+  userId: string,
+  options: ReportScope = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: unknown[] = [];
+  const where = tenantPredicate(params, scope);
   const byStatusResult = await pool.query(
     `
     SELECT
@@ -22,7 +34,7 @@ export async function getEstimateOutcomes(userId: string) {
       COUNT(*)::int AS count,
       COALESCE(SUM(grand_total), 0)::float AS total
     FROM estimates
-    WHERE user_id = $1
+    WHERE ${where}
     GROUP BY status
     ORDER BY
       CASE status
@@ -33,16 +45,18 @@ export async function getEstimateOutcomes(userId: string) {
         ELSE 999
       END
     `,
-    [userId]
+    params
   );
 
+  const approvedParams: unknown[] = [];
+  const approvedWhere = tenantPredicate(approvedParams, scope);
   const approvedRevenueResult = await pool.query(
     `
     SELECT COALESCE(SUM(grand_total), 0)::float AS approved_revenue
     FROM estimates
-    WHERE user_id = $1 AND status = 'Approved'
+    WHERE ${approvedWhere} AND status = 'Approved'
     `,
-    [userId]
+    approvedParams
   );
 
   const totalCount = byStatusResult.rows.reduce(
@@ -60,47 +74,58 @@ export async function getEstimateOutcomes(userId: string) {
   };
 }
 
-export async function getJobPipeline(userId: string) {
+export async function getJobPipeline(userId: string, options: ReportScope = {}) {
+  const scope = await tenantScope(userId, options);
+  const params: unknown[] = [];
+  const where = tenantPredicate(params, scope, { assignedWork: true });
   const result = await pool.query(
     `
     SELECT status, COUNT(*)::int AS count
     FROM jobs
-    WHERE user_id = $1
+    WHERE ${where}
     GROUP BY status
     ORDER BY count DESC, status ASC
     `,
-    [userId]
+    params
   );
   return result.rows;
 }
 
-export async function getMonthlyTrends(userId: string) {
+export async function getMonthlyTrends(
+  userId: string,
+  options: ReportScope = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const leadParams: unknown[] = [];
+  const leadWhere = tenantPredicate(leadParams, scope, { assignedWork: true });
   const leadsResult = await pool.query(
     `
     SELECT
       to_char(date_trunc('month', created_at), 'YYYY-MM') AS month_key,
       COUNT(*)::int AS count
     FROM leads
-    WHERE user_id = $1
+    WHERE ${leadWhere}
       AND created_at >= date_trunc('month', NOW()) - INTERVAL '11 months'
     GROUP BY date_trunc('month', created_at)
     ORDER BY date_trunc('month', created_at) ASC
     `,
-    [userId]
+    leadParams
   );
 
+  const estimateParams: unknown[] = [];
+  const estimateWhere = tenantPredicate(estimateParams, scope);
   const estimatesResult = await pool.query(
     `
     SELECT
       to_char(date_trunc('month', created_at), 'YYYY-MM') AS month_key,
       COUNT(*)::int AS count
     FROM estimates
-    WHERE user_id = $1
+    WHERE ${estimateWhere}
       AND created_at >= date_trunc('month', NOW()) - INTERVAL '11 months'
     GROUP BY date_trunc('month', created_at)
     ORDER BY date_trunc('month', created_at) ASC
     `,
-    [userId]
+    estimateParams
   );
 
   return {

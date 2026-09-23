@@ -1,5 +1,6 @@
 import { pool } from '../db';
-import { createNotification } from '../lib/notifications';
+import { createNotification, notifyAssigneeChange } from '../lib/notifications';
+import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
 import * as activityService from '../services/jobActivity.service';
 
 export class TaskNotFoundError extends Error {
@@ -54,26 +55,34 @@ export class TaskTimingError extends Error {
 async function ensureJobBelongsToUser(
   jobId: number,
   userId: string,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
+  const scope = await tenantScope(userId, options);
   const params: any[] = [jobId];
-  let sql = `SELECT id FROM jobs WHERE id = $1`;
-  if (!options.includeAll) {
-    params.push(userId);
-    sql += ` AND user_id = $2`;
-  }
-
-  const result = await pool.query(sql, params);
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope, { assignedWork: true });
+  const result = await pool.query(
+    `SELECT id FROM jobs WHERE ${where.join(' AND ')}`,
+    params
+  );
 
   if (result.rowCount === 0) {
     throw new JobNotFoundError();
   }
 }
 
-async function ensureLeadBelongsToUser(leadId: number, userId: string) {
+async function ensureLeadBelongsToUser(
+  leadId: number,
+  userId: string,
+  options: { includeAll?: boolean; companyId?: string } = {}
+) {
+  const scope = await tenantScope(userId, options);
+  const params: any[] = [leadId];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
-    `SELECT id FROM leads WHERE id = $1 AND user_id = $2`,
-    [leadId, userId]
+    `SELECT id FROM leads WHERE ${where.join(' AND ')}`,
+    params
   );
 
   if (result.rowCount === 0) {
@@ -84,7 +93,8 @@ async function ensureLeadBelongsToUser(leadId: number, userId: string) {
 async function validateAssignee(
   assignedTo: string | null | undefined,
   actorUserId: string,
-  actorRole?: string
+  actorRole: string | undefined,
+  companyId: string
 ) {
   if (assignedTo == null) return;
 
@@ -97,10 +107,10 @@ async function validateAssignee(
     `
     SELECT id
     FROM users
-    WHERE id = $1 AND status = 'active'
+    WHERE id = $1 AND status = 'active' AND company_id = $2
     LIMIT 1
     `,
-    [assignedTo]
+    [assignedTo, companyId]
   );
 
   if (assignee.rowCount === 0) {
@@ -124,6 +134,7 @@ export type GetTasksFilters = {
   q?: string;
   linkedTo?: string;
   includeAll?: boolean;
+  companyId?: string;
   limit?: number;
   offset?: number;
 };
@@ -336,12 +347,16 @@ function normalizeTasks(rows: any[]) {
 
 export async function getTaskSummary(
   userId: string,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
-  const scopeWhere = options.includeAll ? 'TRUE' : 'user_id = $1';
-  const scopeParams = options.includeAll ? [] : [userId];
-  const taskSelectParams = options.includeAll ? [] : [userId];
-  const taskSelectWhere = options.includeAll ? 'TRUE' : 't.user_id = $1';
+  const scope = await tenantScope(userId, options);
+  const scopeParams: unknown[] = [];
+  const scopeWhere = tenantPredicate(scopeParams, scope, { assignedWork: true });
+  const taskSelectParams: unknown[] = [];
+  const taskSelectWhere = tenantPredicate(taskSelectParams, scope, {
+    alias: 't',
+    assignedWork: true,
+  });
 
   const [countsResult, overdueTasks, dueTodayTasks, upcomingResult] =
     await Promise.all([
@@ -424,11 +439,8 @@ export async function getTaskSummary(
 export async function getTasks(userId: string, filters: GetTasksFilters) {
   const params: any[] = [];
   const where: string[] = [];
-
-  if (!filters.includeAll) {
-    params.push(userId);
-    where.push(`t.user_id = $${params.length}`);
-  }
+  const scope = await tenantScope(userId, filters);
+  applyTenantScope(where, params, scope, { alias: 't', assignedWork: true });
 
   if (filters.status) {
     params.push(filters.status);
@@ -531,17 +543,21 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
 export async function createTask(
   userId: string,
   input: CreateTaskInput,
-  actor: { role?: string } = {}
+  actor: { role?: string; companyId?: string } = {}
 ) {
+  const scope = await tenantScope(userId, {
+    companyId: actor.companyId,
+    includeAll: actor.role === 'owner' || actor.role === 'admin',
+  });
   if (input.lead_id != null) {
-    await ensureLeadBelongsToUser(input.lead_id, userId);
+    await ensureLeadBelongsToUser(input.lead_id, userId, scope);
   }
 
   if (input.job_id != null) {
-    await ensureJobBelongsToUser(input.job_id, userId);
+    await ensureJobBelongsToUser(input.job_id, userId, scope);
   }
 
-  await validateAssignee(input.assigned_to, userId, actor.role);
+  await validateAssignee(input.assigned_to, userId, actor.role, scope.companyId);
 
   if (!input.lead_id && !input.job_id) {
     throw new TaskOwnershipError('Task must be attached to a lead or a job');
@@ -591,9 +607,12 @@ export async function createTask(
       kind,
       end_at,
       location,
-      status
+      status,
+      company_id
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, u.company_id
+    FROM users u
+    WHERE u.id = $1
     RETURNING *;
     `,
     [
@@ -612,6 +631,9 @@ export async function createTask(
   );
 
   const task = result.rows[0];
+  if (!task) {
+    throw new TaskNotFoundError();
+  }
 
   if (task.job_id) {
     await activityService.createJobActivity({
@@ -632,19 +654,19 @@ export async function createTask(
 
   const fullTask = await getTaskById(userId, task.id, {
     includeAll: actor.role === 'owner' || actor.role === 'admin',
+    companyId: scope.companyId,
   });
 
-  if (task.user_id) {
-    await createNotification({
-      userId: task.user_id,
-      type: 'TASK_ASSIGNED',
-      title: 'New task assigned',
-      message: buildTaskNotificationMessage('assigned', fullTask),
-      entityType: getTaskContextType(fullTask),
-      entityId: getTaskContextEntityId(fullTask),
-      metadata: buildTaskNotificationMetadata(fullTask),
-    });
-  }
+  await notifyAssigneeChange({
+    actorUserId: userId,
+    assignedTo: task.assigned_to,
+    type: 'TASK_ASSIGNED',
+    title: 'New task assigned',
+    message: buildTaskNotificationMessage('assigned', fullTask),
+    entityType: getTaskContextType(fullTask) ?? 'task',
+    entityId: getTaskContextEntityId(fullTask) ?? fullTask.id,
+    metadata: buildTaskNotificationMetadata(fullTask),
+  });
 
   return fullTask;
 }
@@ -652,14 +674,12 @@ export async function createTask(
 export async function getTaskById(
   userId: string,
   id: number,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
   const params: any[] = [id];
   const where: string[] = ['t.id = $1'];
-  if (!options.includeAll) {
-    params.push(userId);
-    where.push(`t.user_id = $${params.length}`);
-  }
+  const scope = await tenantScope(userId, options);
+  applyTenantScope(where, params, scope, { alias: 't', assignedWork: true });
 
   const result = await pool.query(
     `
@@ -680,16 +700,14 @@ export async function getTaskById(
 export async function getTasksByJobId(
   userId: string,
   jobId: number,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
-  await ensureJobBelongsToUser(jobId, userId, options);
+  const scope = await tenantScope(userId, options);
+  await ensureJobBelongsToUser(jobId, userId, scope);
 
   const params: any[] = [jobId];
   const where: string[] = ['t.job_id = $1'];
-  if (!options.includeAll) {
-    params.push(userId);
-    where.push(`t.user_id = $${params.length}`);
-  }
+  applyTenantScope(where, params, scope, { alias: 't', assignedWork: true });
 
   const result = await pool.query(
     `
@@ -707,10 +725,12 @@ export async function updateTask(
   userId: string,
   id: number,
   updates: UpdateTaskInput,
-  options: { includeAll?: boolean; actorRole?: string } = {}
+  options: { includeAll?: boolean; actorRole?: string; companyId?: string } = {}
 ) {
+  const scope = await tenantScope(userId, options);
   const existingTask = await getTaskById(userId, id, {
     includeAll: options.includeAll,
+    companyId: scope.companyId,
   });
 
   const keys = Object.keys(updates) as (keyof UpdateTaskInput)[];
@@ -719,7 +739,12 @@ export async function updateTask(
   }
 
   if ('assigned_to' in updates) {
-    await validateAssignee(updates.assigned_to, userId, options.actorRole);
+    await validateAssignee(
+      updates.assigned_to,
+      userId,
+      options.actorRole,
+      scope.companyId
+    );
   }
 
   if ('lead_id' in updates || 'job_id' in updates) {
@@ -803,16 +828,13 @@ export async function updateTask(
 
   setParts.push(`updated_at = CURRENT_TIMESTAMP`);
 
-  let whereClause = 'id = $1';
-  if (!options.includeAll) {
-    values.push(userId);
-    whereClause += ` AND user_id = $${values.length}`;
-  }
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, values, scope, { assignedWork: true });
 
   const sql = `
     UPDATE tasks
     SET ${setParts.join(', ')}
-    WHERE ${whereClause}
+    WHERE ${where.join(' AND ')}
     RETURNING *;
   `;
 
@@ -879,6 +901,19 @@ export async function updateTask(
 
   const fullUpdatedTask = await getTaskById(userId, updatedTask.id, {
     includeAll: options.includeAll,
+    companyId: scope.companyId,
+  });
+
+  await notifyAssigneeChange({
+    actorUserId: userId,
+    assignedTo: fullUpdatedTask.assigned_to,
+    previousAssignedTo: existingTask.assigned_to ?? null,
+    type: 'TASK_ASSIGNED',
+    title: 'New task assigned',
+    message: buildTaskNotificationMessage('assigned', fullUpdatedTask),
+    entityType: getTaskContextType(fullUpdatedTask) ?? 'task',
+    entityId: getTaskContextEntityId(fullUpdatedTask) ?? fullUpdatedTask.id,
+    metadata: buildTaskNotificationMetadata(fullUpdatedTask),
   });
 
   if (
@@ -902,21 +937,20 @@ export async function updateTask(
 export async function deleteTask(
   userId: string,
   id: number,
-  options: { includeAll?: boolean } = {}
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
+  const scope = await tenantScope(userId, options);
   const existingTask = await getTaskById(userId, id, {
     includeAll: options.includeAll,
+    companyId: scope.companyId,
   });
 
   const params: any[] = [id];
-  let whereClause = 'id = $1';
-  if (!options.includeAll) {
-    params.push(userId);
-    whereClause += ` AND user_id = $${params.length}`;
-  }
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope, { assignedWork: true });
 
   const result = await pool.query(
-    `DELETE FROM tasks WHERE ${whereClause} RETURNING id`,
+    `DELETE FROM tasks WHERE ${where.join(' AND ')} RETURNING id`,
     params
   );
 

@@ -11,8 +11,7 @@ CREATE TABLE IF NOT EXISTS intake_tokens (
   CONSTRAINT intake_tokens_singleton_true CHECK (singleton = TRUE)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_tokens_singleton
-  ON intake_tokens (singleton);
+-- One intake token per company (patch_phase20_companies.sql).
 
 CREATE INDEX IF NOT EXISTS idx_intake_tokens_hash
   ON intake_tokens (token_hash);
@@ -54,6 +53,8 @@ CHECK (
     'INVOICE_CREATED',
     'INVOICE_STATUS_CHANGED',
     'INVOICE_PAID',
-    'LEAD_CREATED'
+    'LEAD_CREATED',
+    'LEAD_ASSIGNED',
+    'JOB_ASSIGNED'
   )
 );

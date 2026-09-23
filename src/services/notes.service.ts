@@ -1,6 +1,6 @@
 import { pool } from '../db';
-import { createNotification } from '../lib/notifications';
 import { createJobActivity } from './jobActivity.service';
+import { applyTenantScope, tenantScope } from '../lib/tenant';
 
 export type NoteEntityType = 'lead' | 'job';
 export type NoteType = 'call' | 'text' | 'email' | 'in_person' | 'note';
@@ -97,12 +97,17 @@ function mapNote(row: any) {
 async function loadEntityForUser(
   userId: string,
   entityType: NoteEntityType,
-  entityId: number
+  entityId: number,
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
+  const scope = await tenantScope(userId, options);
   if (entityType === 'lead') {
+    const params: any[] = [entityId];
+    const where: string[] = ['id = $1'];
+    applyTenantScope(where, params, scope, { assignedWork: true });
     const result = await pool.query(
-      `SELECT id, first_name, last_name FROM leads WHERE id = $1 AND user_id = $2`,
-      [entityId, userId]
+      `SELECT id, first_name, last_name FROM leads WHERE ${where.join(' AND ')}`,
+      params
     );
     if (result.rowCount === 0) {
       throw new NoteEntityNotFoundError('Lead not found');
@@ -113,9 +118,12 @@ async function loadEntityForUser(
     return { name };
   }
 
+  const params: any[] = [entityId];
+  const where: string[] = ['id = $1'];
+  applyTenantScope(where, params, scope, { assignedWork: true });
   const result = await pool.query(
-    `SELECT id, title FROM jobs WHERE id = $1 AND user_id = $2`,
-    [entityId, userId]
+    `SELECT id, title FROM jobs WHERE ${where.join(' AND ')}`,
+    params
   );
   if (result.rowCount === 0) {
     throw new NoteEntityNotFoundError('Job not found');
@@ -142,9 +150,10 @@ async function fetchNoteById(id: number) {
 export async function listNotes(
   userId: string,
   entityType: NoteEntityType,
-  entityId: number
+  entityId: number,
+  options: { includeAll?: boolean; companyId?: string } = {}
 ) {
-  await loadEntityForUser(userId, entityType, entityId);
+  await loadEntityForUser(userId, entityType, entityId, options);
 
   const result = await pool.query(
     `
@@ -158,11 +167,16 @@ export async function listNotes(
   return result.rows.map(mapNote);
 }
 
-export async function createNote(userId: string, input: CreateNoteInput) {
+export async function createNote(
+  userId: string,
+  input: CreateNoteInput,
+  options: { includeAll?: boolean; companyId?: string } = {}
+) {
   const entity = await loadEntityForUser(
     userId,
     input.entity_type,
-    input.entity_id
+    input.entity_id,
+    options
   );
 
   const type = input.type ?? 'note';
@@ -187,8 +201,10 @@ export async function createNote(userId: string, input: CreateNoteInput) {
 
     const inserted = await client.query(
       `
-      INSERT INTO notes (user_id, entity_type, entity_id, body, type, direction)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO notes (user_id, entity_type, entity_id, body, type, direction, company_id)
+      SELECT $1, $2, $3, $4, $5, $6, u.company_id
+      FROM users u
+      WHERE u.id = $1
       RETURNING id
       `,
       [userId, input.entity_type, input.entity_id, input.body, type, direction]
@@ -207,9 +223,12 @@ export async function createNote(userId: string, input: CreateNoteInput) {
           title,
           description,
           due_date,
-          status
+          status,
+          company_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        SELECT $1, $2, $3, $4, $5, $6, $7, $8, u.company_id
+        FROM users u
+        WHERE u.id = $1
         RETURNING id, title, due_date, status
         `,
         [
@@ -282,33 +301,23 @@ export async function createNote(userId: string, input: CreateNoteInput) {
     }
   }
 
-  if (followUpTask) {
-    await createNotification({
-      userId,
-      type: 'TASK_ASSIGNED',
-      title: 'New task assigned',
-      message: followUpTask.title,
-      entityType: 'task',
-      entityId: followUpTask.id,
-      metadata: {
-        taskId: followUpTask.id,
-        taskTitle: followUpTask.title,
-      },
-    });
-  }
-
   return fetchNoteById(noteId);
 }
 
-export async function deleteNote(userId: string, id: number) {
+export async function deleteNote(
+  userId: string,
+  id: number,
+  options: { includeAll?: boolean; companyId?: string } = {}
+) {
+  const scope = await tenantScope(userId, options);
   const existingResult = await pool.query(
     `
-    SELECT id, user_id
+    SELECT id, user_id, company_id
     FROM notes
-    WHERE id = $1
+    WHERE id = $1 AND company_id = $2
     LIMIT 1
     `,
-    [id]
+    [id, scope.companyId]
   );
 
   if (existingResult.rowCount === 0) {

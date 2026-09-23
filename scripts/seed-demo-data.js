@@ -141,12 +141,13 @@ async function insertUsers(pool, backupUsers, userIdMap, dryRun) {
     const sql = `
       INSERT INTO users (
         id, first_name, last_name, email, password_hash, role, status,
-        created_at, updated_at, invited_at, password_set_at, last_login_at
+        company_id, created_at, updated_at, invited_at, password_set_at, last_login_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7,
+        'c0000000-0000-4000-8000-000000000001',
         $8, $9, $10, $11, $12
       )
-      ON CONFLICT (email) DO NOTHING
+      ON CONFLICT (company_id, lower(email)) DO NOTHING
     `;
     const params = [
       id,

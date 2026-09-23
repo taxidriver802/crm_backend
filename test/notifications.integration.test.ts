@@ -26,21 +26,27 @@ describe('Notifications integration', () => {
     return res.body.lead;
   }
 
+  async function completeTask(headers: Record<string, string>, leadId: number, title: string) {
+    const taskRes = await request(app).post('/tasks').set(headers).send({
+      lead_id: leadId,
+      title,
+      due_date: new Date().toISOString(),
+      status: 'Pending',
+    });
+    expect(taskRes.status).toBe(201);
+    const done = await request(app)
+      .patch(`/tasks/${taskRes.body.task.id}`)
+      .set(headers)
+      .send({ status: 'Completed' });
+    expect(done.status).toBe(200);
+  }
+
   it('lists notifications and returns unread count', async () => {
     const { headers } = await createAuthedUser('agent');
     const lead = await createLead(headers);
 
-    const taskRes = await request(app).post('/tasks').set(headers).send({
-      lead_id: lead.id,
-      title: 'Call Sarah',
-      due_date: new Date().toISOString(),
-      status: 'Pending',
-    });
-
-    await request(app)
-      .patch(`/tasks/${taskRes.body.task.id}`)
-      .set(headers)
-      .send({ status: 'Completed' });
+    await completeTask(headers, lead.id, 'Call Sarah');
+    await completeTask(headers, lead.id, 'Send photos');
 
     const listRes = await request(app).get('/notifications').set(headers);
     expect(listRes.status).toBe(200);
@@ -59,12 +65,7 @@ describe('Notifications integration', () => {
     const { headers } = await createAuthedUser('agent');
     const lead = await createLead(headers);
 
-    await request(app).post('/tasks').set(headers).send({
-      lead_id: lead.id,
-      title: 'Call Sarah',
-      due_date: new Date().toISOString(),
-      status: 'Pending',
-    });
+    await completeTask(headers, lead.id, 'Call Sarah');
 
     const listRes = await request(app).get('/notifications').set(headers);
     const notificationId = listRes.body.notifications[0].id;
@@ -89,17 +90,8 @@ describe('Notifications integration', () => {
     const { headers } = await createAuthedUser('agent');
     const lead = await createLead(headers);
 
-    const taskRes = await request(app).post('/tasks').set(headers).send({
-      lead_id: lead.id,
-      title: 'Call Sarah',
-      due_date: new Date().toISOString(),
-      status: 'Pending',
-    });
-
-    await request(app)
-      .patch(`/tasks/${taskRes.body.task.id}`)
-      .set(headers)
-      .send({ status: 'Completed' });
+    await completeTask(headers, lead.id, 'Call Sarah');
+    await completeTask(headers, lead.id, 'Send photos');
 
     const readAllRes = await request(app)
       .patch('/notifications/read-all')
@@ -123,11 +115,7 @@ describe('Notifications integration', () => {
     const { headers } = await createAuthedUser('agent');
     const lead = await createLead(headers);
 
-    await request(app).post('/tasks').set(headers).send({
-      lead_id: lead.id,
-      title: 'Call Sarah',
-      status: 'Pending',
-    });
+    await completeTask(headers, lead.id, 'Call Sarah');
 
     const listRes = await request(app).get('/notifications').set(headers);
     const notificationId = listRes.body.notifications[0].id;

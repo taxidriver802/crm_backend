@@ -1,6 +1,7 @@
 import { pool } from '../db';
 import { createNotification } from '../lib/notifications';
 import { trackEvent } from './productEvents.service';
+import { resolveCompanyId } from '../lib/tenant';
 
 export class AutomationRuleNotFoundError extends Error {
   constructor(message = 'Automation rule not found') {
@@ -59,17 +60,19 @@ function normalizeRule(row: any) {
 }
 
 export async function listRules(userId: string) {
+  const companyId = await resolveCompanyId(userId);
   const result = await pool.query(
-    `SELECT * FROM automation_rules WHERE user_id = $1 ORDER BY created_at DESC`,
-    [userId]
+    `SELECT * FROM automation_rules WHERE company_id = $1 ORDER BY created_at DESC`,
+    [companyId]
   );
   return result.rows.map(normalizeRule);
 }
 
 export async function getRuleById(userId: string, id: number) {
+  const companyId = await resolveCompanyId(userId);
   const result = await pool.query(
-    `SELECT * FROM automation_rules WHERE id = $1 AND user_id = $2 LIMIT 1`,
-    [id, userId]
+    `SELECT * FROM automation_rules WHERE id = $1 AND company_id = $2 LIMIT 1`,
+    [id, companyId]
   );
   if (result.rowCount === 0) throw new AutomationRuleNotFoundError();
   return normalizeRule(result.rows[0]);
@@ -78,8 +81,11 @@ export async function getRuleById(userId: string, id: number) {
 export async function createRule(userId: string, input: CreateRuleInput) {
   const result = await pool.query(
     `INSERT INTO automation_rules (
-       user_id, name, description, trigger_event, conditions, action_type, action_config, enabled
-     ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8)
+       user_id, name, description, trigger_event, conditions, action_type, action_config, enabled, company_id
+     )
+     SELECT $1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, u.company_id
+     FROM users u
+     WHERE u.id = $1
      RETURNING *`,
     [
       userId,
@@ -103,7 +109,8 @@ export async function updateRule(
   await getRuleById(userId, id);
 
   const setParts: string[] = [];
-  const values: any[] = [id, userId];
+  const companyId = await resolveCompanyId(userId);
+  const values: any[] = [id, companyId];
 
   if ('name' in updates) {
     values.push(updates.name);
@@ -138,7 +145,7 @@ export async function updateRule(
   setParts.push('updated_at = CURRENT_TIMESTAMP');
 
   const result = await pool.query(
-    `UPDATE automation_rules SET ${setParts.join(', ')} WHERE id = $1 AND user_id = $2 RETURNING *`,
+    `UPDATE automation_rules SET ${setParts.join(', ')} WHERE id = $1 AND company_id = $2 RETURNING *`,
     values
   );
   if (result.rowCount === 0) throw new AutomationRuleNotFoundError();
@@ -147,9 +154,10 @@ export async function updateRule(
 
 export async function deleteRule(userId: string, id: number) {
   await getRuleById(userId, id);
+  const companyId = await resolveCompanyId(userId);
   const result = await pool.query(
-    `DELETE FROM automation_rules WHERE id = $1 AND user_id = $2 RETURNING id`,
-    [id, userId]
+    `DELETE FROM automation_rules WHERE id = $1 AND company_id = $2 RETURNING id`,
+    [id, companyId]
   );
   if (result.rowCount === 0) throw new AutomationRuleNotFoundError();
   return result.rows[0].id;
@@ -304,11 +312,12 @@ export async function evaluateRules(
   triggerEvent: TriggerEvent,
   context: Record<string, any>
 ) {
+  const companyId = await resolveCompanyId(userId);
   const result = await pool.query(
     `SELECT * FROM automation_rules
-     WHERE user_id = $1 AND trigger_event = $2 AND enabled = true
+     WHERE company_id = $1 AND trigger_event = $2 AND enabled = true
      ORDER BY id`,
-    [userId, triggerEvent]
+    [companyId, triggerEvent]
   );
 
   const executed: number[] = [];
@@ -377,8 +386,9 @@ async function executeAction(
 
       for (const t of tasks) {
         await pool.query(
-          `INSERT INTO tasks (user_id, job_id, title, description, status)
-           VALUES ($1, $2, $3, $4, 'Pending')`,
+          `INSERT INTO tasks (user_id, job_id, title, description, status, company_id)
+           SELECT $1, $2, $3, $4, 'Pending', u.company_id
+           FROM users u WHERE u.id = $1`,
           [
             userId,
             jobId,
@@ -409,14 +419,16 @@ async function executeAction(
 
       if (jobId) {
         await pool.query(
-          `INSERT INTO tasks (user_id, job_id, title, description, due_date, status)
-           VALUES ($1, $2, $3, $4, $5, 'Pending')`,
+          `INSERT INTO tasks (user_id, job_id, title, description, due_date, status, company_id)
+           SELECT $1, $2, $3, $4, $5, 'Pending', u.company_id
+           FROM users u WHERE u.id = $1`,
           [userId, jobId, title, description, dueDate.toISOString()]
         );
       } else {
         await pool.query(
-          `INSERT INTO tasks (user_id, lead_id, title, description, due_date, status)
-           VALUES ($1, $2, $3, $4, $5, 'Pending')`,
+          `INSERT INTO tasks (user_id, lead_id, title, description, due_date, status, company_id)
+           SELECT $1, $2, $3, $4, $5, 'Pending', u.company_id
+           FROM users u WHERE u.id = $1`,
           [userId, leadId, title, description, dueDate.toISOString()]
         );
       }
@@ -445,7 +457,7 @@ async function executeAction(
       const newStatus = config.new_status as string;
       if (!newStatus || !context.job_id) break;
       await pool.query(
-        `UPDATE jobs SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND user_id = $3`,
+        `UPDATE jobs SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND company_id = (SELECT company_id FROM users WHERE id = $3)`,
         [newStatus, context.job_id, userId]
       );
       break;

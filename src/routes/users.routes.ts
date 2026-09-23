@@ -10,6 +10,7 @@ import requireOwnerOrAdmin from '../middleware/utils';
 import { buildInviteEmail } from '../lib/invite-email';
 import { sendMail } from '../lib/mailer';
 import { getAppBaseUrl } from '../utils/appBase';
+import { requestScope } from '../lib/tenant';
 
 export const usersRouter = Router();
 
@@ -38,17 +39,17 @@ usersRouter.post(
       });
     }
 
-    const inviterId = req.user!.userId;
+    const { userId: inviterId, companyId } = requestScope(req);
     const { first_name, last_name, email, role } = parsed.data;
 
     // get inviter for permission + branding copy
     const inviterResult = await pool.query(
       `
-      SELECT id, first_name, last_name, email, role, status
+      SELECT id, first_name, last_name, email, role, status, company_id
       FROM users
-      WHERE id = $1
+      WHERE id = $1 AND company_id = $2
       `,
-      [inviterId]
+      [inviterId, companyId]
     );
 
     const inviter = inviterResult.rows[0];
@@ -67,9 +68,9 @@ usersRouter.post(
       `
       SELECT id, email, status
       FROM users
-      WHERE LOWER(email) = LOWER($1)
+      WHERE company_id = $1 AND LOWER(email) = LOWER($2)
       `,
-      [email]
+      [companyId, email]
     );
 
     if (
@@ -95,11 +96,12 @@ usersRouter.post(
       `
   UPDATE users
   SET invite_superseded_at = NOW()
-  WHERE LOWER(email) = LOWER($1)
+  WHERE company_id = $1
+    AND LOWER(email) = LOWER($2)
     AND status = 'invited'
     AND invite_token_hash IS NOT NULL
 `,
-      [email]
+      [companyId, email]
     );
 
     if (existingUserResult.rowCount) {
@@ -143,9 +145,10 @@ usersRouter.post(
           status,
           invite_token_hash,
           invite_expires_at,
-          invited_at
+          invited_at,
+          company_id
         )
-        VALUES ($1, $2, $3, $4, 'invited', $5, $6, NOW())
+        VALUES ($1, $2, $3, $4, 'invited', $5, $6, NOW(), $7)
         RETURNING id, first_name, last_name, email, role, status, invite_expires_at
         `,
         [
@@ -155,6 +158,7 @@ usersRouter.post(
           role,
           inviteTokenHash,
           expiresAt,
+          companyId,
         ]
       );
 
@@ -217,10 +221,12 @@ usersRouter.get(
 
     const result = await pool.query(
       `
-      SELECT id, email, role, status, invite_expires_at,
-             invite_revoked_at, invite_superseded_at
-      FROM users
-      WHERE invite_token_hash = $1
+      SELECT u.id, u.email, u.role, u.status, u.invite_expires_at,
+             u.invite_revoked_at, u.invite_superseded_at,
+             c.name AS company_name, c.slug AS company_slug
+      FROM users u
+      LEFT JOIN companies c ON c.id = u.company_id
+      WHERE u.invite_token_hash = $1
       `,
       [tokenHash]
     );
@@ -257,6 +263,8 @@ usersRouter.get(
       role: user.role,
       expires_at: user.invite_expires_at,
       status: 'valid',
+      company_name: user.company_name ?? null,
+      company_slug: user.company_slug ?? null,
     });
   })
 );
@@ -267,6 +275,7 @@ usersRouter.post(
   requireAuth,
   requireOwnerOrAdmin,
   asyncHandler(async (req, res) => {
+    const { companyId } = requestScope(req);
     const rawId = Array.isArray(req.params.id)
       ? req.params.id[0]
       : req.params.id;
@@ -279,9 +288,10 @@ usersRouter.post(
       SELECT *
       FROM users
       WHERE id = $1::uuid
+        AND company_id = $2
         AND status = 'invited'
       `,
-      [rawId]
+      [rawId, companyId]
     );
 
     const user = userResult.rows[0];
@@ -347,6 +357,7 @@ usersRouter.post(
   requireAuth,
   requireOwnerOrAdmin,
   asyncHandler(async (req, res) => {
+    const { companyId } = requestScope(req);
     const rawId = Array.isArray(req.params.id)
       ? req.params.id[0]
       : req.params.id;
@@ -363,11 +374,12 @@ usersRouter.post(
         invite_expires_at = NULL,
         updated_at = NOW()
       WHERE id = $1::uuid
+        AND company_id = $2
         AND status = 'invited'
         AND invite_revoked_at IS NULL
       RETURNING id
       `,
-      [rawId]
+      [rawId, companyId]
     );
 
     if (result.rowCount === 0) {
@@ -385,7 +397,8 @@ usersRouter.get(
   '/',
   requireAuth,
   requireOwnerOrAdmin,
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    const { companyId } = requestScope(req);
     const result = await pool.query(
       `
       SELECT
@@ -403,8 +416,10 @@ usersRouter.get(
         invite_revoked_at,
         invite_superseded_at
       FROM users
+      WHERE company_id = $1
       ORDER BY created_at DESC, id DESC
-      `
+      `,
+      [companyId]
     );
 
     res.json({
@@ -422,6 +437,7 @@ usersRouter.patch(
   asyncHandler(async (req: any, res) => {
     const actorId = req.user?.userId;
     const actorRole = req.user?.role;
+    const { companyId } = requestScope(req);
     const targetId = req.params.id;
 
     if (!targetId) {
@@ -461,9 +477,9 @@ usersRouter.patch(
       `
       SELECT id, role, status
       FROM users
-      WHERE id = $1
+      WHERE id = $1 AND company_id = $2
       `,
-      [targetId]
+      [targetId, companyId]
     );
 
     const existingUser = existingResult.rows[0];
@@ -513,8 +529,9 @@ usersRouter.patch(
         `
         SELECT COUNT(*)::int AS count
         FROM users
-        WHERE role = 'owner'
-        `
+        WHERE role = 'owner' AND company_id = $1
+        `,
+        [companyId]
       );
 
       const ownerCount = ownerCountResult.rows[0]?.count ?? 0;
@@ -532,8 +549,9 @@ usersRouter.patch(
         `
         SELECT COUNT(*)::int AS count
         FROM users
-        WHERE role = 'owner' AND status = 'active'
-        `
+        WHERE role = 'owner' AND status = 'active' AND company_id = $1
+        `,
+        [companyId]
       );
 
       const activeOwnerCount = ownerCountResult.rows[0]?.count ?? 0;
@@ -584,6 +602,7 @@ usersRouter.delete(
   asyncHandler(async (req: any, res) => {
     const actorId = req.user?.userId;
     const actorRole = req.user?.role;
+    const { companyId } = requestScope(req);
     const targetId = req.params.id;
 
     if (!targetId) {
@@ -604,9 +623,9 @@ usersRouter.delete(
       `
       SELECT id, role, status, email
       FROM users
-      WHERE id = $1
+      WHERE id = $1 AND company_id = $2
       `,
-      [targetId]
+      [targetId, companyId]
     );
 
     const existingUser = existingResult.rows[0];
@@ -637,8 +656,9 @@ usersRouter.delete(
         `
         SELECT COUNT(*)::int AS count
         FROM users
-        WHERE role = 'owner'
-        `
+        WHERE role = 'owner' AND company_id = $1
+        `,
+        [companyId]
       );
 
       const ownerCount = ownerCountResult.rows[0]?.count ?? 0;

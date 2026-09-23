@@ -21,6 +21,7 @@ beforeAll(async () => {
       last_name: 'User',
       email: `owner-${Date.now()}@test.com`,
       password: 'Testpass1!',
+      company_name: 'Owner Test Co',
     });
   ownerCookie = ownerRes.headers['set-cookie']?.[0] ?? '';
 
@@ -52,6 +53,7 @@ beforeAll(async () => {
         last_name: 'User',
         email: `agent-direct-${Date.now()}@test.com`,
         password: 'Testpass1!',
+        company_name: 'Agent Direct Co',
       });
     agentCookie = agentDirectRes.headers['set-cookie']?.[0] ?? '';
   }
