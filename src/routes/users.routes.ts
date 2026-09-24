@@ -8,6 +8,7 @@ import { inviteUserSchema } from '../validators/users.schemas';
 
 import requireOwnerOrAdmin from '../middleware/utils';
 import { buildInviteEmail } from '../lib/invite-email';
+import { loadPublicBrandingByCompanyId } from '../lib/companySlug';
 import { sendMail } from '../lib/mailer';
 import { getAppBaseUrl } from '../utils/appBase';
 import { requestScope } from '../lib/tenant';
@@ -175,13 +176,23 @@ usersRouter.post(
           .join(' ')
           .trim() || inviter.email;
 
+      const branding = await loadPublicBrandingByCompanyId(companyId);
+      const companyName = branding?.name || 'CRM';
+      const logoUrl = branding?.logo_url
+        ? `${appBaseUrl.replace(/\/$/, '')}/api${branding.logo_url}`
+        : null;
+
       const message = buildInviteEmail({
         firstName: user.first_name,
         inviterName,
         inviteUrl,
-        appName: 'Rooftop Realty',
+        companyName,
+        companySlug: branding?.slug,
         role: user.role,
         expiresHours: 24,
+        paletteId: branding?.palette_id,
+        markId: branding?.mark_id,
+        logoUrl,
       });
 
       await sendMail({
@@ -189,6 +200,7 @@ usersRouter.post(
         subject: message.subject,
         html: message.html,
         text: message.text,
+        fromName: companyName,
       });
 
       emailSent = true;
