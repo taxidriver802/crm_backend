@@ -9,28 +9,43 @@ export class NotificationNotFoundError extends Error {
 
 export async function getNotifications(
   userId: string,
-  limit: number,
-  unreadOnly: boolean
+  options: { limit: number; offset?: number; unreadOnly?: boolean }
 ) {
-  const values = [userId, limit];
-  let sql = `
+  const limit = options.limit;
+  const offset = options.offset ?? 0;
+  const unreadOnly = Boolean(options.unreadOnly);
+  const where = unreadOnly
+    ? `WHERE user_id = $1 AND read_at IS NULL`
+    : `WHERE user_id = $1`;
+
+  const countResult = await pool.query(
+    `
+          SELECT COUNT(*)::int AS count
+          FROM notifications
+          ${where}
+        `,
+    [userId]
+  );
+
+  const { rows } = await pool.query(
+    `
           SELECT id, type, title, message, entity_type, entity_id, metadata, read_at, created_at
           FROM notifications
-          WHERE user_id = $1
-        `;
-
-  if (unreadOnly) {
-    sql += ` AND read_at IS NULL`;
-  }
-
-  sql += `
-          ORDER BY created_at DESC
+          ${where}
+          ORDER BY created_at DESC, id DESC
           LIMIT $2
-        `;
+          OFFSET $3
+        `,
+    [userId, limit, offset]
+  );
 
-  const { rows } = await pool.query(sql, values);
+  const total = countResult.rows[0]?.count ?? 0;
 
-  return rows;
+  return {
+    notifications: rows,
+    total,
+    hasMore: offset + rows.length < total,
+  };
 }
 
 export async function getUnreadCount(userId: string) {

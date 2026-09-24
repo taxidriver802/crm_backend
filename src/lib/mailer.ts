@@ -32,23 +32,34 @@ export const transporter = nodemailer.createTransport({
   socketTimeout: SMTP_TIMEOUT_MS,
 });
 
+function formatFrom(fromName?: string) {
+  if (!fromName || !mailFrom) return mailFrom;
+  const match = mailFrom.match(/<([^>]+)>/);
+  const address = (match ? match[1] : mailFrom).trim();
+  const safeName = fromName.replace(/[\r\n"]/g, '').trim();
+  if (!safeName || !address) return mailFrom;
+  return `"${safeName}" <${address}>`;
+}
+
 export async function sendMail({
   to,
   subject,
   html,
   text,
+  fromName,
 }: {
   to: string;
   subject: string;
   html: string;
   text: string;
+  fromName?: string;
 }) {
   if (!smtpConfigured) {
     throw new Error('SMTP is not configured');
   }
 
   return transporter.sendMail({
-    from: mailFrom,
+    from: formatFrom(fromName),
     to,
     subject,
     html,

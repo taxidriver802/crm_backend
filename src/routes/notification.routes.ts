@@ -22,14 +22,14 @@ notificationRouter.get(
       });
     }
 
-    const { limit, unreadOnly } = parsed.data;
+    const { limit, offset, unreadOnly } = parsed.data;
     const userId = req.user!.userId;
-    const rows = await notificationService.getNotifications(
-      userId,
+    const result = await notificationService.getNotifications(userId, {
       limit,
-      unreadOnly
-    );
-    res.json({ ok: true, notifications: rows });
+      offset,
+      unreadOnly,
+    });
+    res.json({ ok: true, ...result });
   })
 );
 
