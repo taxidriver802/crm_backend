@@ -134,4 +134,63 @@ describe('Notifications integration', () => {
 
     expect(after.rows).toHaveLength(0);
   });
+
+  it('paginates the saved notification history', async () => {
+    const { user, headers } = await createAuthedUser('agent');
+
+    for (let index = 0; index < 12; index += 1) {
+      await pool.query(
+        `
+          INSERT INTO notifications (
+            user_id, company_id, type, title, message, created_at
+          )
+          VALUES (
+            $1, $2, 'TASK_ASSIGNED', $3, $4,
+            CURRENT_TIMESTAMP - ($5::text || ' minutes')::interval
+          )
+        `,
+        [
+          user.id,
+          user.company_id,
+          `Notice ${index + 1}`,
+          `Message ${index + 1}`,
+          String(index),
+        ]
+      );
+    }
+
+    const first = await request(app)
+      .get('/notifications?limit=5&offset=0')
+      .set(headers);
+
+    expect(first.status).toBe(200);
+    expect(first.body.notifications).toHaveLength(5);
+    expect(first.body.total).toBe(12);
+    expect(first.body.hasMore).toBe(true);
+    expect(first.body.notifications[0].title).toBe('Notice 1');
+
+    const second = await request(app)
+      .get('/notifications?limit=5&offset=5')
+      .set(headers);
+
+    expect(second.status).toBe(200);
+    expect(second.body.notifications).toHaveLength(5);
+    expect(second.body.hasMore).toBe(true);
+
+    const seen = new Set([
+      ...first.body.notifications.map((row: { id: number }) => row.id),
+      ...second.body.notifications.map((row: { id: number }) => row.id),
+    ]);
+    expect(seen.size).toBe(10);
+
+    const unread = await request(app)
+      .get('/notifications?limit=5&offset=0&unreadOnly=true')
+      .set(headers);
+
+    expect(unread.status).toBe(200);
+    expect(unread.body.total).toBe(12);
+    expect(unread.body.notifications.every((row: { read_at: string | null }) => !row.read_at)).toBe(
+      true
+    );
+  });
 });
