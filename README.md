@@ -108,6 +108,8 @@ schema file and the patches, in this order:
 15. `patch_phase19_appointments_workload.sql`
 16. `patch_phase20_companies.sql`
 17. `patch_phase21_company_branding.sql`
+18. `patch_assignment_notifications.sql`
+19. `patch_phase22_performance_history.sql`
 
 That list is hardcoded in `test/helpers/setup.ts` and duplicated in
 `crm_qa/db/schema.ts` (QA fails if the `sql/` directory drifts). Do not sort
@@ -135,6 +137,18 @@ port note there).
 (`psql "$DATABASE_URL" -f …`, or the matching `npm run db:patch-*` scripts).
 A green `npm test` against `.env.test` also applies the full chain on the
 test database.
+
+**Hosted Phase 22 update.** Back up the hosted PostgreSQL database first, copy
+the backend files containing this patch to the server, then run the command
+below from `crm_backend` on the server with `DATABASE_URL` set to the hosted
+database. Restart/deploy the updated backend after the patch succeeds:
+
+```bash
+npm run db:patch-phase22-performance-history
+```
+
+This creates the event tables/indexes and adds the two timestamp columns. It
+does not backfill historical assignment or lead-status events.
 
 **API:**
 
