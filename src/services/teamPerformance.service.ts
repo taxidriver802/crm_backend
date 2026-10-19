@@ -49,9 +49,9 @@ function windowSql(column: string) {
   `;
 }
 
-function mapByUser<T>(
-  rows: Array<{ user_id: string | null }>,
-  pick: (row: { user_id: string | null }) => T
+function mapByUser<TRow extends { user_id: string | null }, T>(
+  rows: readonly TRow[],
+  pick: (row: TRow) => T
 ) {
   const map = new Map<string, T>();
   for (const row of rows) {
@@ -117,7 +117,10 @@ function summarizeTransitions(rows: TransitionRow[], order: string[]) {
         medianDays: median(values) ?? 0,
         sample: values.length,
       }))
-      .sort((left, right) => order.indexOf(left.status) - order.indexOf(right.status));
+      .sort(
+        (left, right) =>
+          order.indexOf(left.status) - order.indexOf(right.status)
+      );
     timing.set(id, list);
   }
 
@@ -133,9 +136,18 @@ type PeriodBundle = {
   firstResponse: Map<string, { medianHours: number | null; sample: number }>;
   proposalLag: Map<string, { medianDays: number | null; sample: number }>;
   daysToProposal: Map<string, { medianDays: number | null; sample: number }>;
-  proposalToDecision: Map<string, { medianDays: number | null; sample: number }>;
-  stageTiming: Map<string, { status: string; medianDays: number; sample: number }[]>;
-  leadStageTiming: Map<string, { status: string; medianDays: number; sample: number }[]>;
+  proposalToDecision: Map<
+    string,
+    { medianDays: number | null; sample: number }
+  >;
+  stageTiming: Map<
+    string,
+    { status: string; medianDays: number; sample: number }[]
+  >;
+  leadStageTiming: Map<
+    string,
+    { status: string; medianDays: number; sample: number }[]
+  >;
   reversals: Map<string, { reversals: number; sample: number }>;
   closeQuality: Map<string, { poor: number; eligible: number }>;
   inactiveLeads: Map<string, number>;
@@ -568,7 +580,10 @@ type Snapshot = {
   staleLeads: Map<string, number>;
   staleJobs: Map<string, number>;
   invoiceAging: Map<string, { count: number; amount: number }>;
-  openStageTiming: Map<string, { status: string; medianDays: number; sample: number }[]>;
+  openStageTiming: Map<
+    string,
+    { status: string; medianDays: number; sample: number }[]
+  >;
 };
 
 async function loadSnapshot(companyId: string): Promise<Snapshot> {
@@ -719,7 +734,8 @@ async function loadSnapshot(companyId: string): Promise<Snapshot> {
   }
   for (const [id, list] of stages) {
     list.sort(
-      (left, right) => JOB_STATUSES.indexOf(left.status) - JOB_STATUSES.indexOf(right.status)
+      (left, right) =>
+        JOB_STATUSES.indexOf(left.status) - JOB_STATUSES.indexOf(right.status)
     );
     stages.set(
       id,
@@ -744,7 +760,8 @@ async function loadSnapshot(companyId: string): Promise<Snapshot> {
   }
   for (const [id, list] of openStageTiming) {
     list.sort(
-      (left, right) => JOB_STATUSES.indexOf(left.status) - JOB_STATUSES.indexOf(right.status)
+      (left, right) =>
+        JOB_STATUSES.indexOf(left.status) - JOB_STATUSES.indexOf(right.status)
     );
     openStageTiming.set(id, list);
   }
@@ -756,11 +773,17 @@ async function loadSnapshot(companyId: string): Promise<Snapshot> {
       withDue: num((row as { with_due: unknown }).with_due),
       noDue: num((row as { no_due: unknown }).no_due),
     })),
-    leadsOpen: mapByUser(leadsResult.rows as CountRow[], (row) => num(row.count)),
+    leadsOpen: mapByUser(leadsResult.rows as CountRow[], (row) =>
+      num(row.count)
+    ),
     jobsOpen: mapByUser(jobsResult.rows as CountRow[], (row) => num(row.count)),
     stages,
-    staleLeads: mapByUser(staleLeadsResult.rows as CountRow[], (row) => num(row.count)),
-    staleJobs: mapByUser(staleJobsResult.rows as CountRow[], (row) => num(row.count)),
+    staleLeads: mapByUser(staleLeadsResult.rows as CountRow[], (row) =>
+      num(row.count)
+    ),
+    staleJobs: mapByUser(staleJobsResult.rows as CountRow[], (row) =>
+      num(row.count)
+    ),
     invoiceAging: mapByUser(agingResult.rows, (row) => ({
       count: num((row as { count: unknown }).count),
       amount: num((row as { amount: unknown }).amount),
@@ -775,7 +798,12 @@ function shownDays(sample: number, days: number | null) {
 }
 
 function buildUsers(
-  people: Array<{ id: string; first_name: string; last_name: string; email: string }>,
+  people: Array<{
+    id: string;
+    first_name: string;
+    last_name: string;
+    email: string;
+  }>,
   current: PeriodBundle,
   prior: PeriodBundle,
   snapshot: Snapshot
@@ -789,17 +817,27 @@ function buildUsers(
     const decided = decisions.won + decisions.lost;
     const priorDecided = priorDecisions.won + priorDecisions.lost;
     const estimates = current.estimates.get(id) ?? { approved: 0, rejected: 0 };
-    const priorEstimates = prior.estimates.get(id) ?? { approved: 0, rejected: 0 };
+    const priorEstimates = prior.estimates.get(id) ?? {
+      approved: 0,
+      rejected: 0,
+    };
     const estimateSample = estimates.approved + estimates.rejected;
-    const priorEstimateSample = priorEstimates.approved + priorEstimates.rejected;
+    const priorEstimateSample =
+      priorEstimates.approved + priorEstimates.rejected;
     const tasks = snapshot.tasks.get(id) ?? {
       tasksOpen: 0,
       tasksOverdue: 0,
       withDue: 0,
       noDue: 0,
     };
-    const toProposal = current.daysToProposal.get(id) ?? { medianDays: null, sample: 0 };
-    const priorToProposal = prior.daysToProposal.get(id) ?? { medianDays: null, sample: 0 };
+    const toProposal = current.daysToProposal.get(id) ?? {
+      medianDays: null,
+      sample: 0,
+    };
+    const priorToProposal = prior.daysToProposal.get(id) ?? {
+      medianDays: null,
+      sample: 0,
+    };
     const toDecision = current.proposalToDecision.get(id) ?? {
       medianDays: null,
       sample: 0,
@@ -816,11 +854,23 @@ function buildUsers(
       medianHours: null,
       sample: 0,
     };
-    const proposalLag = current.proposalLag.get(id) ?? { medianDays: null, sample: 0 };
-    const priorProposalLag = prior.proposalLag.get(id) ?? { medianDays: null, sample: 0 };
+    const proposalLag = current.proposalLag.get(id) ?? {
+      medianDays: null,
+      sample: 0,
+    };
+    const priorProposalLag = prior.proposalLag.get(id) ?? {
+      medianDays: null,
+      sample: 0,
+    };
     const reversals = current.reversals.get(id) ?? { reversals: 0, sample: 0 };
-    const priorReversals = prior.reversals.get(id) ?? { reversals: 0, sample: 0 };
-    const closeQuality = current.closeQuality.get(id) ?? { poor: 0, eligible: 0 };
+    const priorReversals = prior.reversals.get(id) ?? {
+      reversals: 0,
+      sample: 0,
+    };
+    const closeQuality = current.closeQuality.get(id) ?? {
+      poor: 0,
+      eligible: 0,
+    };
     const priorClose = prior.closeQuality.get(id) ?? { poor: 0, eligible: 0 };
     const overdueRate =
       tasks.withDue > 0 ? tasks.tasksOverdue / tasks.withDue : null;
@@ -847,7 +897,10 @@ function buildUsers(
       medianDaysToProposal: {
         days: shownDays(toProposal.sample, toProposal.medianDays),
         sample: toProposal.sample,
-        priorDays: shownDays(priorToProposal.sample, priorToProposal.medianDays),
+        priorDays: shownDays(
+          priorToProposal.sample,
+          priorToProposal.medianDays
+        ),
         priorSample: priorToProposal.sample,
       },
       wonRevenue: {
@@ -964,7 +1017,10 @@ function summarize(user: ReturnType<typeof buildUsers>[number]) {
   };
 }
 
-async function loadPerformance(companyId: string, windowDays: PerformanceWindow) {
+async function loadPerformance(
+  companyId: string,
+  windowDays: PerformanceWindow
+) {
   const [peopleResult, current, prior, snapshot] = await Promise.all([
     pool.query(
       `
@@ -989,7 +1045,9 @@ async function loadPerformance(companyId: string, windowDays: PerformanceWindow)
   };
 }
 
-export function parsePerformanceWindow(value: unknown): PerformanceWindow | null {
+export function parsePerformanceWindow(
+  value: unknown
+): PerformanceWindow | null {
   if (value == null || value === '') return 90;
   const parsed = Number(value);
   if (parsed === 30 || parsed === 90 || parsed === 365) return parsed;
