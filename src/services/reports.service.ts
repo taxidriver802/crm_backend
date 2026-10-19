@@ -1,6 +1,12 @@
 import { pool } from '../db';
 import { tenantPredicate, tenantScope } from '../lib/tenant';
 
+export {
+  getTeamPerformance,
+  getUserPerformance,
+  parsePerformanceWindow,
+} from './teamPerformance.service';
+
 type ReportScope = { includeAll?: boolean; companyId?: string };
 
 export async function getLeadFunnel(userId: string, options: ReportScope = {}) {

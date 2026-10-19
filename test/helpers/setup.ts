@@ -180,6 +180,17 @@ export async function ensureSchema() {
       'utf8'
     );
     await client.query(patchAssignmentNotificationsSql);
+
+    const patchPhase22PerformancePath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase22_performance_history.sql'
+    );
+    const patchPhase22PerformanceSql = fs.readFileSync(
+      patchPhase22PerformancePath,
+      'utf8'
+    );
+    await client.query(patchPhase22PerformanceSql);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

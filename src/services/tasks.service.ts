@@ -608,9 +608,12 @@ export async function createTask(
       end_at,
       location,
       status,
+      completed_at,
       company_id
     )
-    SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, u.company_id
+    SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+      CASE WHEN $11 = 'Completed' THEN CURRENT_TIMESTAMP ELSE NULL END,
+      u.company_id
     FROM users u
     WHERE u.id = $1
     RETURNING *;
@@ -827,6 +830,13 @@ export async function updateTask(
   }
 
   setParts.push(`updated_at = CURRENT_TIMESTAMP`);
+
+  const nextStatus = 'status' in updates ? updates.status : existingTask.status;
+  if (nextStatus === 'Completed' && existingTask.status !== 'Completed') {
+    setParts.push(`completed_at = CURRENT_TIMESTAMP`);
+  } else if (nextStatus !== 'Completed' && existingTask.status === 'Completed') {
+    setParts.push(`completed_at = NULL`);
+  }
 
   const where: string[] = ['id = $1'];
   applyTenantScope(where, values, scope, { assignedWork: true });

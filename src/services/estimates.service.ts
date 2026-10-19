@@ -96,6 +96,7 @@ const ESTIMATE_SELECT = `
     e.client_response_note,
     e.created_at,
     e.updated_at,
+    e.sent_at,
     e.company_id,
 
     j.title AS job_title,
@@ -137,6 +138,7 @@ function normalizeEstimate(row: any, lineItems: any[] = []) {
     client_response_note: row.client_response_note ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    sent_at: row.sent_at ?? null,
     company_id: row.company_id ?? null,
 
     job: {
@@ -356,9 +358,12 @@ export async function createEstimate(
         title,
         status,
         notes,
+        sent_at,
         company_id
       )
-      SELECT $1, $2, $3, $4, $5, u.company_id
+      SELECT $1, $2, $3, $4, $5,
+        CASE WHEN $4 = 'Sent' THEN CURRENT_TIMESTAMP ELSE NULL END,
+        u.company_id
       FROM users u
       WHERE u.id = $1
       RETURNING id
@@ -435,6 +440,9 @@ export async function updateEstimate(
   }
 
   setParts.push('updated_at = CURRENT_TIMESTAMP');
+  if (updates.status === 'Sent' && !existing.sent_at) {
+    setParts.push('sent_at = CURRENT_TIMESTAMP');
+  }
   const where: string[] = ['id = $1'];
   applyTenantScope(where, values, scope, { companyOnly: true });
 
@@ -915,6 +923,7 @@ export async function resendEstimateToClient(
       client_responded_at = NULL,
       client_response_note = NULL,
       status = 'Sent',
+      sent_at = COALESCE(sent_at, CURRENT_TIMESTAMP),
       updated_at = CURRENT_TIMESTAMP
     WHERE id = $3 AND company_id = $4
     `,

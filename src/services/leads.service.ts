@@ -3,6 +3,11 @@ import { daysInStatus } from '../lib/aging';
 import { notifyAssigneeChange } from '../lib/notifications';
 import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
 import { trackEvent } from './productEvents.service';
+import {
+  recordAssignmentChange,
+  recordInitialAssignment,
+  recordLeadStatusChange,
+} from './performanceHistory.service';
 
 export class LeadNotFoundError extends Error {
   constructor(message = 'Lead not found') {
@@ -255,6 +260,14 @@ export async function createLead(
 
   trackEvent('lead_created', { userId, entityType: 'lead', entityId: lead.id });
 
+  await recordInitialAssignment({
+    companyId: scope.companyId,
+    entityType: 'lead',
+    entityId: lead.id,
+    userId: lead.assigned_to ?? null,
+    assignedAt: lead.created_at,
+  });
+
   const leadName = `${lead.first_name} ${lead.last_name}`.trim();
   await notifyAssigneeChange({
     actorUserId: userId,
@@ -335,6 +348,31 @@ export async function updateLead(
     includeAll: options.includeAll,
     companyId: scope.companyId,
   });
+
+  if (
+    'assigned_to' in updates &&
+    (updates.assigned_to ?? null) !== (existingLead.assigned_to ?? null)
+  ) {
+    await recordAssignmentChange({
+      companyId: scope.companyId,
+      entityType: 'lead',
+      entityId: updated.id,
+      previousUserId: existingLead.assigned_to ?? null,
+      nextUserId: updated.assigned_to ?? null,
+      entityCreatedAt: existingLead.created_at,
+      assignedAt: updated.updated_at,
+    });
+  }
+
+  if (statusChanged && updated.status) {
+    await recordLeadStatusChange({
+      companyId: scope.companyId,
+      leadId: updated.id,
+      fromStatus: existingLead.status,
+      toStatus: updated.status,
+      changedAt: updated.status_changed_at,
+    });
+  }
 
   const leadName = `${updated.first_name} ${updated.last_name}`.trim();
   await notifyAssigneeChange({

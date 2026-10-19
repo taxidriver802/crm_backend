@@ -5,6 +5,10 @@ import { notifyAssigneeChange } from '../lib/notifications';
 import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
 import * as activityService from '../services/jobActivity.service';
 import { evaluateRules } from './automation.service';
+import {
+  recordAssignmentChange,
+  recordInitialAssignment,
+} from './performanceHistory.service';
 
 export class JobNotFoundError extends Error {
   constructor(message = 'Job not found') {
@@ -368,6 +372,14 @@ export async function createJob(
     companyId: scope.companyId,
   });
 
+  await recordInitialAssignment({
+    companyId: scope.companyId,
+    entityType: 'job',
+    entityId: created.id,
+    userId: created.assigned_to ?? null,
+    assignedAt: created.created_at,
+  });
+
   await notifyAssigneeChange({
     actorUserId: userId,
     assignedTo: created.assigned_to,
@@ -480,6 +492,21 @@ export async function updateJob(
     includeAll: options.includeAll,
     companyId: scope.companyId,
   });
+
+  if (
+    'assigned_to' in updates &&
+    (updates.assigned_to ?? null) !== (existingJob.assigned_to ?? null)
+  ) {
+    await recordAssignmentChange({
+      companyId: scope.companyId,
+      entityType: 'job',
+      entityId: updated.id,
+      previousUserId: existingJob.assigned_to ?? null,
+      nextUserId: updated.assigned_to ?? null,
+      entityCreatedAt: existingJob.created_at,
+      assignedAt: updated.updated_at,
+    });
+  }
 
   await notifyAssigneeChange({
     actorUserId: userId,
