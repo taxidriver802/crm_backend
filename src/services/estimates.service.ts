@@ -157,7 +157,7 @@ function buildLeadName(row: any) {
   return null;
 }
 
-function normalizeEstimate(row: any, lineItems: any[] = []) {
+function normalizeEstimate(row: any, lineItems: any[] = [], invoices: any[] = []) {
   return {
     id: row.id,
     user_id: row.user_id,
@@ -191,6 +191,14 @@ function normalizeEstimate(row: any, lineItems: any[] = []) {
     },
 
     line_items: lineItems.map(normalizeEstimateLineItem),
+    /** Live (non-void) invoices billed from this estimate. */
+    invoices: invoices.map((inv: any) => ({
+      id: inv.id,
+      invoice_number: inv.invoice_number,
+      kind: inv.kind,
+      status: inv.status,
+      grand_total: Number(inv.grand_total ?? 0),
+    })),
   };
 }
 
@@ -396,8 +404,16 @@ export async function getEstimateById(
     throw new EstimateNotFoundError();
   }
 
-  const lineItems = await getEstimateLineItemsRaw(id);
-  return normalizeEstimate(result.rows[0], lineItems);
+  const [lineItems, invoices] = await Promise.all([
+    getEstimateLineItemsRaw(id),
+    pool.query(
+      `SELECT id, invoice_number, kind, status, grand_total FROM invoices
+       WHERE estimate_id = $1 AND status <> 'Void'
+       ORDER BY created_at ASC, id ASC`,
+      [id]
+    ),
+  ]);
+  return normalizeEstimate(result.rows[0], lineItems, invoices.rows);
 }
 
 export async function createEstimate(
