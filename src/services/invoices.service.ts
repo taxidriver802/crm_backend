@@ -1199,6 +1199,23 @@ export async function recordPayment(
   let state: Awaited<ReturnType<typeof syncPaymentState>>;
   try {
     await client.query('BEGIN');
+    // Re-check the balance under a row lock: two people recording payments on
+    // the same invoice at once must not both pass the check and overpay.
+    const locked = await client.query(
+      `SELECT status, grand_total, amount_paid FROM invoices
+       WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+      [invoiceId, scope.companyId]
+    );
+    if (locked.rowCount === 0) throw new InvoiceNotFoundError();
+    const lockedBalance = balanceOf(locked.rows[0]);
+    if (locked.rows[0].status === 'Void') {
+      throw new InvoiceStateError('Payments cannot be recorded on a void invoice.');
+    }
+    if (amount > lockedBalance + 0.004) {
+      throw new InvoiceStateError(
+        `That is more than the ${usd(lockedBalance)} balance due on ${existing.invoice_number}.`
+      );
+    }
     const ins = await client.query(
       `INSERT INTO invoice_payments (
          company_id, invoice_id, job_id, recorded_by_user_id,

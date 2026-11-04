@@ -430,6 +430,38 @@ describe('job lifecycle — API', () => {
     expect(lostWithMoney.status).toBe(409);
   });
 
+  it('does not let two simultaneous payments overpay one invoice', async () => {
+    const owner = await createAuthedUser('owner');
+    const lead = await createLead(owner.headers);
+    const job = await createJob(owner.headers, lead.id, 'Race job');
+    const invoice = await request(app)
+      .post('/invoices')
+      .set(owner.headers)
+      .send({ job_id: job.id, status: 'Sent' });
+    await request(app)
+      .post(`/invoices/${invoice.body.invoice.id}/line-items`)
+      .set(owner.headers)
+      .send({ name: 'Repair', quantity: 1, unit_price: 600 });
+
+    const [first, second] = await Promise.all([
+      request(app)
+        .post(`/invoices/${invoice.body.invoice.id}/payments`)
+        .set(owner.headers)
+        .send({ amount: 600, method: 'check' }),
+      request(app)
+        .post(`/invoices/${invoice.body.invoice.id}/payments`)
+        .set(owner.headers)
+        .send({ amount: 600, method: 'card' }),
+    ]);
+    expect([first.status, second.status].sort()).toEqual([201, 409]);
+
+    const after = await request(app)
+      .get(`/invoices/${invoice.body.invoice.id}`)
+      .set(owner.headers);
+    expect(after.body.invoice.amount_paid).toBe(600);
+    expect(after.body.invoice.payments).toHaveLength(1);
+  });
+
   it('rejects statuses outside the lifecycle', async () => {
     const owner = await createAuthedUser('owner');
     const lead = await createLead(owner.headers);
