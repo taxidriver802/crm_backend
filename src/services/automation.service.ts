@@ -2,6 +2,8 @@ import { pool } from '../db';
 import { createNotification } from '../lib/notifications';
 import { trackEvent } from './productEvents.service';
 import { resolveCompanyId } from '../lib/tenant';
+import { isJobStatus } from '../lib/jobLifecycle';
+import { transitionJobStatus } from './jobs.service';
 
 export class AutomationRuleNotFoundError extends Error {
   constructor(message = 'Automation rule not found') {
@@ -199,16 +201,28 @@ export const RULE_TEMPLATES = [
     },
   },
   {
-    template_id: 'job_complete_notify',
-    name: 'Notify owner when job completed',
-    description:
-      'When a job status changes to "Closed Won", send a notification.',
+    template_id: 'job_sold_notify',
+    name: 'Notify owner when a job is sold',
+    description: 'When a job moves to "Sold", send a notification.',
     trigger_event: 'JOB_STATUS_CHANGED' as TriggerEvent,
     action_type: 'SEND_NOTIFICATION' as ActionType,
-    conditions: { to_status: 'Closed Won' },
+    conditions: { to_status: 'Sold' },
     action_config: {
-      title: 'Job completed',
-      message: '{job_title} has been marked as Closed Won.',
+      title: 'Job sold',
+      message: '{job_title} is sold. Request the deposit and get it on the schedule.',
+    },
+  },
+  {
+    template_id: 'job_complete_notify',
+    name: 'Notify the office when work is complete',
+    description:
+      'When a job moves to "Work Complete", send a notification so the final invoice goes out.',
+    trigger_event: 'JOB_STATUS_CHANGED' as TriggerEvent,
+    action_type: 'SEND_NOTIFICATION' as ActionType,
+    conditions: { to_status: 'Work Complete' },
+    action_config: {
+      title: 'Work complete',
+      message: '{job_title} is complete. Send the final invoice.',
     },
   },
   {
@@ -456,10 +470,24 @@ async function executeAction(
     case 'UPDATE_STATUS': {
       const newStatus = config.new_status as string;
       if (!newStatus || !context.job_id) break;
-      await pool.query(
-        `UPDATE jobs SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND company_id = (SELECT company_id FROM users WHERE id = $3)`,
-        [newStatus, context.job_id, userId]
-      );
+      if (!isJobStatus(newStatus)) {
+        console.error(`[automation] ignoring unknown job status "${newStatus}"`);
+        break;
+      }
+      // Same rules as a person moving the job: milestones, activity, and the
+      // close gate all apply. Rules are authored by owners/admins.
+      try {
+        await transitionJobStatus({
+          jobId: Number(context.job_id),
+          companyId: await resolveCompanyId(userId),
+          actorUserId: userId,
+          actorRole: 'admin',
+          to: newStatus,
+          reason: 'automation rule',
+        });
+      } catch (err) {
+        console.error('[automation] status update skipped:', (err as Error).message);
+      }
       break;
     }
   }

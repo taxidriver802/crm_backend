@@ -8,6 +8,7 @@ export type ProductEventName =
   | 'estimate_rejected'
   | 'invoice_created'
   | 'invoice_marked_paid'
+  | 'payment_recorded'
   | 'portal_link_generated'
   | 'portal_viewed'
   | 'automation_rule_triggered'

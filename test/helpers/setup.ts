@@ -191,6 +191,17 @@ export async function ensureSchema() {
       'utf8'
     );
     await client.query(patchPhase22PerformanceSql);
+
+    const patchPhase23LifecycleMoneyPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase23_job_lifecycle_money.sql'
+    );
+    const patchPhase23LifecycleMoneySql = fs.readFileSync(
+      patchPhase23LifecycleMoneyPath,
+      'utf8'
+    );
+    await client.query(patchPhase23LifecycleMoneySql);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

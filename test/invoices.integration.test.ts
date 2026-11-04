@@ -129,7 +129,13 @@ describe('Invoices API', () => {
     expect(res.status).toBe(200);
     expect(res.body.invoice.status).toBe('Paid');
     expect(res.body.invoice.paid_at).toBeTruthy();
+    // Marking paid records the balance as a payment so the ledger agrees.
+    expect(res.body.invoice.payments).toHaveLength(1);
+    expect(res.body.invoice.amount_paid).toBe(res.body.invoice.grand_total);
+    expect(res.body.invoice.balance_due).toBe(0);
   });
+
+  let manualInvoiceId: number;
 
   it('POST /invoices creates a blank invoice', async () => {
     const res = await request(app)
@@ -140,11 +146,12 @@ describe('Invoices API', () => {
     expect(res.status).toBe(201);
     expect(res.body.invoice.invoice_number).toMatch(/^INV-/);
     expect(res.body.invoice.notes).toBe('Manual invoice');
+    manualInvoiceId = res.body.invoice.id;
   });
 
   it('POST /invoices/:id/line-items adds a line item', async () => {
     const res = await request(app)
-      .post(`/invoices/${invoiceId}/line-items`)
+      .post(`/invoices/${manualInvoiceId}/line-items`)
       .set('Cookie', cookie)
       .send({ name: 'Labor', quantity: 8, unit_price: 75 });
 
@@ -153,6 +160,16 @@ describe('Invoices API', () => {
     const labor = items.find((i: any) => i.name === 'Labor');
     expect(labor).toBeTruthy();
     expect(labor.line_total).toBe(600);
+  });
+
+  it('POST /invoices/:id/line-items is refused once payments exist', async () => {
+    const res = await request(app)
+      .post(`/invoices/${invoiceId}/line-items`)
+      .set('Cookie', cookie)
+      .send({ name: 'Labor', quantity: 8, unit_price: 75 });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/locked/i);
   });
 
   it('GET /invoices/:id/pdf returns a PDF', async () => {
@@ -172,6 +189,13 @@ describe('Invoices API', () => {
     expect(res.status).toBe(200);
     expect(res.body.share_url).toContain('/public/invoice/');
     expect(res.body.share_expires_at).toBeTruthy();
+
+    // The link the client receives resolves (it used to 404).
+    const token = res.body.share_url.split('/public/invoice/')[1];
+    const pub = await request(app).get(`/public/invoices/${token}`);
+    expect(pub.status).toBe(200);
+    expect(pub.body.invoice.balance_due).toBe(0);
+    expect(pub.body.invoice.payments[0]).not.toHaveProperty('notes');
   });
 
   it('DELETE /invoices/:id deletes the invoice', async () => {

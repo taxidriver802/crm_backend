@@ -1,6 +1,30 @@
 import { pool } from '../db';
 import { buildStartHere, type ActionItem } from '../lib/startHere';
 import { tenantScope } from '../lib/tenant';
+import {
+  JOB_MONEY_COLUMNS_SQL,
+  JOB_MONEY_LATERAL_SQL,
+  JOB_STATUSES,
+  OPEN_STATUSES,
+  PRODUCTION_STATUSES,
+  TERMINAL_STATUSES,
+  buildJobMoney,
+  sqlStatusList,
+} from '../lib/jobLifecycle';
+
+const TERMINAL_SQL = sqlStatusList(TERMINAL_STATUSES);
+const PRODUCTION_SQL = sqlStatusList(PRODUCTION_STATUSES);
+const OPEN_SQL = sqlStatusList(OPEN_STATUSES);
+const JOB_STATUS_ORDER_SQL = JOB_STATUSES.map(
+  (status, index) => `WHEN '${status}' THEN ${index + 1}`
+).join(' ');
+
+function usd(value: number) {
+  return `$${value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
 import { getTaskSummary } from './tasks.service';
 
 export const STALE_LEAD_DAYS = 7;
@@ -86,6 +110,9 @@ export async function getDashboardData(
     estimatesAwaitingResult,
     blockedJobsResult,
     invoicesDueResult,
+    soldNotScheduledResult,
+    readyToBillResult,
+    moneyResult,
   ] = await Promise.all([
     pool.query(
       `SELECT COUNT(*)::int AS total FROM leads WHERE ${assignedWhere}`,
@@ -123,12 +150,7 @@ export async function getDashboardData(
         GROUP BY status
         ORDER BY
           CASE status
-            WHEN 'New' THEN 1
-            WHEN 'Contacted' THEN 2
-            WHEN 'Appointment Scheduled' THEN 3
-            WHEN 'Proposal Sent' THEN 4
-            WHEN 'Closed Won' THEN 5
-            WHEN 'Closed Lost' THEN 6
+            ${JOB_STATUS_ORDER_SQL}
             ELSE 999
           END ASC,
           status ASC;
@@ -216,7 +238,7 @@ export async function getDashboardData(
          AND t.due_date IS NOT NULL
          AND COALESCE(t.end_at, t.due_date) < NOW()
         WHERE ${assignedAliased('j')}
-          AND j.status NOT IN ('Closed Won', 'Closed Lost')
+          AND j.status NOT IN (${TERMINAL_SQL})
         GROUP BY j.id
         ORDER BY MIN(COALESCE(t.end_at, t.due_date)) ASC
         LIMIT ${ph(1)}
@@ -231,17 +253,78 @@ export async function getDashboardData(
           i.status,
           i.due_date,
           i.job_id,
+          GREATEST(i.grand_total - i.amount_paid, 0)::float AS balance_due,
           j.title AS job_title
         FROM invoices i
         INNER JOIN jobs j ON j.id = i.job_id
         WHERE ${creatorAliased('i')}
-          AND i.status IN ('Sent', 'Overdue')
+          AND i.status IN ('Sent', 'Partially Paid', 'Overdue')
           AND i.due_date IS NOT NULL
           AND i.due_date <= NOW() + (${ph(1)}::int * INTERVAL '1 day')
         ORDER BY i.due_date ASC
         LIMIT ${ph(2)}
       `,
       extras(INVOICE_DUE_SOON_DAYS, QUEUE_LIMIT)
+    ),
+    // Sold with nothing on the calendar: the handoff from sales to production.
+    pool.query(
+      `
+        SELECT j.id, j.title, j.status, j.status_changed_at, j.sold_at
+        FROM jobs j
+        WHERE ${assignedAliased('j')}
+          AND j.status = 'Sold'
+          AND NOT EXISTS (
+            SELECT 1 FROM tasks t
+            WHERE t.job_id = j.id
+              AND t.kind = 'appointment'
+              AND t.status <> 'Completed'
+              AND COALESCE(t.end_at, t.due_date) >= NOW()
+          )
+        ORDER BY COALESCE(j.sold_at, j.status_changed_at) ASC
+        LIMIT ${ph(1)}
+      `,
+      extras(QUEUE_LIMIT)
+    ),
+    // Work complete but money not billed: the handoff from production to billing.
+    pool.query(
+      `
+        SELECT * FROM (
+          SELECT j.id, j.title, j.status, j.status_changed_at, ${JOB_MONEY_COLUMNS_SQL}
+          FROM jobs j
+          ${JOB_MONEY_LATERAL_SQL}
+          WHERE ${assignedAliased('j')}
+            AND j.status = 'Work Complete'
+        ) ready
+        WHERE ready.contract_total - ready.invoiced_total - ready.draft_total > 0.004
+           OR ready.draft_invoice_count > 0
+        ORDER BY ready.status_changed_at ASC
+        LIMIT ${ph(1)}
+      `,
+      extras(QUEUE_LIMIT)
+    ),
+    // Receivables for the jobs this viewer can see.
+    pool.query(
+      `
+        SELECT
+          COALESCE(SUM(money_inv.outstanding_total), 0)::float AS outstanding_total,
+          COALESCE(SUM(money_inv.overdue_total), 0)::float AS overdue_total,
+          COALESCE(SUM(GREATEST(
+            money_est.contract_total - money_inv.invoiced_total - money_inv.draft_total, 0
+          )) FILTER (WHERE j.status NOT IN ('Lost')), 0)::float AS unbilled_total,
+          COUNT(*) FILTER (WHERE j.status IN (${PRODUCTION_SQL}))::int AS jobs_in_production,
+          COUNT(*) FILTER (WHERE j.status = 'Work Complete')::int AS jobs_in_billing,
+          (
+            SELECT COALESCE(SUM(p.amount), 0)::float
+            FROM invoice_payments p
+            INNER JOIN jobs pj ON pj.id = p.job_id
+            WHERE ${assignedAliased('pj')}
+              AND p.received_at >= NOW() - INTERVAL '30 days'
+          ) AS collected_30d
+        FROM jobs j
+        ${JOB_MONEY_LATERAL_SQL}
+        WHERE ${assignedAliased('j')}
+      `,
+      scopeParams
     ),
   ]);
 
@@ -291,16 +374,53 @@ export async function getDashboardData(
   const invoicesDue: ActionItem[] = invoicesDueResult.rows.map((row) => {
     const due = row.due_date ? new Date(row.due_date).getTime() : NaN;
     const overdue = !Number.isNaN(due) && due < now;
+    const jobLabel = row.job_title || (row.job_id != null ? `Job #${row.job_id}` : null);
     return {
       kind: 'invoice' as const,
       id: row.id,
       title: row.invoice_number,
-      subtitle: row.job_title || (row.job_id != null ? `Job #${row.job_id}` : null),
+      subtitle: [jobLabel, `${usd(Number(row.balance_due) || 0)} due`]
+        .filter(Boolean)
+        .join(' · '),
       href: `/invoices/${row.id}`,
       reason: overdue ? 'Invoice overdue' : 'Invoice due soon',
       at: isoOrNull(row.due_date),
     };
   });
+
+  const soldNotScheduled: ActionItem[] = soldNotScheduledResult.rows.map((row) => ({
+    kind: 'job' as const,
+    id: row.id,
+    title: row.title,
+    subtitle: 'Sold',
+    href: `/jobs/${row.id}`,
+    reason: 'Sold, not scheduled',
+    at: isoOrNull(row.sold_at ?? row.status_changed_at),
+  }));
+
+  const readyToBill: ActionItem[] = readyToBillResult.rows.map((row) => {
+    const money = buildJobMoney(row);
+    const amount = money.unbilled_total > 0 ? money.unbilled_total : money.draft_total;
+    return {
+      kind: 'job' as const,
+      id: row.id,
+      title: row.title,
+      subtitle: `${usd(amount)} to bill`,
+      href: `/jobs/${row.id}`,
+      reason: 'Work complete, not invoiced',
+      at: isoOrNull(row.status_changed_at),
+    };
+  });
+
+  const moneyRow = moneyResult.rows[0] ?? {};
+  const money = {
+    outstanding_total: Number(moneyRow.outstanding_total) || 0,
+    overdue_total: Number(moneyRow.overdue_total) || 0,
+    unbilled_total: Number(moneyRow.unbilled_total) || 0,
+    collected_30d: Number(moneyRow.collected_30d) || 0,
+    jobs_in_production: Number(moneyRow.jobs_in_production) || 0,
+    jobs_in_billing: Number(moneyRow.jobs_in_billing) || 0,
+  };
 
   const overdueInvoices = invoicesDue.filter((item) => item.reason === 'Invoice overdue');
   const invoicesDueSoon = invoicesDue.filter((item) => item.reason === 'Invoice due soon');
@@ -308,8 +428,10 @@ export async function getDashboardData(
   const startHere = buildStartHere({
     overdueFollowUps,
     overdueInvoices,
+    readyToBill,
     invoicesDueSoon,
     blockedJobs,
+    soldNotScheduled,
     estimatesAwaiting,
     staleLeads,
     dueToday,
@@ -329,6 +451,7 @@ export async function getDashboardData(
       byStatus: estimatesByStatusResult.rows,
     },
     tasks: taskSummary,
+    money,
     actions: {
       startHere,
       overdueFollowUps,
@@ -337,6 +460,8 @@ export async function getDashboardData(
       estimatesAwaiting,
       blockedJobs,
       invoicesDue,
+      soldNotScheduled,
+      readyToBill,
     },
   };
 }
@@ -346,6 +471,7 @@ export type WorkloadRow = {
   name: string;
   leads_open: number;
   jobs_open: number;
+  jobs_in_production: number;
   tasks_open: number;
   tasks_overdue: number;
 };
@@ -370,10 +496,11 @@ export async function getWorkload(companyId: string): Promise<WorkloadRow[]> {
     job_counts AS (
       SELECT
         assigned_to AS user_id,
-        COUNT(*)::int AS jobs_open
+        COUNT(*)::int AS jobs_open,
+        COUNT(*) FILTER (WHERE status IN (${PRODUCTION_SQL}))::int AS jobs_in_production
       FROM jobs
       WHERE company_id = $1
-        AND status NOT IN ('Closed Won', 'Closed Lost')
+        AND status IN (${OPEN_SQL})
       GROUP BY assigned_to
     ),
     task_counts AS (
@@ -396,6 +523,7 @@ export async function getWorkload(companyId: string): Promise<WorkloadRow[]> {
         COALESCE(u.email, '') AS email,
         COALESCE(l.leads_open, 0)::int AS leads_open,
         COALESCE(j.jobs_open, 0)::int AS jobs_open,
+        COALESCE(j.jobs_in_production, 0)::int AS jobs_in_production,
         COALESCE(t.tasks_open, 0)::int AS tasks_open,
         COALESCE(t.tasks_overdue, 0)::int AS tasks_overdue,
         0 AS is_unassigned
@@ -412,6 +540,7 @@ export async function getWorkload(companyId: string): Promise<WorkloadRow[]> {
         '' AS email,
         COALESCE((SELECT leads_open FROM lead_counts WHERE user_id IS NULL), 0)::int,
         COALESCE((SELECT jobs_open FROM job_counts WHERE user_id IS NULL), 0)::int,
+        COALESCE((SELECT jobs_in_production FROM job_counts WHERE user_id IS NULL), 0)::int,
         COALESCE((SELECT tasks_open FROM task_counts WHERE user_id IS NULL), 0)::int,
         COALESCE((SELECT tasks_overdue FROM task_counts WHERE user_id IS NULL), 0)::int,
         1 AS is_unassigned
@@ -430,6 +559,7 @@ export async function getWorkload(companyId: string): Promise<WorkloadRow[]> {
       name: trimmed || row.email || 'User',
       leads_open: Number(row.leads_open) || 0,
       jobs_open: Number(row.jobs_open) || 0,
+      jobs_in_production: Number(row.jobs_in_production) || 0,
       tasks_open: Number(row.tasks_open) || 0,
       tasks_overdue: Number(row.tasks_overdue) || 0,
     };

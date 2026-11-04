@@ -1,5 +1,6 @@
 import { pool } from '../db';
 import { tenantPredicate, tenantScope } from '../lib/tenant';
+import { JOB_STATUSES } from '../lib/jobLifecycle';
 
 export {
   getTeamPerformance,
@@ -90,11 +91,118 @@ export async function getJobPipeline(userId: string, options: ReportScope = {}) 
     FROM jobs
     WHERE ${where}
     GROUP BY status
-    ORDER BY count DESC, status ASC
     `,
     params
   );
-  return result.rows;
+  // Lifecycle order, not popularity: the report reads left to right as
+  // first contact to paid.
+  const order = (status: string) => {
+    const index = (JOB_STATUSES as readonly string[]).indexOf(status);
+    return index === -1 ? 999 : index;
+  };
+  return result.rows.sort((a, b) => order(a.status) - order(b.status));
+}
+
+/**
+ * Money after the sale. Monthly: work signed (approved estimates), billed
+ * (invoices sent) and collected (payments received). Plus receivables aging
+ * on what is still owed, bucketed by days past due.
+ */
+export async function getCollections(userId: string, options: ReportScope = {}) {
+  const scope = await tenantScope(userId, options);
+  const jobParams: unknown[] = [];
+  const jobWhere = tenantPredicate(jobParams, scope, {
+    alias: 'j',
+    assignedWork: true,
+  });
+
+  const monthly = await pool.query(
+    `
+    WITH months AS (
+      SELECT generate_series(
+        date_trunc('month', NOW()) - INTERVAL '11 months',
+        date_trunc('month', NOW()),
+        INTERVAL '1 month'
+      ) AS month
+    ),
+    visible_jobs AS (
+      SELECT j.id FROM jobs j WHERE ${jobWhere}
+    ),
+    signed AS (
+      SELECT date_trunc('month', e.approved_at) AS month, SUM(e.grand_total) AS amount
+      FROM estimates e
+      WHERE e.job_id IN (SELECT id FROM visible_jobs)
+        AND e.status = 'Approved' AND e.approved_at IS NOT NULL
+      GROUP BY 1
+    ),
+    billed AS (
+      SELECT date_trunc('month', i.sent_at) AS month, SUM(i.grand_total) AS amount
+      FROM invoices i
+      WHERE i.job_id IN (SELECT id FROM visible_jobs)
+        AND i.status NOT IN ('Draft', 'Void') AND i.sent_at IS NOT NULL
+      GROUP BY 1
+    ),
+    collected AS (
+      SELECT date_trunc('month', p.received_at) AS month, SUM(p.amount) AS amount
+      FROM invoice_payments p
+      INNER JOIN invoices i ON i.id = p.invoice_id AND i.status <> 'Void'
+      WHERE p.job_id IN (SELECT id FROM visible_jobs)
+      GROUP BY 1
+    )
+    SELECT
+      to_char(m.month, 'YYYY-MM') AS month_key,
+      COALESCE(s.amount, 0)::float AS signed,
+      COALESCE(b.amount, 0)::float AS billed,
+      COALESCE(c.amount, 0)::float AS collected
+    FROM months m
+    LEFT JOIN signed s ON s.month = m.month
+    LEFT JOIN billed b ON b.month = m.month
+    LEFT JOIN collected c ON c.month = m.month
+    ORDER BY m.month ASC
+    `,
+    jobParams
+  );
+
+  const agingParams: unknown[] = [];
+  const agingWhere = tenantPredicate(agingParams, scope, {
+    alias: 'j',
+    assignedWork: true,
+  });
+  const aging = await pool.query(
+    `
+    SELECT
+      CASE
+        WHEN i.due_date IS NULL OR i.due_date >= NOW() THEN 'current'
+        WHEN i.due_date >= NOW() - INTERVAL '30 days' THEN '1_30'
+        WHEN i.due_date >= NOW() - INTERVAL '60 days' THEN '31_60'
+        WHEN i.due_date >= NOW() - INTERVAL '90 days' THEN '61_90'
+        ELSE '90_plus'
+      END AS bucket,
+      COUNT(*)::int AS count,
+      COALESCE(SUM(GREATEST(i.grand_total - i.amount_paid, 0)), 0)::float AS amount
+    FROM invoices i
+    INNER JOIN jobs j ON j.id = i.job_id
+    WHERE ${agingWhere}
+      AND i.status IN ('Sent', 'Partially Paid', 'Overdue')
+    GROUP BY 1
+    `,
+    agingParams
+  );
+
+  const buckets = ['current', '1_30', '31_60', '61_90', '90_plus'].map((key) => {
+    const row = aging.rows.find((r) => r.bucket === key);
+    return {
+      bucket: key,
+      count: Number(row?.count ?? 0),
+      amount: Number(row?.amount ?? 0),
+    };
+  });
+
+  return {
+    monthly: monthly.rows,
+    aging: buckets,
+    outstanding_total: buckets.reduce((sum, b) => sum + b.amount, 0),
+  };
 }
 
 export async function getMonthlyTrends(

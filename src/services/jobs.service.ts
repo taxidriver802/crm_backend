@@ -1,6 +1,27 @@
 import { pool } from '../db';
 import { daysInStatus } from '../lib/aging';
 import { computeJobHealth } from '../lib/jobHealth';
+import {
+  JOB_MONEY_COLUMNS_SQL,
+  JOB_MONEY_LATERAL_SQL,
+  JOB_PHASES,
+  JOB_STATUSES,
+  assertTransition,
+  buildJobMoney,
+  computeNextStep,
+  isJobPhase,
+  isJobStatus,
+  initialMilestoneColumns,
+  isSettled,
+  milestoneUpdates,
+  phaseOf,
+  statusesForPhase,
+  InvalidJobStatusError,
+  JobTransitionError,
+  type JobMoney,
+  type JobPhase,
+  type JobStatus,
+} from '../lib/jobLifecycle';
 import { notifyAssigneeChange } from '../lib/notifications';
 import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
 import * as activityService from '../services/jobActivity.service';
@@ -9,6 +30,8 @@ import {
   recordAssignmentChange,
   recordInitialAssignment,
 } from './performanceHistory.service';
+
+export { JobTransitionError, InvalidJobStatusError };
 
 export class JobNotFoundError extends Error {
   constructor(message = 'Job not found') {
@@ -47,6 +70,7 @@ export class AssignmentPermissionError extends Error {
 
 export type GetJobsFilters = {
   status?: string;
+  phase?: string;
   assignedTo?: string;
   q?: string;
   leadId?: number;
@@ -65,7 +89,9 @@ export type CreateJobInput = {
   address?: string | null;
 };
 
-export type UpdateJobInput = Partial<Omit<CreateJobInput, 'lead_id'>>;
+export type UpdateJobInput = Partial<Omit<CreateJobInput, 'lead_id'>> & {
+  lost_reason?: string | null;
+};
 
 async function ensureLeadBelongsToUser(
   leadId: number,
@@ -89,6 +115,15 @@ async function ensureLeadBelongsToUser(
 function normalizeJob(row: any) {
   const leadName =
     `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim();
+  const money = buildJobMoney(row);
+  const nextStep = computeNextStep({
+    status: row.status,
+    money,
+    estimateCount: Number(row.estimate_count) || 0,
+    draftEstimateCount: Number(row.draft_estimate_count) || 0,
+    sentAwaitingCount: Number(row.sent_awaiting_count) || 0,
+    nextAppointmentAt: row.next_appointment_at ?? null,
+  });
 
   return {
     id: row.id,
@@ -97,17 +132,28 @@ function normalizeJob(row: any) {
     title: row.title,
     description: row.description,
     status: row.status,
+    phase: phaseOf(row.status),
     address: row.address,
     created_at: row.created_at,
     updated_at: row.updated_at,
     status_changed_at: row.status_changed_at ?? null,
     days_in_status: daysInStatus(row.status_changed_at),
+    sold_at: row.sold_at ?? null,
+    work_completed_at: row.work_completed_at ?? null,
+    closed_at: row.closed_at ?? null,
+    lost_at: row.lost_at ?? null,
+    lost_reason: row.lost_reason ?? null,
+    next_appointment_at: row.next_appointment_at ?? null,
+    money,
+    next_step: nextStep,
     health: computeJobHealth({
       status: row.status,
       statusChangedAt: row.status_changed_at,
       overdueTaskCount: row.overdue_task_count,
       overdueInvoiceCount: row.overdue_invoice_count,
       sentAwaitingCount: row.sent_awaiting_count,
+      upcomingAppointmentCount: row.upcoming_appointment_count,
+      money,
     }),
     assigned_to: row.assigned_to,
     assigned_user:
@@ -131,6 +177,8 @@ function normalizeJob(row: any) {
   };
 }
 
+export type NormalizedJob = ReturnType<typeof normalizeJob>;
+
 const JOB_SELECT = `
   SELECT
     j.*,
@@ -141,7 +189,12 @@ const JOB_SELECT = `
     au.email AS assigned_email,
     COALESCE(ot.overdue_task_count, 0) AS overdue_task_count,
     COALESCE(inv.overdue_invoice_count, 0) AS overdue_invoice_count,
-    COALESCE(est.sent_awaiting_count, 0) AS sent_awaiting_count
+    COALESCE(est.sent_awaiting_count, 0) AS sent_awaiting_count,
+    COALESCE(est.estimate_count, 0) AS estimate_count,
+    COALESCE(est.draft_estimate_count, 0) AS draft_estimate_count,
+    COALESCE(appt.upcoming_appointment_count, 0) AS upcoming_appointment_count,
+    appt.next_appointment_at,
+    ${JOB_MONEY_COLUMNS_SQL}
   FROM jobs j
   LEFT JOIN leads l ON l.id = j.lead_id
   LEFT JOIN users au ON au.id = j.assigned_to
@@ -160,12 +213,26 @@ const JOB_SELECT = `
       AND i.status = 'Overdue'
   ) inv ON TRUE
   LEFT JOIN LATERAL (
-    SELECT COUNT(*)::int AS sent_awaiting_count
+    SELECT
+      COUNT(*) FILTER (
+        WHERE e.status = 'Sent' AND e.client_responded_at IS NULL
+      )::int AS sent_awaiting_count,
+      COUNT(*)::int AS estimate_count,
+      COUNT(*) FILTER (WHERE e.status = 'Draft')::int AS draft_estimate_count
     FROM estimates e
     WHERE e.job_id = j.id
-      AND e.status = 'Sent'
-      AND e.client_responded_at IS NULL
   ) est ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT
+      COUNT(*)::int AS upcoming_appointment_count,
+      MIN(t.due_date) AS next_appointment_at
+    FROM tasks t
+    WHERE t.job_id = j.id
+      AND t.kind = 'appointment'
+      AND t.status <> 'Completed'
+      AND COALESCE(t.end_at, t.due_date) >= NOW()
+  ) appt ON TRUE
+  ${JOB_MONEY_LATERAL_SQL}
 `;
 
 async function validateAssignee(
@@ -221,9 +288,17 @@ export async function getJobSummary(
     ),
   ]);
 
+  const byPhase = JOB_PHASES.map((phase) => ({
+    phase,
+    count: byStatusResult.rows
+      .filter((row) => phaseOf(row.status) === phase)
+      .reduce((sum, row) => sum + Number(row.count || 0), 0),
+  }));
+
   return {
     total: totalResult.rows[0].total,
     byStatus: byStatusResult.rows,
+    byPhase,
   };
 }
 
@@ -236,6 +311,11 @@ export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
   if (filters.status) {
     params.push(filters.status);
     where.push(`j.status = $${params.length}`);
+  }
+
+  if (filters.phase && (isJobPhase(filters.phase) || filters.phase === 'open')) {
+    params.push(statusesForPhase(filters.phase as JobPhase | 'open'));
+    where.push(`j.status = ANY($${params.length}::text[])`);
   }
 
   if (filters.q) {
@@ -299,6 +379,163 @@ export async function getJobById(
   return normalizeJob(result.rows[0]);
 }
 
+/** Job row without a viewer check. Callers must already hold company access. */
+async function getJobForCompany(jobId: number, companyId: string) {
+  const result = await pool.query(
+    `${JOB_SELECT} WHERE j.id = $1 AND j.company_id = $2 LIMIT 1`,
+    [jobId, companyId]
+  );
+  if (result.rowCount === 0) throw new JobNotFoundError();
+  return normalizeJob(result.rows[0]);
+}
+
+export async function getJobMoney(
+  jobId: number,
+  companyId: string
+): Promise<JobMoney> {
+  return (await getJobForCompany(jobId, companyId)).money;
+}
+
+/**
+ * The single writer for job status. Manual edits (updateJob) and automatic
+ * moves (estimate approved → Sold, paid in full → Closed, payment removed →
+ * reopened) all pass through here so milestones, activity and automation
+ * fire the same way.
+ */
+export async function transitionJobStatus(input: {
+  jobId: number;
+  companyId: string;
+  actorUserId: string;
+  actorRole?: string;
+  to: JobStatus;
+  automatic?: boolean;
+  reason?: string | null;
+  lostReason?: string | null;
+}) {
+  const job = await getJobForCompany(input.jobId, input.companyId);
+  const from = job.status;
+  if (from === input.to) return job;
+
+  if (!input.automatic) {
+    assertTransition({
+      from,
+      to: input.to,
+      role: input.actorRole,
+      money: job.money,
+    });
+  }
+
+  const sets = [
+    'status = $3',
+    'status_changed_at = CURRENT_TIMESTAMP',
+    'updated_at = CURRENT_TIMESTAMP',
+    ...milestoneUpdates(from, input.to),
+  ];
+  const values: unknown[] = [input.jobId, input.companyId, input.to];
+  if (input.to === 'Lost') {
+    values.push(input.lostReason?.trim() || null);
+    sets.push(`lost_reason = $${values.length}`);
+  }
+
+  await pool.query(
+    `UPDATE jobs SET ${sets.join(', ')} WHERE id = $1 AND company_id = $2`,
+    values
+  );
+
+  const metadata: Record<string, unknown> = {
+    fromStatus: from,
+    toStatus: input.to,
+    jobTitle: job.title,
+    automatic: Boolean(input.automatic),
+  };
+  if (input.reason) metadata.reason = input.reason;
+  if (input.to === 'Lost' && input.lostReason) {
+    metadata.lostReason = input.lostReason.trim();
+  }
+  if (input.to === 'Closed' && job.money.unbilled_total > 0.004) {
+    metadata.unbilledAtClose = job.money.unbilled_total;
+  }
+
+  const suffix = input.reason ? ` — ${input.reason}` : '';
+  await activityService.createJobActivity({
+    userId: input.actorUserId,
+    jobId: input.jobId,
+    type: 'JOB_STATUS_CHANGED',
+    title: input.automatic ? 'Status moved automatically' : 'Status changed',
+    message: `${from} → ${input.to}${suffix}`,
+    entityType: 'job',
+    entityId: input.jobId,
+    metadata,
+  });
+
+  evaluateRules(input.actorUserId, 'JOB_STATUS_CHANGED', {
+    job_id: input.jobId,
+    job_title: job.title,
+    from_status: from,
+    to_status: input.to,
+    entity_type: 'job',
+    entity_id: input.jobId,
+  }).catch((err) => console.error('Automation evaluation failed:', err));
+
+  return getJobForCompany(input.jobId, input.companyId);
+}
+
+/**
+ * Forward-only automatic moves driven by the estimate:
+ *   sharing / sending an estimate → Proposal Sent (from an earlier selling stage)
+ *   approving an estimate         → Sold (from any selling stage)
+ * A job already past the target is left alone.
+ */
+export async function advanceJobFromEstimate(input: {
+  jobId: number;
+  companyId: string;
+  actorUserId: string;
+  to: 'Proposal Sent' | 'Sold';
+  reason: string;
+}) {
+  const job = await getJobForCompany(input.jobId, input.companyId);
+  if (phaseOf(job.status) !== 'selling') return job;
+  if (input.to === 'Proposal Sent' && job.status === 'Proposal Sent') return job;
+  return transitionJobStatus({
+    jobId: input.jobId,
+    companyId: input.companyId,
+    actorUserId: input.actorUserId,
+    to: input.to,
+    automatic: true,
+    reason: input.reason,
+  });
+}
+
+/**
+ * Called after every payment write. A Work Complete job that is fully
+ * billed and fully paid closes itself; a Closed job that owes money again
+ * (payment removed) reopens to Work Complete.
+ */
+export async function reconcileJobAfterPayment(input: {
+  jobId: number;
+  companyId: string;
+  actorUserId: string;
+}) {
+  const job = await getJobForCompany(input.jobId, input.companyId);
+  if (job.status === 'Work Complete' && isSettled(job.money)) {
+    return transitionJobStatus({
+      ...input,
+      to: 'Closed',
+      automatic: true,
+      reason: 'paid in full',
+    });
+  }
+  if (job.status === 'Closed' && job.money.outstanding_total > 0.004) {
+    return transitionJobStatus({
+      ...input,
+      to: 'Work Complete',
+      automatic: true,
+      reason: 'a payment was removed',
+    });
+  }
+  return job;
+}
+
 export async function createJob(
   userId: string,
   input: CreateJobInput,
@@ -311,6 +548,18 @@ export async function createJob(
   await ensureLeadBelongsToUser(input.lead_id, userId, scope);
   await validateAssignee(input.assigned_to, userId, actor.role, scope.companyId);
 
+  const initialStatus = input.status ?? 'New';
+  if (!isJobStatus(initialStatus)) {
+    throw new InvalidJobStatusError(initialStatus);
+  }
+  if (initialStatus === 'Closed') {
+    throw new JobTransitionError(
+      'A job cannot start closed. Create it, bill it, and it closes when paid.'
+    );
+  }
+  // A job entered after the sale (work already agreed) keeps honest milestones.
+  const milestoneSql = initialMilestoneColumns(initialStatus);
+
   const result = await pool.query(
     `
     INSERT INTO jobs (
@@ -321,9 +570,11 @@ export async function createJob(
       description,
       status,
       address,
-      company_id
+      company_id${milestoneSql.map((column) => `,\n      ${column}`).join('')}
     )
-    SELECT $1, $2, $3, $4, $5, $6, $7, u.company_id
+    SELECT $1, $2, $3, $4, $5, $6, $7, u.company_id${milestoneSql
+      .map(() => ', CURRENT_TIMESTAMP')
+      .join('')}
     FROM users u
     WHERE u.id = $1
     RETURNING *;
@@ -334,7 +585,7 @@ export async function createJob(
       input.lead_id,
       input.title,
       input.description ?? null,
-      input.status ?? 'New',
+      initialStatus,
       input.address ?? null,
     ]
   );
@@ -415,9 +666,24 @@ export async function updateJob(
     delete updates.lead_id;
   }
 
-  const keys = Object.keys(updates) as (keyof UpdateJobInput)[];
+  const nextStatus = updates.status ?? null;
+  const lostReason = updates.lost_reason;
+  delete updates.status;
+  delete updates.lost_reason;
 
-  if (keys.length === 0) {
+  const statusChanging = nextStatus != null && nextStatus !== existingJob.status;
+  if (nextStatus != null && !isJobStatus(nextStatus)) {
+    throw new InvalidJobStatusError(nextStatus);
+  }
+
+  const keys = (Object.keys(updates) as (keyof UpdateJobInput)[]).filter(
+    (key) => (updates as any)[key] !== undefined
+  );
+
+  if (keys.length === 0 && !statusChanging) {
+    if (nextStatus != null || lostReason !== undefined) {
+      return existingJob;
+    }
     throw new Error('No fields to update');
   }
 
@@ -430,65 +696,58 @@ export async function updateJob(
     );
   }
 
-  const setParts: string[] = [];
-  const values: any[] = [id];
-
-  for (const key of keys) {
-    values.push(updates[key] ?? null);
-    setParts.push(`${key} = $${values.length}`);
-  }
-
-  setParts.push(`updated_at = CURRENT_TIMESTAMP`);
-
-  if (updates.status && updates.status !== existingJob.status) {
-    setParts.push(`status_changed_at = CURRENT_TIMESTAMP`);
-  }
-
-  const where: string[] = ['id = $1'];
-  applyTenantScope(where, values, scope, { assignedWork: true });
-
-  const sql = `
-    UPDATE jobs
-    SET ${setParts.join(', ')}
-    WHERE ${where.join(' AND ')}
-    RETURNING *;
-  `;
-
-  const result = await pool.query(sql, values);
-
-  if (result.rowCount === 0) {
-    throw new JobNotFoundError();
-  }
-
-  const updatedJob = result.rows[0];
-
-  if (updates.status && updates.status !== existingJob.status) {
-    await activityService.createJobActivity({
-      userId,
-      jobId: id,
-      type: 'JOB_STATUS_CHANGED',
-      title: 'Status changed',
-      message: `${existingJob.status} → ${updates.status}`,
-      entityType: 'job',
-      entityId: id,
-      metadata: {
-        fromStatus: existingJob.status,
-        toStatus: updates.status,
-        jobTitle: existingJob.title,
-      },
+  // Validate the move before writing anything else so a blocked close does
+  // not half-apply the rest of the edit.
+  if (statusChanging) {
+    assertTransition({
+      from: existingJob.status,
+      to: nextStatus as string,
+      role: options.actorRole,
+      money: existingJob.money,
     });
-
-    evaluateRules(userId, 'JOB_STATUS_CHANGED', {
-      job_id: id,
-      job_title: existingJob.title,
-      from_status: existingJob.status,
-      to_status: updates.status,
-      entity_type: 'job',
-      entity_id: id,
-    }).catch((err) => console.error('Automation evaluation failed:', err));
   }
 
-  const updated = await getJobById(userId, updatedJob.id, {
+  if (keys.length > 0) {
+    const setParts: string[] = [];
+    const values: any[] = [id];
+
+    for (const key of keys) {
+      values.push((updates as any)[key] ?? null);
+      setParts.push(`${key} = $${values.length}`);
+    }
+
+    setParts.push(`updated_at = CURRENT_TIMESTAMP`);
+
+    const where: string[] = ['id = $1'];
+    applyTenantScope(where, values, scope, { assignedWork: true });
+
+    const result = await pool.query(
+      `
+      UPDATE jobs
+      SET ${setParts.join(', ')}
+      WHERE ${where.join(' AND ')}
+      RETURNING id;
+      `,
+      values
+    );
+
+    if (result.rowCount === 0) {
+      throw new JobNotFoundError();
+    }
+  }
+
+  if (statusChanging) {
+    await transitionJobStatus({
+      jobId: id,
+      companyId: scope.companyId,
+      actorUserId: userId,
+      actorRole: options.actorRole,
+      to: nextStatus as JobStatus,
+      lostReason: lostReason ?? null,
+    });
+  }
+
+  const updated = await getJobById(userId, id, {
     includeAll: options.includeAll,
     companyId: scope.companyId,
   });
@@ -543,3 +802,8 @@ export async function deleteJob(
 
   return result.rows[0].id;
 }
+
+export const JOB_LIFECYCLE = {
+  statuses: JOB_STATUSES,
+  phases: JOB_PHASES,
+};

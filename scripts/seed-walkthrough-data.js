@@ -51,6 +51,7 @@ const DEMO_TABLES = [
   'portal_tokens',
   'automation_rules',
   'notifications',
+  'invoice_payments',
   'invoice_line_items',
   'invoices',
   'estimate_line_items',
@@ -485,7 +486,7 @@ async function seed(pool, owner, agents, dryRun, options) {
       leadKey: 'andersen',
       title: 'Andersen residence — completed re-roof',
       description: 'Full tear-off and re-roof with GAF Timberline HDZ. Final walkthrough completed.',
-      status: 'Closed Won',
+      status: 'Closed',
       address: '903 Lakeview Dr, Edina, MN 55424',
       assigned_to: userId,
       created_at: daysAgo(40),
@@ -495,7 +496,7 @@ async function seed(pool, owner, agents, dryRun, options) {
       leadKey: 'hayes',
       title: 'Hayes residence — siding estimate (lost)',
       description: 'Partial north elevation Hardie replacement. Lost to competitor on schedule.',
-      status: 'Closed Lost',
+      status: 'Lost',
       address: '2201 Summit Ave, St Paul, MN 55105',
       assigned_to: alexId,
       created_at: daysAgo(18),
@@ -802,14 +803,14 @@ async function seed(pool, owner, agents, dryRun, options) {
       jobKey: 'andersenDone',
       type: 'STATUS_CHANGED',
       title: 'Status updated',
-      message: 'Closed Won — project complete',
+      message: 'Work Complete → Closed — paid in full',
       created_at: daysAgo(10),
     },
     {
       jobKey: 'hayesLost',
       type: 'STATUS_CHANGED',
       title: 'Status updated',
-      message: 'Closed Lost — competitor scheduled sooner',
+      message: 'Proposal Sent → Lost — competitor scheduled sooner',
       created_at: daysAgo(14),
     },
   ];
@@ -1203,6 +1204,42 @@ async function seed(pool, owner, agents, dryRun, options) {
       );
       counts.invoice_line_items += 1;
     }
+  }
+
+  // ─── Lifecycle milestones + payments ledger (phase 23) ───
+  // Paid invoices get a payment row so amount_paid and status agree, and
+  // won / lost jobs get their milestone timestamps.
+  if (!dryRun) {
+    await pool.query(`
+      INSERT INTO invoice_payments (
+        company_id, invoice_id, job_id, recorded_by_user_id, amount, method, reference, received_at
+      )
+      SELECT i.company_id, i.id, i.job_id, i.user_id, i.grand_total, 'check', '4412',
+             COALESCE(i.paid_at, i.updated_at)
+      FROM invoices i
+      WHERE i.status = 'Paid'
+        AND NOT EXISTS (SELECT 1 FROM invoice_payments p WHERE p.invoice_id = i.id)
+    `);
+    await pool.query(`
+      UPDATE invoices i
+      SET amount_paid = COALESCE((SELECT SUM(p.amount) FROM invoice_payments p WHERE p.invoice_id = i.id), 0),
+          sent_at = CASE WHEN i.status <> 'Draft' THEN COALESCE(i.sent_at, i.created_at) ELSE i.sent_at END
+    `);
+    await pool.query(`
+      UPDATE jobs
+      SET sold_at = COALESCE(sold_at, created_at + INTERVAL '7 days'),
+          work_completed_at = CASE WHEN status = 'Closed' THEN COALESCE(work_completed_at, updated_at) ELSE work_completed_at END,
+          closed_at = CASE WHEN status = 'Closed' THEN COALESCE(closed_at, updated_at) ELSE closed_at END
+      WHERE status IN ('Sold', 'Work Scheduled', 'In Progress', 'Work Complete', 'Closed')
+    `);
+    await pool.query(`
+      UPDATE estimates SET approved_at = COALESCE(approved_at, client_responded_at, updated_at)
+      WHERE status = 'Approved'
+    `);
+    await pool.query(`
+      UPDATE jobs SET lost_at = COALESCE(lost_at, updated_at), lost_reason = COALESCE(lost_reason, 'Competitor scheduled sooner')
+      WHERE status = 'Lost'
+    `);
   }
 
   // ─── File metadata (binaries not included) ───────────────

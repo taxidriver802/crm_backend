@@ -114,8 +114,15 @@ describe('Reports integration', () => {
     const won = await request(app)
       .patch(`/jobs/${job.body.job.id}`)
       .set(owner.headers)
-      .send({ status: 'Closed Won' });
+      .send({ status: 'Sold' });
     expect(won.status).toBe(200);
+
+    // Production after the sale must not erase the win.
+    const started = await request(app)
+      .patch(`/jobs/${job.body.job.id}`)
+      .set(owner.headers)
+      .send({ status: 'In Progress' });
+    expect(started.status).toBe(200);
 
     const reassigned = await request(app)
       .patch(`/jobs/${job.body.job.id}`)

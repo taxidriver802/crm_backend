@@ -91,6 +91,7 @@ quickbooksRouter.post(
         line_items: invoice.line_items,
         due_date: invoice.due_date,
         grand_total: invoice.grand_total,
+        prior_billed_total: invoice.prior_billed_total,
         notes: invoice.notes,
       });
 

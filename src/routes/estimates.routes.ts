@@ -235,6 +235,37 @@ estimatesRouter.post(
   })
 );
 
+// POST /estimates/:id/change-order — new draft estimate that amends an approved one
+estimatesRouter.post(
+  '/:id/change-order',
+  asyncHandler(async (req, res) => {
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const id = parseId(req.params.id);
+
+    if (id == null) {
+      return res.status(400).json({ ok: false, error: 'Invalid estimate id' });
+    }
+
+    try {
+      const estimate = await estimatesService.createChangeOrder(
+        userId,
+        id,
+        {
+          title: typeof req.body?.title === 'string' ? req.body.title : null,
+          notes: typeof req.body?.notes === 'string' ? req.body.notes : null,
+        },
+        { companyId, includeAll }
+      );
+      res.status(201).json({ ok: true, estimate });
+    } catch (error) {
+      if (error instanceof estimatesService.EstimateNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
 // POST /estimates/:id/apply-template
 estimatesRouter.post(
   '/:id/apply-template',

@@ -118,6 +118,10 @@ describe('Customer Portal API', () => {
       .patch(`/jobs/${jobId}`)
       .set('Cookie', cookie)
       .send({ status: 'Contacted' });
+    await request(app)
+      .patch(`/jobs/${jobId}`)
+      .set('Cookie', cookie)
+      .send({ status: 'Proposal Sent' });
 
     await request(app)
       .post('/notes')
@@ -137,7 +141,9 @@ describe('Customer Portal API', () => {
     const labels = (res.body.portal.timeline || []).map(
       (item: { label: string }) => item.label
     );
-    expect(labels.some((label: string) => /status/i.test(label))).toBe(true);
+    // Proposal Sent reads as a client milestone; internal "Contacted" never shows.
+    expect(labels).toContain('Your estimate is ready to review');
+    expect(labels.some((label: string) => /Contacted/i.test(label))).toBe(false);
     expect(
       labels.some((label: string) => /Internal call notes/i.test(label))
     ).toBe(false);

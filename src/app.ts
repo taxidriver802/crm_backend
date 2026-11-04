@@ -27,7 +27,10 @@ import { notesRouter } from './routes/notes.routes';
 import { searchRouter } from './routes/search.routes';
 import { reportsRouter } from './routes/reports.routes';
 import { savedViewsRouter } from './routes/savedViews.routes';
-import { invoicesRouter } from './routes/invoices.routes';
+import {
+  invoicesRouter,
+  publicInvoicesRouter,
+} from './routes/invoices.routes';
 import { automationRouter } from './routes/automation.routes';
 import { portalRouter, publicPortalRouter } from './routes/portal.routes';
 import { intakeRouter, publicIntakeRouter } from './routes/intake.routes';
@@ -80,6 +83,7 @@ app.use('/search', searchRouter);
 app.use('/reports', reportsRouter);
 app.use('/saved-views', savedViewsRouter);
 app.use('/invoices', invoicesRouter);
+app.use('/public/invoices', publicInvoicesRouter);
 app.use('/automation', automationRouter);
 app.use('/portal', portalRouter);
 app.use('/public/portal', publicPortalRouter);

@@ -1,4 +1,5 @@
 import { pool } from '../db';
+import { JOB_STATUSES as LIFECYCLE_STATUSES } from '../lib/jobLifecycle';
 
 export const PERFORMANCE_WINDOWS = [30, 90, 365] as const;
 export type PerformanceWindow = (typeof PERFORMANCE_WINDOWS)[number];
@@ -8,14 +9,15 @@ export const MIN_DECISION_SAMPLE = 10;
 export const PERFORMANCE_ATTRIBUTION =
   'Outcomes use the assignee at that moment once assignment history exists. Until then, they stay with the current assignee.';
 
-const JOB_STATUSES = [
-  'New',
-  'Contacted',
-  'Appointment Scheduled',
-  'Proposal Sent',
-  'Closed Won',
-  'Closed Lost',
-];
+const JOB_STATUSES: string[] = [...LIFECYCLE_STATUSES];
+
+/**
+ * When a job's sales outcome was decided: the sale (sold_at) for won jobs,
+ * lost_at for lost ones. A won job keeps moving through production after
+ * this, so status_changed_at is no longer the decision time.
+ */
+const DECIDED_AT = `(CASE WHEN j.status = 'Lost' THEN j.lost_at ELSE j.sold_at END)`;
+const DECIDED = `(j.status = 'Lost' OR j.sold_at IS NOT NULL)`;
 
 const LEAD_STATUSES = ['New', 'Contacted', 'Qualified', 'Closed', 'Inactive'];
 
@@ -160,7 +162,7 @@ async function loadPeriod(
 ): Promise<PeriodBundle> {
   const params = [companyId, startDays, endDays];
   const leadWindow = windowSql('l.created_at');
-  const decisionWindow = windowSql('j.status_changed_at');
+  const decisionWindow = windowSql(DECIDED_AT);
   const paidWindow = windowSql('i.paid_at');
   const responseWindow = windowSql('e.client_responded_at');
   const proposalWindow = windowSql('proposed_at');
@@ -206,15 +208,15 @@ async function loadPeriod(
     pool.query(
       `
       SELECT user_id,
-        COUNT(*) FILTER (WHERE status = 'Closed Won')::int AS won,
-        COUNT(*) FILTER (WHERE status = 'Closed Lost')::int AS lost
+        COUNT(*) FILTER (WHERE status <> 'Lost')::int AS won,
+        COUNT(*) FILTER (WHERE status = 'Lost')::int AS lost
       FROM (
         SELECT
-          crm_assignee_at_outcome(j.company_id, 'job', j.id, j.status_changed_at, j.assigned_to) AS user_id,
+          crm_assignee_at_outcome(j.company_id, 'job', j.id, ${DECIDED_AT}, j.assigned_to) AS user_id,
           j.status
         FROM jobs j
         WHERE j.company_id = $1
-          AND j.status IN ('Closed Won', 'Closed Lost')
+          AND ${DECIDED}
           AND ${decisionWindow}
       ) s
       GROUP BY user_id
@@ -226,7 +228,7 @@ async function loadPeriod(
       SELECT user_id, COALESCE(SUM(grand_total), 0)::float AS amount
       FROM (
         SELECT
-          crm_assignee_at_outcome(j.company_id, 'job', j.id, j.status_changed_at, j.assigned_to) AS user_id,
+          crm_assignee_at_outcome(j.company_id, 'job', j.id, j.sold_at, j.assigned_to) AS user_id,
           e.grand_total
         FROM jobs j
         JOIN estimates e
@@ -234,7 +236,8 @@ async function loadPeriod(
          AND e.company_id = j.company_id
          AND e.status = 'Approved'
         WHERE j.company_id = $1
-          AND j.status = 'Closed Won'
+          AND j.sold_at IS NOT NULL
+          AND j.status <> 'Lost'
           AND ${decisionWindow}
       ) s
       GROUP BY user_id
@@ -384,13 +387,13 @@ async function loadPeriod(
         COUNT(*)::int AS sample
       FROM (
         SELECT
-          crm_assignee_at_outcome(j.company_id, 'job', j.id, j.status_changed_at, j.assigned_to) AS user_id,
-          EXTRACT(EPOCH FROM (j.status_changed_at - fp.proposed_at)) / 86400.0 AS days
+          crm_assignee_at_outcome(j.company_id, 'job', j.id, ${DECIDED_AT}, j.assigned_to) AS user_id,
+          EXTRACT(EPOCH FROM (${DECIDED_AT} - fp.proposed_at)) / 86400.0 AS days
         FROM jobs j
         JOIN first_proposal fp ON fp.job_id = j.id
         WHERE j.company_id = $1
-          AND j.status IN ('Closed Won', 'Closed Lost')
-          AND j.status_changed_at >= fp.proposed_at
+          AND ${DECIDED}
+          AND ${DECIDED_AT} >= fp.proposed_at
           AND ${decisionWindow}
       ) s
       GROUP BY user_id
@@ -458,25 +461,27 @@ async function loadPeriod(
         COUNT(*) FILTER (WHERE poor)::int AS poor
       FROM (
         SELECT
-          crm_assignee_at_outcome(j.company_id, 'job', j.id, j.status_changed_at, j.assigned_to) AS user_id,
+          crm_assignee_at_outcome(j.company_id, 'job', j.id, j.sold_at, j.assigned_to) AS user_id,
           (
             NOT EXISTS (
               SELECT 1 FROM invoices i
               WHERE i.job_id = j.id AND i.company_id = j.company_id
+                AND i.status <> 'Void'
             )
             OR EXISTS (
               SELECT 1 FROM invoices i
               WHERE i.job_id = j.id
                 AND i.company_id = j.company_id
-                AND i.status <> 'Paid'
+                AND i.status IN ('Sent', 'Partially Paid', 'Overdue')
                 AND i.due_date IS NOT NULL
                 AND i.due_date < NOW()
             )
           ) AS poor
         FROM jobs j
         WHERE j.company_id = $1
-          AND j.status = 'Closed Won'
-          AND j.status_changed_at < NOW() - INTERVAL '14 days'
+          AND j.sold_at IS NOT NULL
+          AND j.status <> 'Lost'
+          AND j.sold_at < NOW() - INTERVAL '14 days'
           AND ${decisionWindow}
       ) s
       GROUP BY user_id
@@ -635,7 +640,7 @@ async function loadSnapshot(companyId: string): Promise<Snapshot> {
       FROM jobs
       WHERE company_id = $1
         AND assigned_to IS NOT NULL
-        AND status NOT IN ('Closed Won', 'Closed Lost')
+        AND status NOT IN ('Closed', 'Lost')
       GROUP BY assigned_to
       `,
       [companyId]
@@ -675,7 +680,7 @@ async function loadSnapshot(companyId: string): Promise<Snapshot> {
       FROM jobs j
       WHERE j.company_id = $1
         AND j.assigned_to IS NOT NULL
-        AND j.status NOT IN ('Closed Won', 'Closed Lost')
+        AND j.status NOT IN ('Closed', 'Lost')
         AND j.status_changed_at < NOW() - INTERVAL '14 days'
         AND NOT EXISTS (
           SELECT 1 FROM notes n
@@ -693,13 +698,13 @@ async function loadSnapshot(companyId: string): Promise<Snapshot> {
       `
       SELECT j.assigned_to AS user_id,
         COUNT(*)::int AS count,
-        COALESCE(SUM(i.grand_total), 0)::float AS amount
+        COALESCE(SUM(GREATEST(i.grand_total - i.amount_paid, 0)), 0)::float AS amount
       FROM invoices i
       JOIN jobs j ON j.id = i.job_id AND j.company_id = i.company_id
       WHERE i.company_id = $1
         AND j.assigned_to IS NOT NULL
-        AND j.status NOT IN ('Closed Won', 'Closed Lost')
-        AND i.status IN ('Sent', 'Overdue')
+        AND j.status NOT IN ('Closed', 'Lost')
+        AND i.status IN ('Sent', 'Partially Paid', 'Overdue')
         AND i.due_date IS NOT NULL
         AND i.due_date < NOW()
       GROUP BY j.assigned_to
@@ -717,7 +722,7 @@ async function loadSnapshot(companyId: string): Promise<Snapshot> {
       FROM jobs
       WHERE company_id = $1
         AND assigned_to IS NOT NULL
-        AND status NOT IN ('Closed Won', 'Closed Lost')
+        AND status NOT IN ('Closed', 'Lost')
       GROUP BY assigned_to, status
       `,
       [companyId]

@@ -80,6 +80,13 @@ tasks belong to exactly one of lead_id or job_id
   kind: task | appointment
 ```
 
+Job lifecycle (phase 23): `New → Contacted → Appointment Scheduled →
+Proposal Sent` (selling) → `Sold → Work Scheduled → In Progress`
+(production) → `Work Complete` (billing) → `Closed`, with `Lost` off-path.
+`src/lib/jobLifecycle.ts` owns the vocabulary, transitions, close gate and
+next step. Invoices carry a payments ledger (`invoice_payments`); invoice
+status is derived from payments and due date. See `docs/EXPERIMENT.md`.
+
 Also: `estimate_templates`, `saved_views` (leads / jobs / tasks),
 `notifications`, `intake_tokens`, `automation_rules`, `product_events`, and
 ABC `supplier_*` tables.
@@ -110,6 +117,7 @@ schema file and the patches, in this order:
 17. `patch_phase21_company_branding.sql`
 18. `patch_assignment_notifications.sql`
 19. `patch_phase22_performance_history.sql`
+20. `patch_phase23_job_lifecycle_money.sql`
 
 That list is hardcoded in `test/helpers/setup.ts` and duplicated in
 `crm_qa/db/schema.ts` (QA fails if the `sql/` directory drifts). Do not sort

@@ -7,6 +7,9 @@ import {
   FileNotFoundError,
 } from './files.service';
 import { loadPublicBrandingByCompanyId } from '../lib/companySlug';
+import { customerStage } from '../lib/jobLifecycle';
+import { getJobMoney } from './jobs.service';
+import { renderInvoicePdfForPortal } from './invoices.service';
 
 export class PortalTokenError extends Error {
   constructor(message = 'Invalid or expired portal link') {
@@ -75,19 +78,33 @@ export async function getPortalData(rawToken: string) {
   if (jobRes.rowCount === 0) throw new PortalTokenError();
   const job = jobRes.rows[0];
 
+  // Only what the client has been sent: no drafts, no voided paper.
   const estimatesRes = await pool.query(
-    `SELECT id, title, status, grand_total, created_at, updated_at
-     FROM estimates WHERE job_id = $1 AND company_id = $2
+    `SELECT id, title, status, grand_total, created_at, updated_at, change_order_of
+     FROM estimates
+     WHERE job_id = $1 AND company_id = $2 AND status <> 'Draft'
      ORDER BY created_at DESC`,
     [job_id, company_id]
   );
 
   const invoicesRes = await pool.query(
-    `SELECT id, invoice_number, status, grand_total, due_date, paid_at, created_at
-     FROM invoices WHERE job_id = $1 AND company_id = $2
+    `SELECT id, invoice_number, status, kind, grand_total, amount_paid, due_date, paid_at, created_at
+     FROM invoices
+     WHERE job_id = $1 AND company_id = $2 AND status NOT IN ('Draft', 'Void')
      ORDER BY created_at DESC`,
     [job_id, company_id]
   );
+
+  const paymentsRes = await pool.query(
+    `SELECT p.id, p.amount, p.method, p.received_at, i.invoice_number
+     FROM invoice_payments p
+     INNER JOIN invoices i ON i.id = p.invoice_id
+     WHERE p.job_id = $1 AND p.company_id = $2 AND i.status <> 'Void'
+     ORDER BY p.received_at ASC, p.id ASC`,
+    [job_id, company_id]
+  );
+
+  const money = await getJobMoney(job_id, company_id);
 
   const filesRes = await pool.query(
     `SELECT id, original_name, mime_type, size_bytes, storage_key, created_at,
@@ -112,9 +129,16 @@ export async function getPortalData(rawToken: string) {
     FROM job_activity a
     WHERE a.job_id = $1
       AND (
-        a.type = 'JOB_STATUS_CHANGED'
+        (
+          a.type = 'JOB_STATUS_CHANGED'
+          AND COALESCE(a.metadata->>'toStatus', '') IN (
+            'Appointment Scheduled', 'Proposal Sent', 'Sold', 'Work Scheduled',
+            'In Progress', 'Work Complete', 'Closed'
+          )
+        )
         OR a.type = 'ESTIMATE_CLIENT_RESPONDED'
         OR a.type = 'INVOICE_PAID'
+        OR a.type = 'PAYMENT_RECORDED'
         OR (
           a.type = 'ESTIMATE_STATUS_CHANGED'
           AND COALESCE(a.metadata->>'newStatus', '') IN ('Sent', 'Approved')
@@ -152,6 +176,8 @@ export async function getPortalData(rawToken: string) {
     entityId: job_id,
   });
 
+  const stage = customerStage(job.status);
+
   return {
     job: {
       id: job.id,
@@ -164,10 +190,26 @@ export async function getPortalData(rawToken: string) {
       lead_email: job.lead_email,
       lead_phone: job.lead_phone,
     },
+    stage,
+    money: {
+      contract_total: money.contract_total,
+      invoiced_total: money.invoiced_total,
+      paid_total: money.collected_total,
+      balance_due: money.outstanding_total,
+      overdue_total: money.overdue_total,
+    },
+    payments: paymentsRes.rows.map((p: any) => ({
+      id: p.id,
+      amount: Number(p.amount ?? 0),
+      method: p.method,
+      received_at: p.received_at,
+      invoice_number: p.invoice_number,
+    })),
     estimates: estimatesRes.rows.map((e: any) => ({
       id: e.id,
       title: e.title,
       status: e.status,
+      is_change_order: e.change_order_of != null,
       grand_total: Number(e.grand_total ?? 0),
       created_at: e.created_at,
       updated_at: e.updated_at,
@@ -176,7 +218,10 @@ export async function getPortalData(rawToken: string) {
       id: i.id,
       invoice_number: i.invoice_number,
       status: i.status,
+      kind: i.kind ?? 'standard',
       grand_total: Number(i.grand_total ?? 0),
+      amount_paid: Number(i.amount_paid ?? 0),
+      balance_due: Math.max(0, Number(i.grand_total ?? 0) - Number(i.amount_paid ?? 0)),
       due_date: i.due_date,
       paid_at: i.paid_at,
       created_at: i.created_at,
@@ -210,9 +255,14 @@ function mapPortalTimelineItem(row: any) {
 
   let label = 'Project update';
   if (row.type === 'JOB_STATUS_CHANGED') {
-    label = metadata.newStatus
-      ? `Status updated to ${metadata.newStatus}`
-      : 'Project status updated';
+    // Job activity stores toStatus; older rows may only carry newStatus.
+    const to = metadata.toStatus ?? metadata.newStatus;
+    label = to ? customerStage(String(to)).label : 'Project status updated';
+  } else if (row.type === 'PAYMENT_RECORDED') {
+    const amount = Number(metadata.amount ?? 0);
+    label = amount
+      ? `Payment received — $${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : 'Payment received';
   } else if (row.type === 'ESTIMATE_STATUS_CHANGED') {
     if (metadata.newStatus === 'Approved') label = 'Estimate approved';
     else if (metadata.newStatus === 'Sent') label = 'Estimate sent';
@@ -275,4 +325,18 @@ export async function getPortalFile(rawToken: string, fileId: number) {
     file,
     filePath: absoluteUploadPath(file.storage_key),
   };
+}
+
+export async function getPortalInvoicePdf(rawToken: string, invoiceId: number) {
+  const hash = sha256(String(rawToken).trim());
+  const tokenRes = await pool.query(
+    `SELECT job_id, company_id FROM portal_tokens
+     WHERE token_hash = $1
+       AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+     LIMIT 1`,
+    [hash]
+  );
+  if (tokenRes.rowCount === 0) throw new PortalTokenError();
+  const { job_id, company_id } = tokenRes.rows[0];
+  return renderInvoicePdfForPortal(job_id, company_id, invoiceId);
 }

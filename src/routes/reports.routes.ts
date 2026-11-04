@@ -44,6 +44,18 @@ reportsRouter.get(
   })
 );
 
+reportsRouter.get(
+  '/collections',
+  asyncHandler(async (req, res) => {
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const data = await reportsService.getCollections(userId, {
+      includeAll,
+      companyId,
+    });
+    res.json({ ok: true, ...data });
+  })
+);
+
 const USER_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

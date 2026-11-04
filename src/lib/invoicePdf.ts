@@ -20,14 +20,25 @@ type LineItem = {
   line_total: number;
 };
 
+type PaymentLine = {
+  amount: number;
+  method: string;
+  received_at: string | Date;
+};
+
 type InvoicePdfInput = {
   invoice_number: string;
   status: string;
+  kind?: string;
   notes: string | null;
   subtotal: number;
   tax_total: number;
   discount_total: number;
+  prior_billed_total?: number;
   grand_total: number;
+  amount_paid?: number;
+  balance_due?: number;
+  payments?: PaymentLine[];
   due_date: string | null;
   paid_at: string | null;
   job_title: string;
@@ -326,7 +337,9 @@ export async function buildInvoicePdfBuffer(
   // ── Totals ───────────────────────────────────────────
   const totalsW = 220;
   const totalsX = PAGE_W - MARGIN - totalsW;
-  const totalsNeeded = 90 + (data.notes ? 40 : 0);
+  const payments = data.payments ?? [];
+  const totalsNeeded =
+    90 + (data.notes ? 40 : 0) + (payments.length + 2) * 18;
   ensureSpace(totalsNeeded);
   fromTop += 8;
 
@@ -363,11 +376,31 @@ export async function buildInvoicePdfBuffer(
   if (data.discount_total) {
     drawTotalRow('Discounts', `-${money(data.discount_total)}`);
   }
-  fromTop += 4;
-  drawTotalRow('Total Due', money(data.grand_total), {
-    bold: true,
-    emphasize: true,
-  });
+  if (data.prior_billed_total) {
+    drawTotalRow('Less deposit billed', `-${money(data.prior_billed_total)}`);
+  }
+  if (payments.length === 0) {
+    fromTop += 4;
+    drawTotalRow(data.kind === 'deposit' ? 'Deposit Due' : 'Total Due', money(data.grand_total), {
+      bold: true,
+      emphasize: true,
+    });
+  } else {
+    drawTotalRow('Invoice total', money(data.grand_total), { bold: true });
+    for (const payment of payments) {
+      const when = fmtDate(
+        payment.received_at instanceof Date
+          ? payment.received_at.toISOString()
+          : String(payment.received_at)
+      );
+      drawTotalRow(`Paid ${when}`, `-${money(payment.amount)}`);
+    }
+    fromTop += 4;
+    drawTotalRow('Balance Due', money(data.balance_due ?? 0), {
+      bold: true,
+      emphasize: true,
+    });
+  }
 
   // ── Notes ────────────────────────────────────────────
   if (data.notes) {

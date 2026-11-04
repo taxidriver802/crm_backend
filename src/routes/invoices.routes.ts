@@ -3,8 +3,9 @@ import { requireAuth } from '../middleware/auth';
 import { asyncHandler } from '../utils/asyncHandler';
 import * as invoicesService from '../services/invoices.service';
 import { env } from '../config/env';
-import { pool } from '../db';
+import { requireRole } from '../middleware/requireRole';
 import { requestScope } from '../lib/tenant';
+import { loadPublicBrandingByCompanyId } from '../lib/companySlug';
 
 export const invoicesRouter = Router();
 
@@ -39,68 +40,29 @@ function parseInvoiceStatus(
   value: unknown
 ): invoicesService.InvoiceStatus | undefined {
   const s = parseString(value);
-  if (s === 'Draft' || s === 'Sent' || s === 'Paid' || s === 'Overdue') {
-    return s;
-  }
-  return undefined;
+  return invoicesService.isInvoiceStatus(s) ? s : undefined;
+}
+
+function parseOptionalString(value: unknown) {
+  if (value === null) return null;
+  const s = parseString(value);
+  return s === undefined ? undefined : s;
 }
 
 invoicesRouter.use(requireAuth);
 
-// GET /invoices?status=Sent&due=this_week
+// GET /invoices?status=Sent&due=this_week&balance=open
 invoicesRouter.get(
   '/',
   asyncHandler(async (req, res) => {
     const { userId, companyId, includeAll } = requestScope(req, true);
-    const status = parseInvoiceStatus(req.query.status);
-    const due = parseString(req.query.due);
-
-    let query = `SELECT i.*, j.title AS job_title, j.lead_id AS job_lead_id,
-       l.first_name AS lead_first_name, l.last_name AS lead_last_name
-     FROM invoices i
-     INNER JOIN jobs j ON j.id = i.job_id
-     LEFT JOIN leads l ON l.id = j.lead_id
-     WHERE i.company_id = $1`;
-    const params: any[] = [companyId];
-    if (!includeAll) {
-      params.push(userId);
-      query += ` AND i.user_id = $${params.length}`;
-    }
-
-    if (status) {
-      params.push(status);
-      query += ` AND i.status = $${params.length}`;
-    }
-
-    if (due === 'this_week') {
-      query += ` AND i.due_date IS NOT NULL AND i.due_date >= NOW() AND i.due_date <= NOW() + INTERVAL '7 days'`;
-    } else if (due === 'overdue') {
-      query += ` AND i.due_date IS NOT NULL AND i.due_date < NOW() AND i.status NOT IN ('Paid')`;
-    }
-
-    query += ` ORDER BY i.created_at DESC LIMIT 200`;
-
-    const result = await pool.query(query, params);
-
-    const invoices = result.rows.map((row: any) => ({
-      id: row.id,
-      invoice_number: row.invoice_number,
-      status: row.status,
-      subtotal: Number(row.subtotal ?? 0),
-      grand_total: Number(row.grand_total ?? 0),
-      due_date: row.due_date,
-      paid_at: row.paid_at,
-      job_id: row.job_id,
-      job_title: row.job_title,
-      lead_name:
-        [row.lead_first_name, row.lead_last_name]
-          .filter(Boolean)
-          .join(' ')
-          .trim() || null,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-    }));
-
+    const invoices = await invoicesService.listInvoices(userId, {
+      companyId,
+      includeAll,
+      status: parseInvoiceStatus(req.query.status),
+      due: parseString(req.query.due),
+      balance: parseString(req.query.balance) === 'open' ? 'open' : undefined,
+    });
     res.json({ ok: true, invoices });
   })
 );
@@ -116,11 +78,15 @@ invoicesRouter.post(
     }
 
     try {
+      const kind = req.body?.kind === 'deposit' ? 'deposit' : 'final';
       const invoice = await invoicesService.createInvoiceFromEstimate(
         userId,
         estimateId,
         {
           due_date: parseString(req.body?.due_date) ?? null,
+          kind,
+          deposit_percent: parseOptionalNumber(req.body?.deposit_percent) ?? null,
+          deposit_amount: parseOptionalNumber(req.body?.deposit_amount) ?? null,
           companyId,
           includeAll,
         }
@@ -310,6 +276,9 @@ invoicesRouter.patch(
       updates.notes =
         req.body.notes === null ? null : (parseString(req.body.notes) ?? null);
     }
+    if (invoicesService.isPaymentMethod(req.body.payment_method)) {
+      updates.payment_method = req.body.payment_method;
+    }
 
     try {
       const invoice = await invoicesService.updateInvoice(userId, id, updates, {
@@ -454,6 +423,154 @@ invoicesRouter.delete(
         return res.status(404).json({ ok: false, error: error.message });
       }
       if (error instanceof invoicesService.InvoiceLineItemNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// GET /invoices/:id/payments
+invoicesRouter.get(
+  '/:id/payments',
+  asyncHandler(async (req, res) => {
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const id = parseId(req.params.id);
+    if (id == null) {
+      return res.status(400).json({ ok: false, error: 'Invalid invoice id' });
+    }
+    try {
+      const invoice = await invoicesService.getInvoiceById(userId, id, {
+        companyId,
+        includeAll,
+      });
+      res.json({
+        ok: true,
+        payments: invoice.payments,
+        amount_paid: invoice.amount_paid,
+        balance_due: invoice.balance_due,
+      });
+    } catch (error) {
+      if (error instanceof invoicesService.InvoiceNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// POST /invoices/:id/payments  { amount, method, reference?, notes?, received_at? }
+invoicesRouter.post(
+  '/:id/payments',
+  asyncHandler(async (req, res) => {
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const id = parseId(req.params.id);
+    if (id == null) {
+      return res.status(400).json({ ok: false, error: 'Invalid invoice id' });
+    }
+    const amount = parseOptionalNumber(req.body?.amount);
+    if (amount == null) {
+      return res.status(400).json({ ok: false, error: 'amount is required' });
+    }
+    const method = req.body?.method;
+    if (method != null && !invoicesService.isPaymentMethod(method)) {
+      return res.status(400).json({
+        ok: false,
+        error: `method must be one of ${invoicesService.PAYMENT_METHODS.join(', ')}`,
+      });
+    }
+
+    try {
+      const result = await invoicesService.recordPayment(
+        userId,
+        id,
+        {
+          amount,
+          method: method ?? 'other',
+          reference: parseOptionalString(req.body?.reference) ?? null,
+          notes: parseOptionalString(req.body?.notes) ?? null,
+          received_at: parseOptionalString(req.body?.received_at) ?? null,
+        },
+        { companyId, includeAll }
+      );
+      res.status(201).json({ ok: true, ...result });
+    } catch (error) {
+      if (error instanceof invoicesService.InvoiceNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// DELETE /invoices/:id/payments/:paymentId — owner/admin only (ledger correction)
+invoicesRouter.delete(
+  '/:id/payments/:paymentId',
+  requireRole('owner', 'admin'),
+  asyncHandler(async (req, res) => {
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const id = parseId(req.params.id);
+    const paymentId = parseId(req.params.paymentId);
+    if (id == null || paymentId == null) {
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
+    try {
+      const result = await invoicesService.deletePayment(userId, id, paymentId, {
+        companyId,
+        includeAll,
+      });
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      if (error instanceof invoicesService.InvoiceNotFoundError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+// ─── PUBLIC (token-gated, no auth) ─────────────────────
+
+export const publicInvoicesRouter = Router();
+
+publicInvoicesRouter.get(
+  '/:token',
+  asyncHandler(async (req, res) => {
+    const token = String(req.params.token || '').trim();
+    if (!token) {
+      return res.status(400).json({ ok: false, error: 'Token required' });
+    }
+    try {
+      const invoice = await invoicesService.getInvoiceByShareToken(token);
+      const company = await loadPublicBrandingByCompanyId(invoice.company_id);
+      res.json({
+        ok: true,
+        invoice: invoicesService.toPublicInvoice(invoice),
+        company,
+      });
+    } catch (error) {
+      if (error instanceof invoicesService.InvalidShareTokenError) {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+publicInvoicesRouter.get(
+  '/:token/pdf',
+  asyncHandler(async (req, res) => {
+    const token = String(req.params.token || '').trim();
+    if (!token) {
+      return res.status(400).json({ ok: false, error: 'Token required' });
+    }
+    try {
+      const buf = await invoicesService.renderInvoicePdfByShareToken(token);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename="invoice.pdf"');
+      res.send(buf);
+    } catch (error) {
+      if (error instanceof invoicesService.InvalidShareTokenError) {
         return res.status(404).json({ ok: false, error: error.message });
       }
       throw error;

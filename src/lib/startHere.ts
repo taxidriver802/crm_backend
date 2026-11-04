@@ -15,8 +15,10 @@ export type ActionItem = {
 export type StartHereInput = {
   overdueFollowUps: ActionItem[];
   overdueInvoices: ActionItem[];
+  readyToBill?: ActionItem[];
   invoicesDueSoon: ActionItem[];
   blockedJobs: ActionItem[];
+  soldNotScheduled?: ActionItem[];
   estimatesAwaiting: ActionItem[];
   staleLeads: ActionItem[];
   dueToday: ActionItem[];
@@ -29,8 +31,10 @@ export function buildStartHere(
   const concatenated = [
     ...(input.overdueFollowUps || []),
     ...(input.overdueInvoices || []),
+    ...(input.readyToBill || []),
     ...(input.invoicesDueSoon || []),
     ...(input.blockedJobs || []),
+    ...(input.soldNotScheduled || []),
     ...(input.estimatesAwaiting || []),
     ...(input.staleLeads || []),
     ...(input.dueToday || []),

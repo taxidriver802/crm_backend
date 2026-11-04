@@ -185,8 +185,28 @@ describe('Jobs integration', () => {
     const closedPatch = await request(app)
       .patch(`/jobs/${closedJob.body.job.id}`)
       .set(headers)
-      .send({ status: 'Closed Won' });
+      .send({ status: 'Closed' });
+    expect(closedPatch.status).toBe(200);
     expect(closedPatch.body.job.health.level).toBe('none');
+
+    // A sold job is open production work: an overdue task makes it red.
+    const soldJob = await request(app).post('/jobs').set(headers).send({
+      lead_id: lead.id,
+      title: 'Sold with late task',
+      status: 'New',
+    });
+    await request(app).post('/tasks').set(headers).send({
+      job_id: soldJob.body.job.id,
+      title: 'Order material',
+      due_date: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const soldPatch = await request(app)
+      .patch(`/jobs/${soldJob.body.job.id}`)
+      .set(headers)
+      .send({ status: 'Sold' });
+    expect(soldPatch.status).toBe(200);
+    expect(soldPatch.body.job.phase).toBe('production');
+    expect(soldPatch.body.job.health.level).toBe('red');
   });
 
   it('filters jobs by leadId', async () => {

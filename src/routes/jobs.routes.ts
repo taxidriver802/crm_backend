@@ -36,7 +36,7 @@ jobsRouter.get(
   })
 );
 
-// GET /jobs?status=New&q=roof&leadId=2&limit=50&offset=0
+// GET /jobs?status=New&phase=production&q=roof&leadId=2&limit=50&offset=0
 jobsRouter.get(
   '/',
   asyncHandler(async (req, res) => {
@@ -47,6 +47,8 @@ jobsRouter.get(
 
     const status =
       typeof req.query.status === 'string' ? req.query.status : undefined;
+    const phase =
+      typeof req.query.phase === 'string' ? req.query.phase : undefined;
     const assignedTo =
       typeof req.query.assignedTo === 'string'
         ? req.query.assignedTo
@@ -67,6 +69,7 @@ jobsRouter.get(
 
     const jobs = await jobsService.getJobs(userId, {
       status,
+      phase,
       assignedTo,
       q,
       leadId,
@@ -104,6 +107,11 @@ jobsRouter.post(
       }
       if (error instanceof jobsService.AssignmentPermissionError) {
         return res.status(403).json({ ok: false, error: error.message });
+      }
+      if (error instanceof jobsService.JobTransitionError) {
+        return res
+          .status(409)
+          .json({ ok: false, error: error.message, blockers: error.blockers });
       }
       throw error;
     }
@@ -397,6 +405,11 @@ jobsRouter.patch(
       }
       if (error instanceof jobsService.AssignmentPermissionError) {
         return res.status(403).json({ ok: false, error: error.message });
+      }
+      if (error instanceof jobsService.JobTransitionError) {
+        return res
+          .status(409)
+          .json({ ok: false, error: error.message, blockers: error.blockers });
       }
 
       throw error;

@@ -101,7 +101,7 @@ describe('Automation API', () => {
       .send({
         name: 'Notify on job close',
         trigger_event: 'JOB_STATUS_CHANGED',
-        conditions: { to_status: 'Closed Won' },
+        conditions: { to_status: 'Sold' },
         action_type: 'SEND_NOTIFICATION',
         action_config: { title: 'Job done', message: 'Great work' },
       });
@@ -119,7 +119,7 @@ describe('Automation API', () => {
         context: {
           job_id: jobId,
           job_title: 'Automation Job',
-          to_status: 'Closed Won',
+          to_status: 'Sold',
         },
       });
 

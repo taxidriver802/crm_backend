@@ -16,6 +16,7 @@ import {
   applyTenantScope,
   tenantScope,
 } from '../lib/tenant';
+import { advanceJobFromEstimate } from './jobs.service';
 
 type ScopeOpts = { includeAll?: boolean; companyId?: string };
 
@@ -51,6 +52,37 @@ export class EstimateNotDraftError extends Error {
   constructor(message = 'Templates can only be applied to draft estimates') {
     super(message);
     this.name = 'EstimateNotDraftError';
+  }
+}
+
+/** Approved scope is the agreement with the client; it does not change in place. */
+export class EstimateLockedError extends Error {
+  status = 409;
+  constructor(
+    message = 'This estimate is approved, so its scope is locked. Add a change order for new or different work.'
+  ) {
+    super(message);
+    this.name = 'EstimateLockedError';
+  }
+}
+
+export class EstimateAlreadyAnsweredError extends Error {
+  status = 409;
+  constructor(
+    message = 'You have already responded to this estimate. Contact us if something changed and we will send a new link.'
+  ) {
+    super(message);
+    this.name = 'EstimateAlreadyAnsweredError';
+  }
+}
+
+export class EstimateBilledError extends Error {
+  status = 409;
+  constructor(
+    message = 'This estimate has been invoiced. Void its invoices before changing or deleting it.'
+  ) {
+    super(message);
+    this.name = 'EstimateBilledError';
   }
 }
 
@@ -97,7 +129,10 @@ const ESTIMATE_SELECT = `
     e.created_at,
     e.updated_at,
     e.sent_at,
+    e.approved_at,
+    e.change_order_of,
     e.company_id,
+    parent.title AS change_order_of_title,
 
     j.title AS job_title,
     j.status AS job_status,
@@ -109,6 +144,7 @@ const ESTIMATE_SELECT = `
   FROM estimates e
   INNER JOIN jobs j ON j.id = e.job_id
   LEFT JOIN leads l ON l.id = j.lead_id
+  LEFT JOIN estimates parent ON parent.id = e.change_order_of
 `;
 
 function buildLeadName(row: any) {
@@ -139,6 +175,10 @@ function normalizeEstimate(row: any, lineItems: any[] = []) {
     created_at: row.created_at,
     updated_at: row.updated_at,
     sent_at: row.sent_at ?? null,
+    approved_at: row.approved_at ?? null,
+    change_order_of: row.change_order_of ?? null,
+    change_order_of_title: row.change_order_of_title ?? null,
+    locked: row.status === 'Approved',
     company_id: row.company_id ?? null,
 
     job: {
@@ -213,6 +253,23 @@ async function ensureEstimateBelongsToUser(
     throw new EstimateNotFoundError();
   }
   return scope;
+}
+
+async function assertScopeEditable(estimateId: number) {
+  const res = await pool.query(`SELECT status FROM estimates WHERE id = $1`, [
+    estimateId,
+  ]);
+  if (res.rows[0]?.status === 'Approved') {
+    throw new EstimateLockedError();
+  }
+}
+
+async function liveInvoiceCount(estimateId: number) {
+  const res = await pool.query(
+    `SELECT COUNT(*)::int AS count FROM invoices WHERE estimate_id = $1 AND status <> 'Void'`,
+    [estimateId]
+  );
+  return Number(res.rows[0]?.count) || 0;
 }
 
 async function getEstimateLineItemsRaw(estimateId: number) {
@@ -430,6 +487,14 @@ export async function updateEstimate(
     throw new Error('No fields to update');
   }
 
+  const leavingApproved =
+    existing.status === 'Approved' &&
+    'status' in updates &&
+    updates.status !== 'Approved';
+  if (leavingApproved && (await liveInvoiceCount(id)) > 0) {
+    throw new EstimateBilledError();
+  }
+
   const setParts: string[] = [];
   const scope = await tenantScope(userId, options);
   const values: any[] = [id];
@@ -442,6 +507,11 @@ export async function updateEstimate(
   setParts.push('updated_at = CURRENT_TIMESTAMP');
   if (updates.status === 'Sent' && !existing.sent_at) {
     setParts.push('sent_at = CURRENT_TIMESTAMP');
+  }
+  if (updates.status === 'Approved' && existing.status !== 'Approved') {
+    setParts.push('approved_at = CURRENT_TIMESTAMP');
+  } else if (leavingApproved) {
+    setParts.push('approved_at = NULL');
   }
   const where: string[] = ['id = $1'];
   applyTenantScope(where, values, scope, { companyOnly: true });
@@ -497,7 +567,24 @@ export async function updateEstimate(
       },
     });
 
+    if (updated.status === 'Sent') {
+      await advanceJobFromEstimate({
+        jobId: updated.job_id,
+        companyId: scope.companyId,
+        actorUserId: userId,
+        to: 'Proposal Sent',
+        reason: `${updated.title} sent`,
+      });
+    }
+
     if (updated.status === 'Approved') {
+      await advanceJobFromEstimate({
+        jobId: updated.job_id,
+        companyId: scope.companyId,
+        actorUserId: userId,
+        to: 'Sold',
+        reason: `${updated.title} approved`,
+      });
       trackEvent('estimate_approved', {
         userId,
         entityType: 'estimate',
@@ -522,6 +609,9 @@ export async function deleteEstimate(
   options: ScopeOpts = {}
 ) {
   const existing = await getEstimateById(userId, id, options);
+  if ((await liveInvoiceCount(id)) > 0) {
+    throw new EstimateBilledError();
+  }
   const scope = await tenantScope(userId, options);
   const params: any[] = [id];
   const where: string[] = ['id = $1'];
@@ -564,6 +654,7 @@ export async function addEstimateLineItem(
   options: ScopeOpts = {}
 ) {
   await ensureEstimateBelongsToUser(userId, estimateId, options);
+  await assertScopeEditable(estimateId);
 
   const { quantity, unit_price, line_total } = calculateLineItem({
     quantity: input.quantity,
@@ -717,6 +808,7 @@ export async function updateEstimateLineItem(
   options: ScopeOpts = {}
 ) {
   await ensureEstimateBelongsToUser(userId, estimateId, options);
+  await assertScopeEditable(estimateId);
 
   const existingRes = await pool.query(
     `
@@ -815,6 +907,7 @@ export async function deleteEstimateLineItem(
   options: ScopeOpts = {}
 ) {
   await ensureEstimateBelongsToUser(userId, estimateId, options);
+  await assertScopeEditable(estimateId);
 
   const client = await pool.connect();
 
@@ -847,6 +940,53 @@ export async function deleteEstimateLineItem(
   }
 }
 
+/**
+ * A change order is a new draft estimate on the same job that points at the
+ * approved estimate it changes. When the client approves it, its total joins
+ * the job's contract value; the original stays as approved.
+ */
+export async function createChangeOrder(
+  userId: string,
+  estimateId: number,
+  input: { title?: string | null; notes?: string | null } = {},
+  options: ScopeOpts = {}
+) {
+  const parent = await getEstimateById(userId, estimateId, options);
+  if (parent.status !== 'Approved') {
+    throw new EstimateBilledError(
+      'Change orders are for approved estimates. Edit this estimate directly.'
+    );
+  }
+  const scope = await tenantScope(userId, options);
+  const title = input.title?.trim() || `Change order: ${parent.title}`;
+  const result = await pool.query(
+    `
+    INSERT INTO estimates (user_id, job_id, title, status, notes, change_order_of, company_id)
+    VALUES ($1, $2, $3, 'Draft', $4, $5, $6)
+    RETURNING id
+    `,
+    [userId, parent.job_id, title, input.notes ?? null, parent.id, scope.companyId]
+  );
+  const estimate = await getEstimateById(userId, result.rows[0].id, options);
+
+  await createJobActivity({
+    userId,
+    jobId: estimate.job_id,
+    type: 'ESTIMATE_CREATED',
+    title: 'Change order started',
+    message: `${estimate.title} (changes ${parent.title})`,
+    entityType: 'estimate',
+    entityId: estimate.id,
+    metadata: {
+      estimateId: estimate.id,
+      estimateTitle: estimate.title,
+      changeOrderOf: parent.id,
+    },
+  });
+
+  return estimate;
+}
+
 function sha256(value: string) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
@@ -864,18 +1004,49 @@ export async function rotateEstimateShareToken(
   options: ScopeOpts = {}
 ) {
   const scope = await ensureEstimateBelongsToUser(userId, estimateId, options);
+  const before = await getEstimateById(userId, estimateId, options);
   const raw = crypto.randomBytes(32).toString('hex');
   const hash = sha256(raw);
   const expires = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+  // Sharing a draft that the client has not answered yet is sending it.
+  const sending = before.status === 'Draft' && !before.client_responded_at;
   await pool.query(
     `
     UPDATE estimates
-    SET share_token_hash = $1, share_expires_at = $2, updated_at = CURRENT_TIMESTAMP
+    SET share_token_hash = $1,
+        share_expires_at = $2,
+        status = CASE WHEN $5 THEN 'Sent' ELSE status END,
+        sent_at = CASE WHEN $5 THEN COALESCE(sent_at, CURRENT_TIMESTAMP) ELSE sent_at END,
+        updated_at = CURRENT_TIMESTAMP
     WHERE id = $3 AND company_id = $4
     `,
-    [hash, expires, estimateId, scope.companyId]
+    [hash, expires, estimateId, scope.companyId, sending]
   );
   const estimate = await getEstimateById(userId, estimateId, options);
+  if (sending) {
+    await createJobActivity({
+      userId,
+      jobId: estimate.job_id,
+      type: 'ESTIMATE_STATUS_CHANGED',
+      title: 'Estimate sent',
+      message: `${estimate.title} changed from Draft → Sent`,
+      entityType: 'estimate',
+      entityId: estimate.id,
+      metadata: {
+        estimateId: estimate.id,
+        previousStatus: 'Draft',
+        newStatus: 'Sent',
+        via: 'share_link',
+      },
+    });
+    await advanceJobFromEstimate({
+      jobId: estimate.job_id,
+      companyId: scope.companyId,
+      actorUserId: userId,
+      to: 'Proposal Sent',
+      reason: `${estimate.title} shared with the client`,
+    });
+  }
   return { token: raw, share_expires_at: expires, estimate };
 }
 
@@ -975,6 +1146,9 @@ export async function respondToEstimateShare(
 ) {
   const before = await getEstimateByShareToken(rawToken);
   const hash = sha256(String(rawToken).trim());
+  if (before.client_responded_at || before.status === 'Approved') {
+    throw new EstimateAlreadyAnsweredError();
+  }
 
   let status: 'Approved' | 'Rejected' | 'Draft';
   if (decision === 'approve') status = 'Approved';
@@ -988,8 +1162,9 @@ export async function respondToEstimateShare(
       status = $2,
       client_responded_at = CURRENT_TIMESTAMP,
       client_response_note = $3,
+      approved_at = CASE WHEN $2 = 'Approved' THEN CURRENT_TIMESTAMP ELSE approved_at END,
       updated_at = CURRENT_TIMESTAMP
-    WHERE share_token_hash = $1
+    WHERE share_token_hash = $1 AND client_responded_at IS NULL
     `,
     [hash, status, note?.trim() || null]
   );
@@ -1038,6 +1213,29 @@ export async function respondToEstimateShare(
       newStatus: status,
     },
   });
+
+  if (status === 'Approved' && before.company_id) {
+    await advanceJobFromEstimate({
+      jobId: before.job_id,
+      companyId: before.company_id,
+      actorUserId: before.user_id,
+      to: 'Sold',
+      reason: `client approved ${before.title}`,
+    });
+    trackEvent('estimate_approved', {
+      userId: before.user_id,
+      entityType: 'estimate',
+      entityId: before.id,
+      metadata: { by: 'client' },
+    });
+    evaluateRules(before.user_id, 'ESTIMATE_APPROVED', {
+      job_id: before.job_id,
+      estimate_id: before.id,
+      estimate_title: before.title,
+      entity_type: 'estimate',
+      entity_id: before.id,
+    }).catch((err) => console.error('Automation evaluation failed:', err));
+  }
 
   return getEstimateByShareToken(rawToken);
 }

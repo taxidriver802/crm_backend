@@ -236,6 +236,7 @@ describe('Dashboard actions', () => {
       title: 'Completed tasks job',
     });
     const closed = await createJob(headers, lead.id, { title: 'Closed job' });
+    const sold = await createJob(headers, lead.id, { title: 'Sold job' });
 
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
@@ -255,10 +256,19 @@ describe('Dashboard actions', () => {
       title: 'Old work',
       due_date: yesterday,
     });
+    await request(app).post('/tasks').set(headers).send({
+      job_id: sold.id,
+      title: 'Order material',
+      due_date: yesterday,
+    });
     await request(app)
       .patch(`/jobs/${closed.id}`)
       .set(headers)
-      .send({ status: 'Closed Won' });
+      .send({ status: 'Closed' });
+    await request(app)
+      .patch(`/jobs/${sold.id}`)
+      .set(headers)
+      .send({ status: 'Sold' });
 
     const dash = await request(app).get('/dashboard').set(headers);
     expect(dash.status).toBe(200);
@@ -266,6 +276,8 @@ describe('Dashboard actions', () => {
     expect(ids).toContain(blocked.id);
     expect(ids).not.toContain(completedOnly.id);
     expect(ids).not.toContain(closed.id);
+    // Won work is still work: a sold job with a late task stays in the queue.
+    expect(ids).toContain(sold.id);
   });
 
   it('includes invoices due within 3 days and excludes paid or far-future invoices', async () => {
@@ -284,9 +296,14 @@ describe('Dashboard actions', () => {
     });
     const paid = await request(app).post('/invoices').set(headers).send({
       job_id: job.id,
-      status: 'Paid',
+      status: 'Sent',
       due_date: yesterday,
     });
+    const markPaid = await request(app)
+      .patch(`/invoices/${paid.body.invoice.id}`)
+      .set(headers)
+      .send({ status: 'Paid' });
+    expect(markPaid.body.invoice.status).toBe('Paid');
     const later = await request(app).post('/invoices').set(headers).send({
       job_id: job.id,
       status: 'Sent',

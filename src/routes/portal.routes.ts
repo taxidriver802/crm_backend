@@ -5,6 +5,7 @@ import { asyncHandler } from '../utils/asyncHandler';
 import * as portalService from '../services/portal.service';
 import { requestScope } from '../lib/tenant';
 import { FileNotFoundError } from '../services/files.service';
+import { InvoiceNotFoundError } from '../services/invoices.service';
 import fs from 'fs';
 
 export const portalRouter = Router();
@@ -98,6 +99,31 @@ publicPortalRouter.get(
     } catch (error) {
       if (error instanceof FileNotFoundError) {
         return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
+publicPortalRouter.get(
+  '/:token/invoices/:invoiceId/pdf',
+  asyncHandler(async (req, res) => {
+    const token = String(req.params.token || '').trim();
+    const invoiceId = Number(req.params.invoiceId);
+    if (!token || !Number.isInteger(invoiceId)) {
+      return res.status(404).json({ ok: false, error: 'Invoice not found' });
+    }
+    try {
+      const buf = await portalService.getPortalInvoicePdf(token, invoiceId);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline; filename="invoice.pdf"');
+      res.send(buf);
+    } catch (error) {
+      if (
+        error instanceof portalService.PortalTokenError ||
+        error instanceof InvoiceNotFoundError
+      ) {
+        return res.status(404).json({ ok: false, error: 'Invoice not found' });
       }
       throw error;
     }

@@ -277,6 +277,8 @@ type InvoiceSyncInput = {
   }[];
   due_date: string | null;
   grand_total: number;
+  /** Deposit already billed on the same estimate (final invoices). */
+  prior_billed_total?: number;
   notes: string | null;
 };
 
@@ -292,16 +294,30 @@ export async function syncInvoiceToQuickBooks(
       ? new Date(input.due_date).toISOString().split('T')[0]
       : undefined,
     PrivateNote: input.notes || undefined,
-    Line: input.line_items.map((li, idx) => ({
-      DetailType: 'SalesItemLineDetail',
-      Amount: li.line_total,
-      Description: `${li.name}${li.description ? ' - ' + li.description : ''}`,
-      SalesItemLineDetail: {
-        Qty: li.quantity,
-        UnitPrice: li.unit_price,
-      },
-      LineNum: idx + 1,
-    })),
+    Line: [
+      ...input.line_items.map((li, idx) => ({
+        DetailType: 'SalesItemLineDetail',
+        Amount: li.line_total,
+        Description: `${li.name}${li.description ? ' - ' + li.description : ''}`,
+        SalesItemLineDetail: {
+          Qty: li.quantity,
+          UnitPrice: li.unit_price,
+        },
+        LineNum: idx + 1,
+      })),
+      // A final invoice subtracts the deposit billed earlier, so QuickBooks
+      // does not bill that part of the scope twice.
+      ...(input.prior_billed_total && input.prior_billed_total > 0
+        ? [
+            {
+              DetailType: 'DiscountLineDetail',
+              Amount: input.prior_billed_total,
+              Description: 'Less deposit billed',
+              DiscountLineDetail: { PercentBased: false },
+            },
+          ]
+        : []),
+    ],
     CustomerRef: {
       value: '1',
       name: input.customer_name,
