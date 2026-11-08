@@ -23,6 +23,10 @@ import { estimateTemplatesRouter } from './routes/estimateTemplates.routes';
 import { publicEstimatesRouter } from './routes/publicEstimates.routes';
 import { publicCompaniesRouter } from './routes/publicCompanies.routes';
 import { companyRouter } from './routes/company.routes';
+import {
+  meRouter,
+  workspaceDefaultsRouter,
+} from './routes/preferences.routes';
 import { notesRouter } from './routes/notes.routes';
 import { searchRouter } from './routes/search.routes';
 import { reportsRouter } from './routes/reports.routes';
@@ -65,6 +69,8 @@ app.use(morgan('dev'));
 
 // Routes
 app.use('/auth', authRouter);
+app.use('/me', meRouter);
+app.use('/company/workspace-defaults', workspaceDefaultsRouter);
 app.use('/company', companyRouter);
 app.use('/leads', leadsRouter);
 app.use('/tasks', tasksRouter);

@@ -202,6 +202,17 @@ export async function ensureSchema() {
       'utf8'
     );
     await client.query(patchPhase23LifecycleMoneySql);
+
+    const patchPhase24PreferencesPath = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase24_workspace_preferences.sql'
+    );
+    const patchPhase24PreferencesSql = fs.readFileSync(
+      patchPhase24PreferencesPath,
+      'utf8'
+    );
+    await client.query(patchPhase24PreferencesSql);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

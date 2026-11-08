@@ -118,6 +118,7 @@ schema file and the patches, in this order:
 18. `patch_assignment_notifications.sql`
 19. `patch_phase22_performance_history.sql`
 20. `patch_phase23_job_lifecycle_money.sql`
+21. `patch_phase24_workspace_preferences.sql`
 
 That list is hardcoded in `test/helpers/setup.ts` and duplicated in
 `crm_qa/db/schema.ts` (QA fails if the `sql/` directory drifts). Do not sort
