@@ -106,6 +106,21 @@ describe('preferences — API', () => {
     expect(partial.body.preferences.nav.hidden).toEqual(['reports']);
   });
 
+  it('keeps the details rail choice on estimate and invoice records, and pins a saved view', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const saved = await request(app)
+      .patch('/me/preferences')
+      .set(headers)
+      .send({
+        records: { estimate: { rail: false }, invoice: { rail: false } },
+        nav: { pins: [{ id: 'view:7', kind: 'view', label: 'Billing this week', href: '/jobs?view=7' }] },
+      });
+    expect(saved.status).toBe(200);
+    expect(saved.body.preferences.records.estimate).toEqual({ rail: false });
+    expect(saved.body.preferences.records.invoice).toEqual({ rail: false });
+    expect(saved.body.effective.nav.pins[0].href).toBe('/jobs?view=7');
+  });
+
   it('rejects unknown sections, unknown ids, and links that leave the app', async () => {
     const { headers } = await createAuthedUser('agent');
 

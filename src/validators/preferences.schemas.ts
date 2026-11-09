@@ -44,7 +44,7 @@ export const HOME_WIDGET_IDS = [
 ] as const;
 
 export const LIST_KEYS = ['jobs', 'leads', 'tasks', 'invoices'] as const;
-export const RECORD_KEYS = ['job', 'lead'] as const;
+export const RECORD_KEYS = ['job', 'lead', 'estimate', 'invoice'] as const;
 export const PIN_KINDS = ['job', 'lead', 'task', 'invoice', 'estimate', 'view'] as const;
 
 const appearanceSchema = z
