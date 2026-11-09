@@ -121,6 +121,24 @@ describe('preferences — API', () => {
     expect(saved.body.effective.nav.pins[0].href).toBe('/jobs?view=7');
   });
 
+  it('keeps one record open beside pages, and clears it with null', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const dock = { kind: 'invoice', id: 4, label: 'INV-0004', href: '/invoices/4' };
+    const saved = await request(app).patch('/me/preferences').set(headers).send({ nav: { dock } });
+    expect(saved.status).toBe(200);
+    expect(saved.body.effective.nav.dock).toEqual(dock);
+
+    const offsite = await request(app)
+      .patch('/me/preferences')
+      .set(headers)
+      .send({ nav: { dock: { ...dock, href: '//evil.example' } } });
+    expect(offsite.status).toBe(400);
+
+    const cleared = await request(app).patch('/me/preferences').set(headers).send({ nav: { dock: null } });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.effective.nav.dock).toBeNull();
+  });
+
   it('rejects unknown sections, unknown ids, and links that leave the app', async () => {
     const { headers } = await createAuthedUser('agent');
 

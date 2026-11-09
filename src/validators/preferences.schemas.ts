@@ -69,12 +69,27 @@ const pinSchema = z
   })
   .strict();
 
+// The one record kept open beside pages on wide screens.
+const dockSchema = z
+  .object({
+    kind: z.enum(['job', 'lead', 'task', 'invoice', 'estimate']),
+    id: z.number().int().positive(),
+    label: z.string().trim().min(1).max(120),
+    href: z
+      .string()
+      .min(1)
+      .max(300)
+      .regex(/^\/(?!\/)/, 'The side panel must link inside the app'),
+  })
+  .strict();
+
 const navSchema = z
   .object({
     order: z.array(z.enum(NAV_ITEM_IDS)).max(NAV_ITEM_IDS.length).optional(),
     hidden: z.array(z.enum(NAV_ITEM_IDS)).max(NAV_ITEM_IDS.length).optional(),
     collapsed: z.boolean().optional(),
     pins: z.array(pinSchema).max(20).optional(),
+    dock: dockSchema.nullable().optional(),
   })
   .strict();
 

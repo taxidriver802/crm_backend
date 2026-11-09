@@ -284,6 +284,58 @@ describe('Jobs integration', () => {
     expect(tasksRes.body.tasks[0].job_id).toBe(jobId);
   });
 
+  it('names the work appointment, not an earlier site visit, when starting the work', async () => {
+    const { headers } = await createAuthedUser('agent');
+    const lead = await createLead(headers);
+    const jobRes = await request(app).post('/jobs').set(headers).send({
+      lead_id: lead.id,
+      title: 'Roof replacement',
+      status: 'New',
+    });
+    const jobId = jobRes.body.job.id;
+    const day = 24 * 60 * 60 * 1000;
+    const visitAt = new Date(Date.now() + 3 * day);
+    const installAt = new Date(Date.now() + 7 * day);
+
+    const visit = await request(app).post('/tasks').set(headers).send({
+      job_id: jobId,
+      title: 'Site visit',
+      kind: 'appointment',
+      status: 'Pending',
+      due_date: visitAt.toISOString(),
+    });
+    expect(visit.status).toBe(201);
+
+    // Sold after the visit was booked; the install is booked after that.
+    await pool.query(
+      `UPDATE jobs SET status = 'Sold', sold_at = NOW() WHERE id = $1`,
+      [jobId]
+    );
+    await pool.query(
+      `UPDATE tasks SET created_at = NOW() - INTERVAL '1 day' WHERE id = $1`,
+      [visit.body.task.id]
+    );
+    const install = await request(app).post('/tasks').set(headers).send({
+      job_id: jobId,
+      title: 'Install',
+      kind: 'appointment',
+      status: 'Pending',
+      due_date: installAt.toISOString(),
+    });
+    expect(install.status).toBe(201);
+    await pool.query(`UPDATE jobs SET status = 'Work Scheduled' WHERE id = $1`, [jobId]);
+
+    const res = await request(app).get(`/jobs/${jobId}`).set(headers);
+    expect(res.status).toBe(200);
+    const job = res.body.job;
+    expect(new Date(job.next_appointment_at).getTime()).toBe(visitAt.getTime());
+    expect(new Date(job.next_work_appointment_at).getTime()).toBe(installAt.getTime());
+    expect(job.next_step.action).toBe('start_work');
+    expect(job.next_step.detail).toBe(
+      `Scheduled ${installAt.toISOString().slice(0, 10)}.`
+    );
+  });
+
   it('deletes a job and returns 404 afterward', async () => {
     const { headers } = await createAuthedUser('agent');
     const lead = await createLead(headers);

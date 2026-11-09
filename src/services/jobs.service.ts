@@ -122,7 +122,8 @@ function normalizeJob(row: any) {
     estimateCount: Number(row.estimate_count) || 0,
     draftEstimateCount: Number(row.draft_estimate_count) || 0,
     sentAwaitingCount: Number(row.sent_awaiting_count) || 0,
-    nextAppointmentAt: row.next_appointment_at ?? null,
+    nextAppointmentAt:
+      row.next_work_appointment_at ?? row.next_appointment_at ?? null,
   });
 
   return {
@@ -144,6 +145,7 @@ function normalizeJob(row: any) {
     lost_at: row.lost_at ?? null,
     lost_reason: row.lost_reason ?? null,
     next_appointment_at: row.next_appointment_at ?? null,
+    next_work_appointment_at: row.next_work_appointment_at ?? null,
     money,
     next_step: nextStep,
     health: computeJobHealth({
@@ -194,6 +196,7 @@ const JOB_SELECT = `
     COALESCE(est.draft_estimate_count, 0) AS draft_estimate_count,
     COALESCE(appt.upcoming_appointment_count, 0) AS upcoming_appointment_count,
     appt.next_appointment_at,
+    appt.next_work_appointment_at,
     ${JOB_MONEY_COLUMNS_SQL}
   FROM jobs j
   LEFT JOIN leads l ON l.id = j.lead_id
@@ -225,7 +228,12 @@ const JOB_SELECT = `
   LEFT JOIN LATERAL (
     SELECT
       COUNT(*)::int AS upcoming_appointment_count,
-      MIN(t.due_date) AS next_appointment_at
+      MIN(t.due_date) AS next_appointment_at,
+      -- The work itself: an appointment booked once the job was sold, not
+      -- the site visit that is still on the calendar from before.
+      MIN(t.due_date) FILTER (
+        WHERE j.sold_at IS NOT NULL AND t.created_at >= j.sold_at
+      ) AS next_work_appointment_at
     FROM tasks t
     WHERE t.job_id = j.id
       AND t.kind = 'appointment'
