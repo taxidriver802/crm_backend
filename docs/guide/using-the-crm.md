@@ -1,7 +1,7 @@
 # Using the CRM
 
 This is the user guide for the CRM. The same words open inside the app:
-choose **Help** in your account menu, press ⌘K and type what you want to do,
+choose **Help** in your account menu, press ⌘K (Ctrl K on Windows) and type what you want to do,
 or follow a **How?** link next to a job's next step.
 
 The guide has three parts. [What this service is](#what-this-service-is)
