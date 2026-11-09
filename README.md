@@ -40,8 +40,8 @@ src/
   lib/              cookies, mailer, uploads, PDFs, print theme
   jobs/             Interval workers
   integrations/abc  ABC Supply client
-sql/                schema.sql + ordered phase patches
-scripts/            patch appliers + seed
+sql/                schema.sql baseline, migrations/, archive/
+scripts/            migrate.js (+ lib/migrations.js), seeds, help-articles
 test/               Jest + Supertest integration tests
 docs/               Product docs (source of truth)
 ```
@@ -91,40 +91,30 @@ Also: `estimate_templates`, `saved_views` (leads / jobs / tasks),
 `notifications`, `intake_tokens`, `automation_rules`, `product_events`, and
 ABC `supplier_*` tables.
 
-## Schema and patches
+## Schema and migrations
 
-No Prisma/Knex. Canonical definition is `sql/schema.sql` plus phase patch
-files. `schema.sql` is idempotent (`IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`)
-and already contains later columns; tests and QA still apply **both** the
-schema file and the patches, in this order:
+No Prisma/Knex. The schema is plain SQL in `sql/`:
 
-1. `schema.sql`
-2. `patch_notifications_constraints.sql`
-3. `patch_phase9.sql`
-4. `patch_phase10_notes.sql`
-5. `patch_phase12_team_visibility.sql`
-6. `patch_phase12_saved_views.sql`
-7. `patch_phase12_invoicing.sql`
-8. `patch_phase13_automation.sql`
-9. `patch_phase13_portal.sql`
-10. `patch_phase14_events.sql`
-11. `patch_phase15_status_aging.sql`
-12. `patch_phase16_communication.sql`
-13. `patch_phase17_quotes_photos.sql`
-14. `patch_phase18_acquisition_portal.sql`
-15. `patch_phase19_appointments_workload.sql`
-16. `patch_phase20_companies.sql`
-17. `patch_phase21_company_branding.sql`
-18. `patch_assignment_notifications.sql`
-19. `patch_phase22_performance_history.sql`
-20. `patch_phase23_job_lifecycle_money.sql`
-21. `patch_phase24_workspace_preferences.sql`
+- `sql/schema.sql` is the **baseline**: the whole schema as of phase 24 in one
+  file, plus the rows a new database starts with (the built-in company and
+  five estimate templates). It was generated with `pg_dump` from a database
+  built by the old patch chain and checked to match it exactly.
+- `sql/migrations/` holds every change since, one numbered file each
+  (`0001_short_name.sql`). See [`sql/migrations/README.md`](sql/migrations/README.md).
+- `sql/archive/` keeps the old `schema.sql` and phase patches. Nothing runs
+  them except the upgrade of a database that was built from them.
 
-That list is hardcoded in `test/helpers/setup.ts` and duplicated in
-`crm_qa/db/schema.ts` (QA fails if the `sql/` directory drifts). Do not sort
-alphabetically — invoicing must precede automation.
+`npm run db:migrate` brings the database in `DATABASE_URL` up to date:
 
-`npm run db:patch-*` applies a single patch file to `DATABASE_URL`.
+- an empty database gets the baseline;
+- a database built from the old patches is brought up to the baseline once;
+- then every migration not yet in the `schema_migrations` table runs, in name
+  order, each in its own transaction.
+
+The backend tests (`test/helpers/setup.ts`) and the QA harness call the same
+runner (`scripts/lib/migrations.js`), so adding a migration needs no list
+updated anywhere. A migration that has run must never be edited: the runner
+refuses a changed checksum.
 
 ## Run locally
 
@@ -142,22 +132,20 @@ into a gitignored `.env`. Minimum to boot: `DATABASE_URL` and `JWT_SECRET`.
 Set `FRONTEND_URL` and `APP_BASE_URL` to `http://localhost:3000` (see the
 port note there).
 
-**Schema.** Apply `sql/schema.sql` then the patch files in the order above
-(`psql "$DATABASE_URL" -f …`, or the matching `npm run db:patch-*` scripts).
-A green `npm test` against `.env.test` also applies the full chain on the
-test database.
-
-**Hosted Phase 22 update.** Back up the hosted PostgreSQL database first, copy
-the backend files containing this patch to the server, then run the command
-below from `crm_backend` on the server with `DATABASE_URL` set to the hosted
-database. Restart/deploy the updated backend after the patch succeeds:
+**Schema.**
 
 ```bash
-npm run db:patch-phase22-performance-history
+npm run db:migrate
 ```
 
-This creates the event tables/indexes and adds the two timestamp columns. It
-does not backfill historical assignment or lead-status events.
+On an empty `crm_dev` this applies the baseline; run it again after pulling
+new migrations. `npm test` migrates the test database the same way.
+
+**Hosted database.** Back up first, deploy the backend files, then run
+`npm run db:migrate` on the server with `DATABASE_URL` set to the hosted
+database, and restart the backend after it succeeds. A hosted database built
+from the old patches is brought up to the baseline the first time; after that
+only new migrations run.
 
 **API:**
 
@@ -232,7 +220,7 @@ loads `.env.test` when `NODE_ENV=test`.
 | `npm run build` / `npm start` | `tsc` then `node dist/server.js` |
 | `npm test` | Jest, `NODE_ENV=test`, `--runInBand` |
 | `npm run test:watch` / `test:debug` | Watch / open-handle detection |
-| `npm run db:patch-*` | Apply one `sql/patch_*.sql` file |
+| `npm run db:migrate` | Bring `DATABASE_URL` up to date (baseline, then `sql/migrations/`) |
 | `npm run db:seed-walkthrough` | Narrative demo dataset |
 | `npm run db:seed-demo` | Older backup-based seed |
 

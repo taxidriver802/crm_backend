@@ -1,1182 +1,41 @@
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
--- =========================================================
--- USERS
--- =====================================================
-CREATE TABLE IF NOT EXISTS users (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
-  first_name TEXT NOT NULL,
-  last_name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  password_hash TEXT,
-  role TEXT NOT NULL DEFAULT 'agent',
-  status TEXT NOT NULL DEFAULT 'active',
-  invite_token_hash TEXT,
-  invite_expires_at TIMESTAMPTZ,
-  invited_at TIMESTAMPTZ,
-  password_set_at TIMESTAMPTZ,
-  last_login_at TIMESTAMPTZ,
-  invite_revoked_at TIMESTAMPTZ,
-  invite_superseded_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT users_role_check CHECK (role IN ('owner', 'admin', 'agent')),
-  CONSTRAINT users_status_check CHECK (status IN ('invited', 'active', 'disabled'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
-
-CREATE INDEX IF NOT EXISTS idx_users_role ON users (role);
-
-CREATE INDEX IF NOT EXISTS idx_users_status ON users (status);
-
-CREATE INDEX IF NOT EXISTS idx_users_invite_expires_at ON users (invite_expires_at);
-
--- =========================================================
--- LEADS
--- Contacts / opportunities
--- =========================================================
-CREATE TABLE IF NOT EXISTS leads (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  assigned_to UUID REFERENCES users (id) ON DELETE SET NULL,
-  first_name TEXT NOT NULL,
-  last_name TEXT NOT NULL,
-  email TEXT,
-  phone TEXT,
-  source TEXT,
-  status TEXT NOT NULL DEFAULT 'New',
-  budget_min NUMERIC,
-  budget_max NUMERIC,
-  notes TEXT,
-  service_type TEXT,
-  preferred_contact_method TEXT,
-  urgency TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  status_changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-ALTER TABLE leads
-ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users (id) ON DELETE SET NULL;
-
-ALTER TABLE leads
-ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ;
-
-UPDATE leads
-SET status_changed_at = COALESCE(status_changed_at, updated_at, created_at, CURRENT_TIMESTAMP)
-WHERE status_changed_at IS NULL;
-
-ALTER TABLE leads
-ALTER COLUMN status_changed_at SET DEFAULT CURRENT_TIMESTAMP;
-
-ALTER TABLE leads
-ALTER COLUMN status_changed_at SET NOT NULL;
-
-ALTER TABLE leads
-ADD COLUMN IF NOT EXISTS service_type TEXT;
-
-ALTER TABLE leads
-ADD COLUMN IF NOT EXISTS preferred_contact_method TEXT;
-
-ALTER TABLE leads
-ADD COLUMN IF NOT EXISTS urgency TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_leads_user_id ON leads (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_leads_assigned_to ON leads (assigned_to);
-
-CREATE INDEX IF NOT EXISTS idx_leads_status ON leads (status);
-
-CREATE INDEX IF NOT EXISTS idx_leads_created_at ON leads (created_at);
-
-CREATE INDEX IF NOT EXISTS idx_leads_user_status_changed_at
-  ON leads (user_id, status, status_changed_at);
-
-CREATE INDEX IF NOT EXISTS idx_leads_name ON leads (last_name, first_name);
-
--- =========================================================
--- JOBS
--- Workspaces / active work layer
--- =========================================================
-CREATE TABLE IF NOT EXISTS jobs (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  assigned_to UUID REFERENCES users (id) ON DELETE SET NULL,
-  lead_id INTEGER REFERENCES leads (id) ON DELETE SET NULL,
-  title TEXT NOT NULL,
-  description TEXT,
-  status TEXT NOT NULL DEFAULT 'New',
-  address TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  status_changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-ALTER TABLE jobs
-ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users (id) ON DELETE SET NULL;
-
-ALTER TABLE jobs
-ADD COLUMN IF NOT EXISTS status_changed_at TIMESTAMPTZ;
-
-UPDATE jobs
-SET status_changed_at = COALESCE(status_changed_at, updated_at, created_at, CURRENT_TIMESTAMP)
-WHERE status_changed_at IS NULL;
-
-ALTER TABLE jobs
-ALTER COLUMN status_changed_at SET DEFAULT CURRENT_TIMESTAMP;
-
-ALTER TABLE jobs
-ALTER COLUMN status_changed_at SET NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_assigned_to ON jobs (assigned_to);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_lead_id ON jobs (lead_id);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs (status);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at);
-
-CREATE INDEX IF NOT EXISTS idx_jobs_user_status_changed_at
-  ON jobs (user_id, status, status_changed_at);
-
--- =========================================================
--- JOBS ACTIVITY
--- Memory of work
--- =========================================================
-CREATE TABLE IF NOT EXISTS job_activity (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
-  type TEXT NOT NULL,
-  title TEXT NOT NULL,
-  message TEXT,
-  entity_type TEXT,
-  entity_id INTEGER,
-  metadata JSONB,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_job_activity_job_id ON job_activity (job_id);
-
-CREATE INDEX IF NOT EXISTS idx_job_activity_user_id ON job_activity (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_job_activity_created_at ON job_activity (created_at DESC);
-
--- =========================================================
--- TASKS
--- Units of work
--- Current intended rule:
--- task belongs to exactly one owner: lead OR job
--- =========================================================
-CREATE TABLE IF NOT EXISTS tasks (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  assigned_to UUID REFERENCES users (id) ON DELETE SET NULL,
-  lead_id INTEGER REFERENCES leads (id) ON DELETE CASCADE,
-  job_id INTEGER REFERENCES jobs (id) ON DELETE CASCADE,
-  title TEXT NOT NULL,
-  description TEXT,
-  due_date TIMESTAMPTZ,
-  kind TEXT NOT NULL DEFAULT 'task',
-  end_at TIMESTAMPTZ,
-  location TEXT,
-  status TEXT NOT NULL DEFAULT 'Pending',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT tasks_exactly_one_owner_check CHECK (
-    (
-      lead_id IS NOT NULL
-      AND job_id IS NULL
-    )
-    OR (
-      lead_id IS NULL
-      AND job_id IS NOT NULL
-    )
-  ),
-  CONSTRAINT tasks_kind_check CHECK (kind IN ('task', 'appointment')),
-  CONSTRAINT tasks_end_at_after_due_check CHECK (
-    end_at IS NULL
-    OR due_date IS NULL
-    OR end_at > due_date
-  ),
-  CONSTRAINT tasks_appointment_requires_due_check CHECK (
-    kind <> 'appointment'
-    OR due_date IS NOT NULL
-  )
-);
-
-ALTER TABLE tasks
-ADD COLUMN IF NOT EXISTS assigned_to UUID REFERENCES users (id) ON DELETE SET NULL;
-
-ALTER TABLE tasks
-ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'task';
-
-ALTER TABLE tasks
-ADD COLUMN IF NOT EXISTS end_at TIMESTAMPTZ;
-
-ALTER TABLE tasks
-ADD COLUMN IF NOT EXISTS location TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_assigned_to ON tasks (assigned_to);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_lead_id ON tasks (lead_id);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_job_id ON tasks (job_id);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_due_date ON tasks (due_date);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks (status);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_user_kind_due_date
-  ON tasks (user_id, kind, due_date);
-
--- =========================================================
--- FILES
--- Documents / assets
--- Preferred model:
---   lead_id OR job_id OR neither (global)
--- task_id kept for legacy compatibility / transition safety
--- =========================================================
-CREATE TABLE IF NOT EXISTS files (
-  id SERIAL PRIMARY KEY,
-  uploaded_by_user_id UUID REFERENCES users (id) ON DELETE SET NULL,
-  original_name TEXT NOT NULL,
-  storage_key TEXT NOT NULL,
-  mime_type TEXT,
-  size_bytes INTEGER,
-  lead_id INTEGER REFERENCES leads (id) ON DELETE CASCADE,
-  job_id INTEGER REFERENCES jobs (id) ON DELETE CASCADE,
-  -- Legacy / transitional compatibility
-  task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL,
-  caption TEXT,
-  category TEXT NOT NULL DEFAULT 'other',
-  client_visible BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT files_category_check CHECK (category IN ('before', 'after', 'other'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_files_uploaded_by_user_id ON files (uploaded_by_user_id);
-
-CREATE INDEX IF NOT EXISTS idx_files_lead_id ON files (lead_id);
-
-CREATE INDEX IF NOT EXISTS idx_files_job_id ON files (job_id);
-
-CREATE INDEX IF NOT EXISTS idx_files_task_id ON files (task_id);
-
-CREATE INDEX IF NOT EXISTS idx_files_created_at ON files (created_at);
-
-ALTER TABLE files
-ADD COLUMN IF NOT EXISTS caption TEXT;
-
-ALTER TABLE files
-ADD COLUMN IF NOT EXISTS category TEXT;
-
-UPDATE files
-SET category = COALESCE(category, 'other')
-WHERE category IS NULL;
-
-ALTER TABLE files
-ALTER COLUMN category SET DEFAULT 'other';
-
-ALTER TABLE files
-ALTER COLUMN category SET NOT NULL;
-
-ALTER TABLE files
-DROP CONSTRAINT IF EXISTS files_category_check;
-
-ALTER TABLE files
-ADD CONSTRAINT files_category_check
-CHECK (category IN ('before', 'after', 'other'));
-
-ALTER TABLE files
-ADD COLUMN IF NOT EXISTS client_visible BOOLEAN;
-
-UPDATE files
-SET client_visible = COALESCE(client_visible, TRUE)
-WHERE client_visible IS NULL;
-
-ALTER TABLE files
-ALTER COLUMN client_visible SET DEFAULT TRUE;
-
-ALTER TABLE files
-ALTER COLUMN client_visible SET NOT NULL;
-
--- =========================================================
--- ESTIMATES
--- =========================================================
-CREATE TABLE IF NOT EXISTS estimates (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
-  title TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'Draft',
-  subtotal NUMERIC NOT NULL DEFAULT 0,
-  tax_total NUMERIC NOT NULL DEFAULT 0,
-  discount_total NUMERIC NOT NULL DEFAULT 0,
-  grand_total NUMERIC NOT NULL DEFAULT 0,
-  notes TEXT,
-  share_token_hash TEXT,
-  share_expires_at TIMESTAMPTZ,
-  client_responded_at TIMESTAMPTZ,
-  client_response_note TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT estimates_status_check CHECK (
-    status IN ('Draft', 'Sent', 'Approved', 'Rejected')
-  ),
-  CONSTRAINT estimates_subtotal_check CHECK (subtotal >= 0),
-  CONSTRAINT estimates_tax_total_check CHECK (tax_total >= 0),
-  CONSTRAINT estimates_discount_total_check CHECK (discount_total >= 0),
-  CONSTRAINT estimates_grand_total_check CHECK (grand_total >= 0)
-);
-
-CREATE INDEX IF NOT EXISTS idx_estimates_user_id ON estimates (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_estimates_job_id ON estimates (job_id);
-
-CREATE INDEX IF NOT EXISTS idx_estimates_status ON estimates (status);
-
-CREATE INDEX IF NOT EXISTS idx_estimates_created_at ON estimates (created_at DESC);
-
--- =========================================================
--- ESTIMATE_LINE_ITEMS
--- =========================================================
-CREATE TABLE IF NOT EXISTS estimate_line_items (
-  id SERIAL PRIMARY KEY,
-  estimate_id INTEGER NOT NULL REFERENCES estimates (id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT,
-  quantity NUMERIC NOT NULL DEFAULT 1,
-  unit_price NUMERIC NOT NULL DEFAULT 0,
-  line_total NUMERIC NOT NULL DEFAULT 0,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  source TEXT NOT NULL DEFAULT 'manual',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT estimate_line_items_source_check CHECK (source IN ('manual', 'abc_supply')),
-  CONSTRAINT estimate_line_items_quantity_check CHECK (quantity >= 0),
-  CONSTRAINT estimate_line_items_unit_price_check CHECK (unit_price >= 0),
-  CONSTRAINT estimate_line_items_line_total_check CHECK (line_total >= 0)
-);
-
-CREATE INDEX IF NOT EXISTS idx_estimate_line_items_estimate_id ON estimate_line_items (estimate_id);
-
-CREATE INDEX IF NOT EXISTS idx_estimate_line_items_sort_order ON estimate_line_items (estimate_id, sort_order);
-
--- =========================================================
--- ESTIMATE TEMPLATES (copy-on-apply line packages)
--- =========================================================
-CREATE TABLE IF NOT EXISTS estimate_templates (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- Unique name is per company (see phase 20).
-
-CREATE TABLE IF NOT EXISTS estimate_template_line_items (
-  id SERIAL PRIMARY KEY,
-  template_id INTEGER NOT NULL REFERENCES estimate_templates (id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT,
-  quantity NUMERIC NOT NULL DEFAULT 1,
-  unit_price NUMERIC NOT NULL DEFAULT 0,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT estimate_template_line_items_quantity_check CHECK (quantity >= 0),
-  CONSTRAINT estimate_template_line_items_unit_price_check CHECK (unit_price >= 0)
-);
-
-CREATE INDEX IF NOT EXISTS idx_estimate_template_line_items_template_sort
-  ON estimate_template_line_items (template_id, sort_order);
-
--- =========================================================
--- JOB_MEASUREMENTS (Phase 9 — manual scope / quantities)
--- =========================================================
-CREATE TABLE IF NOT EXISTS job_measurements (
-  id SERIAL PRIMARY KEY,
-  job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
-  label TEXT NOT NULL,
-  value NUMERIC NOT NULL,
-  unit TEXT NOT NULL DEFAULT '',
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_job_measurements_job_id ON job_measurements (job_id);
-
--- =========================================================
--- NOTES
--- User-authored communication log attached to lead or job
--- =========================================================
-CREATE TABLE IF NOT EXISTS notes (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  entity_type TEXT NOT NULL,
-  entity_id INTEGER NOT NULL,
-  body TEXT NOT NULL,
-  type TEXT NOT NULL DEFAULT 'note',
-  direction TEXT NOT NULL DEFAULT 'internal',
-  follow_up_task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT notes_entity_type_check CHECK (entity_type IN ('lead', 'job')),
-  CONSTRAINT notes_type_check CHECK (type IN ('call', 'text', 'email', 'in_person', 'note')),
-  CONSTRAINT notes_direction_check CHECK (direction IN ('inbound', 'outbound', 'internal'))
-);
-
-ALTER TABLE notes
-ADD COLUMN IF NOT EXISTS type TEXT;
-
-ALTER TABLE notes
-ADD COLUMN IF NOT EXISTS direction TEXT;
-
-ALTER TABLE notes
-ADD COLUMN IF NOT EXISTS follow_up_task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL;
-
-UPDATE notes
-SET type = COALESCE(type, 'note')
-WHERE type IS NULL;
-
-UPDATE notes
-SET direction = COALESCE(direction, 'internal')
-WHERE direction IS NULL;
-
-ALTER TABLE notes
-ALTER COLUMN type SET DEFAULT 'note';
-
-ALTER TABLE notes
-ALTER COLUMN direction SET DEFAULT 'internal';
-
-ALTER TABLE notes
-ALTER COLUMN type SET NOT NULL;
-
-ALTER TABLE notes
-ALTER COLUMN direction SET NOT NULL;
-
-ALTER TABLE notes
-DROP CONSTRAINT IF EXISTS notes_type_check;
-
-ALTER TABLE notes
-ADD CONSTRAINT notes_type_check
-CHECK (type IN ('call', 'text', 'email', 'in_person', 'note'));
-
-ALTER TABLE notes
-DROP CONSTRAINT IF EXISTS notes_direction_check;
-
-ALTER TABLE notes
-ADD CONSTRAINT notes_direction_check
-CHECK (direction IN ('inbound', 'outbound', 'internal'));
-
-CREATE INDEX IF NOT EXISTS idx_notes_entity ON notes (entity_type, entity_id);
-
-CREATE INDEX IF NOT EXISTS idx_notes_user_id ON notes (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes (created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_notes_entity_created
-  ON notes (entity_type, entity_id, created_at DESC);
-
--- =========================================================
--- SAVED_VIEWS
--- User-saved filter presets for list pages
--- =========================================================
-CREATE TABLE IF NOT EXISTS saved_views (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  entity_type TEXT NOT NULL,
-  name TEXT NOT NULL,
-  filters JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT saved_views_entity_type_check CHECK (
-    entity_type IN ('leads', 'jobs', 'tasks')
-  )
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_views_user_entity_name ON saved_views (
-  user_id,
-  entity_type,
-  lower(name)
-);
-
-CREATE INDEX IF NOT EXISTS idx_saved_views_user_entity ON saved_views (
-  user_id,
-  entity_type
-);
-
--- =========================================================
--- INVOICES
--- =========================================================
-CREATE SEQUENCE IF NOT EXISTS invoice_number_seq START 1;
-
-CREATE TABLE IF NOT EXISTS invoices (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
-  estimate_id INTEGER REFERENCES estimates (id) ON DELETE SET NULL,
-  invoice_number TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'Draft',
-  subtotal NUMERIC NOT NULL DEFAULT 0,
-  tax_total NUMERIC NOT NULL DEFAULT 0,
-  discount_total NUMERIC NOT NULL DEFAULT 0,
-  grand_total NUMERIC NOT NULL DEFAULT 0,
-  due_date TIMESTAMPTZ,
-  paid_at TIMESTAMPTZ,
-  notes TEXT,
-  share_token_hash TEXT,
-  share_expires_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT invoices_status_check CHECK (
-    status IN ('Draft', 'Sent', 'Paid', 'Overdue')
-  ),
-  CONSTRAINT invoices_subtotal_check CHECK (subtotal >= 0),
-  CONSTRAINT invoices_tax_total_check CHECK (tax_total >= 0),
-  CONSTRAINT invoices_discount_total_check CHECK (discount_total >= 0),
-  CONSTRAINT invoices_grand_total_check CHECK (grand_total >= 0)
-);
-
-CREATE INDEX IF NOT EXISTS idx_invoices_user_id ON invoices (user_id);
-CREATE INDEX IF NOT EXISTS idx_invoices_job_id ON invoices (job_id);
-CREATE INDEX IF NOT EXISTS idx_invoices_estimate_id ON invoices (estimate_id);
-CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices (status);
-CREATE INDEX IF NOT EXISTS idx_invoices_created_at ON invoices (created_at DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_number ON invoices (user_id, invoice_number);
-
--- =========================================================
--- INVOICE_LINE_ITEMS
--- =========================================================
-CREATE TABLE IF NOT EXISTS invoice_line_items (
-  id SERIAL PRIMARY KEY,
-  invoice_id INTEGER NOT NULL REFERENCES invoices (id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT,
-  quantity NUMERIC NOT NULL DEFAULT 1,
-  unit_price NUMERIC NOT NULL DEFAULT 0,
-  line_total NUMERIC NOT NULL DEFAULT 0,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT invoice_line_items_quantity_check CHECK (quantity >= 0),
-  CONSTRAINT invoice_line_items_unit_price_check CHECK (unit_price >= 0),
-  CONSTRAINT invoice_line_items_line_total_check CHECK (line_total >= 0)
-);
-
-CREATE INDEX IF NOT EXISTS idx_invoice_line_items_invoice_id ON invoice_line_items (invoice_id);
-CREATE INDEX IF NOT EXISTS idx_invoice_line_items_sort_order ON invoice_line_items (invoice_id, sort_order);
-
--- =========================================================
--- PRODUCT EVENTS
--- =========================================================
-CREATE TABLE IF NOT EXISTS product_events (
-  id SERIAL PRIMARY KEY,
-  user_id UUID REFERENCES users (id) ON DELETE SET NULL,
-  event_name TEXT NOT NULL,
-  entity_type TEXT,
-  entity_id INTEGER,
-  metadata JSONB,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_product_events_name ON product_events (event_name);
-CREATE INDEX IF NOT EXISTS idx_product_events_user ON product_events (user_id);
-CREATE INDEX IF NOT EXISTS idx_product_events_created ON product_events (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_product_events_name_created ON product_events (event_name, created_at DESC);
-
--- =========================================================
--- PORTAL TOKENS
--- =========================================================
-CREATE TABLE IF NOT EXISTS portal_tokens (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
-  token_hash TEXT NOT NULL,
-  expires_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_portal_tokens_job ON portal_tokens (job_id);
-CREATE INDEX IF NOT EXISTS idx_portal_tokens_hash ON portal_tokens (token_hash);
-CREATE INDEX IF NOT EXISTS idx_portal_tokens_user ON portal_tokens (user_id);
-
--- =========================================================
--- AUTOMATION RULES
--- =========================================================
-CREATE TABLE IF NOT EXISTS automation_rules (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  description TEXT,
-  trigger_event TEXT NOT NULL,
-  conditions JSONB NOT NULL DEFAULT '{}'::jsonb,
-  action_type TEXT NOT NULL,
-  action_config JSONB NOT NULL DEFAULT '{}'::jsonb,
-  enabled BOOLEAN NOT NULL DEFAULT true,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT automation_rules_trigger_check CHECK (
-    trigger_event IN (
-      'ESTIMATE_APPROVED',
-      'LEAD_INACTIVE',
-      'JOB_STATUS_CHANGED',
-      'TASK_COMPLETED',
-      'JOB_CREATED'
-    )
-  ),
-  CONSTRAINT automation_rules_action_check CHECK (
-    action_type IN (
-      'CREATE_TASKS',
-      'CREATE_FOLLOW_UP_TASK',
-      'SEND_NOTIFICATION',
-      'UPDATE_STATUS'
-    )
-  )
-);
-
-CREATE INDEX IF NOT EXISTS idx_automation_rules_user_id ON automation_rules (user_id);
-CREATE INDEX IF NOT EXISTS idx_automation_rules_trigger ON automation_rules (trigger_event);
-CREATE INDEX IF NOT EXISTS idx_automation_rules_enabled ON automation_rules (enabled);
-
--- =========================================================
--- INTAKE TOKENS (public website lead capture)
--- =========================================================
-CREATE TABLE IF NOT EXISTS intake_tokens (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  token_hash TEXT NOT NULL,
-  enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  singleton BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT intake_tokens_singleton_true CHECK (singleton = TRUE)
-);
-
--- One intake token per company (see phase 20).
-
-CREATE INDEX IF NOT EXISTS idx_intake_tokens_hash ON intake_tokens (token_hash);
-
-CREATE INDEX IF NOT EXISTS idx_intake_tokens_user ON intake_tokens (user_id);
-
--- =========================================================
--- NOTIFICATIONS
--- =========================================================
-CREATE TABLE IF NOT EXISTS notifications (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  type TEXT NOT NULL,
-  title TEXT NOT NULL,
-  message TEXT NOT NULL,
-  entity_type TEXT,
-  entity_id INTEGER,
-  metadata JSONB,
-  dedupe_key TEXT,
-  read_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT notifications_type_check CHECK (
-    type IN (
-      'TASK_DUE_SOON',
-      'TASK_OVERDUE',
-      'TASK_ASSIGNED',
-      'TASK_COMPLETED',
-      'FILE_UPLOADED',
-      'INVITE_ACCEPTED',
-      'ESTIMATE_CREATED',
-      'ESTIMATE_STATUS_CHANGED',
-      'ESTIMATE_CLIENT_RESPONDED',
-      'INVOICE_CREATED',
-      'INVOICE_STATUS_CHANGED',
-      'INVOICE_PAID',
-      'LEAD_CREATED',
-      'LEAD_ASSIGNED',
-      'JOB_ASSIGNED'
-    )
-  ),
-  CONSTRAINT notifications_entity_type_check CHECK (
-    entity_type IS NULL
-    OR entity_type IN ('task', 'lead', 'job', 'invite', 'estimate', 'invoice')
-  )
-);
-
-CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_notifications_user_created_at ON notifications (user_id, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_notifications_user_read_at ON notifications (user_id, read_at);
-
-CREATE INDEX IF NOT EXISTS idx_notifications_type ON notifications (type);
-
--- Dedupe keys are unique per company (see phase 20).
-
--- =========================================================
--- SUPPLIER CONNECTIONS
--- =========================================================
-CREATE TABLE IF NOT EXISTS supplier_connections (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  provider TEXT NOT NULL, -- example: 'abc_supply'
-  status TEXT NOT NULL DEFAULT 'disconnected',
-  api_base_url TEXT,
-  account_identifier TEXT,
-  encrypted_access_token TEXT,
-  encrypted_refresh_token TEXT,
-  token_expires_at TIMESTAMPTZ,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_connections_user_provider ON supplier_connections (user_id, provider);
-
--- =========================================================
--- SUPPLIER ACCOUNTS
--- =========================================================
-CREATE TABLE IF NOT EXISTS supplier_accounts (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  provider TEXT NOT NULL,
-  external_account_id TEXT NOT NULL,
-  sold_to_number TEXT,
-  bill_to_number TEXT,
-  ship_to_number TEXT,
-  raw_json JSONB,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_supplier_accounts_user_id ON supplier_accounts (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_supplier_accounts_provider ON supplier_accounts (provider);
-
--- External supplier accounts are unique per company (see phase 20).
-
--- =========================================================
--- SUPPLIER ORDERS
--- =========================================================
-CREATE TABLE IF NOT EXISTS supplier_orders (
-  id SERIAL PRIMARY KEY,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  lead_id INTEGER REFERENCES leads (id) ON DELETE SET NULL,
-  provider TEXT NOT NULL,
-  external_order_id TEXT,
-  external_order_status TEXT,
-  request_payload JSONB,
-  response_payload JSONB,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_supplier_orders_user_id ON supplier_orders (user_id);
-
-CREATE INDEX IF NOT EXISTS idx_supplier_orders_lead_id ON supplier_orders (lead_id);
-
-CREATE INDEX IF NOT EXISTS idx_supplier_orders_provider ON supplier_orders (provider);
-
--- =========================================================
--- SUPPLIER WEBHOOK EVENTS
--- =========================================================
-CREATE TABLE IF NOT EXISTS supplier_webhook_events (
-  id SERIAL PRIMARY KEY,
-  provider TEXT NOT NULL,
-  event_type TEXT,
-  external_event_id TEXT,
-  payload JSONB NOT NULL,
-  processed BOOLEAN NOT NULL DEFAULT FALSE,
-  received_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_supplier_webhook_events_provider ON supplier_webhook_events (provider);
-
-CREATE INDEX IF NOT EXISTS idx_supplier_webhook_events_processed ON supplier_webhook_events (processed);
-
--- Phase 20: companies + denormalized company_id (multi-tenant schema)
 --
--- Default company id (single-tenant backfill / insert default):
---   c0000000-0000-4000-8000-000000000001  slug = rooftop
+-- CRM database baseline.
 --
--- Idempotent. Does not change application query scoping (Phase 2).
--- One-owner-per-company unique index is deferred: tests still create
--- multiple owners on the default company.
-
--- =========================================================
--- COMPANIES
--- =========================================================
-CREATE TABLE IF NOT EXISTS companies (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid (),
-  name TEXT NOT NULL,
-  slug TEXT NOT NULL,
-  palette_id TEXT NOT NULL DEFAULT 'rooftop',
-  mark_id TEXT NOT NULL DEFAULT 'product',
-  logo_storage_key TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT companies_slug_check CHECK (
-    slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'
-  )
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_slug ON companies (slug);
-
-INSERT INTO companies (id, name, slug, palette_id)
-VALUES (
-  'c0000000-0000-4000-8000-000000000001',
-  'Rooftop Realty',
-  'rooftop',
-  'rooftop'
-)
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO companies (id, name, slug, palette_id)
-SELECT
-  gen_random_uuid (),
-  'Rooftop Realty',
-  'rooftop',
-  'rooftop'
-WHERE NOT EXISTS (
-  SELECT 1 FROM companies WHERE slug = 'rooftop'
-);
-
-CREATE OR REPLACE FUNCTION crm_default_company_id ()
-RETURNS UUID
-LANGUAGE sql
-STABLE
-AS $$
-  SELECT COALESCE(
-    (SELECT id FROM companies WHERE slug = 'rooftop' LIMIT 1),
-    'c0000000-0000-4000-8000-000000000001'::uuid
-  );
-$$;
-
--- =========================================================
--- USERS
--- =========================================================
-ALTER TABLE users
-ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies (id) ON DELETE CASCADE;
-
-UPDATE users
-SET company_id = crm_default_company_id ()
-WHERE company_id IS NULL;
-
-ALTER TABLE users
-ALTER COLUMN company_id SET DEFAULT crm_default_company_id ();
-
-ALTER TABLE users
-ALTER COLUMN company_id SET NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_users_company_id ON users (company_id);
-
-ALTER TABLE users
-DROP CONSTRAINT IF EXISTS users_email_key;
-
-DROP INDEX IF EXISTS users_email_key;
-
-DROP INDEX IF EXISTS idx_users_email;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_users_company_lower_email
-  ON users (company_id, lower(email));
-
--- =========================================================
--- TABLES WITH user_id
--- =========================================================
-DO $$
-DECLARE
-  tbl text;
-BEGIN
-  FOREACH tbl IN ARRAY ARRAY[
-    'leads',
-    'jobs',
-    'tasks',
-    'estimates',
-    'invoices',
-    'notes',
-    'job_activity',
-    'saved_views',
-    'notifications',
-    'portal_tokens',
-    'automation_rules',
-    'intake_tokens',
-    'product_events',
-    'supplier_connections',
-    'supplier_accounts',
-    'supplier_orders'
-  ]
-  LOOP
-    EXECUTE format(
-      'ALTER TABLE %I ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies (id) ON DELETE CASCADE',
-      tbl
-    );
-    EXECUTE format(
-      'UPDATE %I t SET company_id = u.company_id FROM users u WHERE u.id = t.user_id AND t.company_id IS NULL',
-      tbl
-    );
-    EXECUTE format(
-      'UPDATE %I SET company_id = crm_default_company_id() WHERE company_id IS NULL',
-      tbl
-    );
-    EXECUTE format(
-      'ALTER TABLE %I ALTER COLUMN company_id SET DEFAULT crm_default_company_id()',
-      tbl
-    );
-    EXECUTE format(
-      'ALTER TABLE %I ALTER COLUMN company_id SET NOT NULL',
-      tbl
-    );
-    EXECUTE format(
-      'CREATE INDEX IF NOT EXISTS %I ON %I (company_id)',
-      'idx_' || tbl || '_company_id',
-      tbl
-    );
-  END LOOP;
-END $$;
-
--- =========================================================
--- FILES (uploaded_by_user_id is nullable)
--- =========================================================
-ALTER TABLE files
-ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies (id) ON DELETE CASCADE;
-
-UPDATE files f
-SET company_id = u.company_id
-FROM users u
-WHERE u.id = f.uploaded_by_user_id
-  AND f.company_id IS NULL;
-
-UPDATE files f
-SET company_id = l.company_id
-FROM leads l
-WHERE l.id = f.lead_id
-  AND f.company_id IS NULL;
-
-UPDATE files f
-SET company_id = j.company_id
-FROM jobs j
-WHERE j.id = f.job_id
-  AND f.company_id IS NULL;
-
-UPDATE files
-SET company_id = crm_default_company_id ()
-WHERE company_id IS NULL;
-
-ALTER TABLE files
-ALTER COLUMN company_id SET DEFAULT crm_default_company_id ();
-
-ALTER TABLE files
-ALTER COLUMN company_id SET NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_files_company_id ON files (company_id);
-
--- =========================================================
--- ESTIMATE TEMPLATES (no user_id today)
--- =========================================================
-ALTER TABLE estimate_templates
-ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies (id) ON DELETE CASCADE;
-
-UPDATE estimate_templates
-SET company_id = crm_default_company_id ()
-WHERE company_id IS NULL;
-
-ALTER TABLE estimate_templates
-ALTER COLUMN company_id SET DEFAULT crm_default_company_id ();
-
-ALTER TABLE estimate_templates
-ALTER COLUMN company_id SET NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_estimate_templates_company_id
-  ON estimate_templates (company_id);
-
-DROP INDEX IF EXISTS idx_estimate_templates_name;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_estimate_templates_company_lower_name
-  ON estimate_templates (company_id, lower(name));
-
--- =========================================================
--- CHILD ROWS (inherit from parent)
--- =========================================================
-ALTER TABLE job_measurements
-ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies (id) ON DELETE CASCADE;
-
-UPDATE job_measurements m
-SET company_id = j.company_id
-FROM jobs j
-WHERE j.id = m.job_id
-  AND m.company_id IS NULL;
-
-UPDATE job_measurements
-SET company_id = crm_default_company_id ()
-WHERE company_id IS NULL;
-
-ALTER TABLE job_measurements
-ALTER COLUMN company_id SET DEFAULT crm_default_company_id ();
-
-ALTER TABLE job_measurements
-ALTER COLUMN company_id SET NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_job_measurements_company_id
-  ON job_measurements (company_id);
-
-ALTER TABLE estimate_line_items
-ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies (id) ON DELETE CASCADE;
-
-UPDATE estimate_line_items li
-SET company_id = e.company_id
-FROM estimates e
-WHERE e.id = li.estimate_id
-  AND li.company_id IS NULL;
-
-UPDATE estimate_line_items
-SET company_id = crm_default_company_id ()
-WHERE company_id IS NULL;
-
-ALTER TABLE estimate_line_items
-ALTER COLUMN company_id SET DEFAULT crm_default_company_id ();
-
-ALTER TABLE estimate_line_items
-ALTER COLUMN company_id SET NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_estimate_line_items_company_id
-  ON estimate_line_items (company_id);
-
-ALTER TABLE invoice_line_items
-ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies (id) ON DELETE CASCADE;
-
-UPDATE invoice_line_items li
-SET company_id = i.company_id
-FROM invoices i
-WHERE i.id = li.invoice_id
-  AND li.company_id IS NULL;
-
-UPDATE invoice_line_items
-SET company_id = crm_default_company_id ()
-WHERE company_id IS NULL;
-
-ALTER TABLE invoice_line_items
-ALTER COLUMN company_id SET DEFAULT crm_default_company_id ();
-
-ALTER TABLE invoice_line_items
-ALTER COLUMN company_id SET NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_invoice_line_items_company_id
-  ON invoice_line_items (company_id);
-
-ALTER TABLE estimate_template_line_items
-ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies (id) ON DELETE CASCADE;
-
-UPDATE estimate_template_line_items li
-SET company_id = t.company_id
-FROM estimate_templates t
-WHERE t.id = li.template_id
-  AND li.company_id IS NULL;
-
-UPDATE estimate_template_line_items
-SET company_id = crm_default_company_id ()
-WHERE company_id IS NULL;
-
-ALTER TABLE estimate_template_line_items
-ALTER COLUMN company_id SET DEFAULT crm_default_company_id ();
-
-ALTER TABLE estimate_template_line_items
-ALTER COLUMN company_id SET NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_estimate_template_line_items_company_id
-  ON estimate_template_line_items (company_id);
-
--- =========================================================
--- WEBHOOKS (tenant filled in when processed)
--- =========================================================
-ALTER TABLE supplier_webhook_events
-ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies (id) ON DELETE CASCADE;
-
-CREATE INDEX IF NOT EXISTS idx_supplier_webhook_events_company_id
-  ON supplier_webhook_events (company_id);
-
--- =========================================================
--- REPLACE SYSTEM-WIDE UNIQUES
--- =========================================================
-DROP INDEX IF EXISTS idx_invoices_number;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_company_number
-  ON invoices (company_id, invoice_number);
-
-DROP INDEX IF EXISTS idx_intake_tokens_singleton;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_intake_tokens_company_singleton
-  ON intake_tokens (company_id)
-  WHERE singleton = TRUE;
-
-DROP INDEX IF EXISTS idx_notifications_dedupe_key;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_company_dedupe_key
-  ON notifications (company_id, dedupe_key)
-  WHERE dedupe_key IS NOT NULL;
-
-DROP INDEX IF EXISTS idx_supplier_accounts_provider_external;
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_accounts_company_provider_external
-  ON supplier_accounts (company_id, provider, external_account_id);
-
--- QuickBooks still uses ON CONFLICT (user_id, provider). Keep that unique
--- until connections move to per-company in a later phase.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_connections_user_provider
-  ON supplier_connections (user_id, provider);
-
--- Phase 22 performance history. sql/patch_phase22_performance_history.sql
--- applies the same statements on databases created before this section.
-
--- Phase 22: per-user performance history.
--- Assignment and lead-status events start when this patch is applied.
--- Existing rows are not backfilled; reports fall back to the current assignee
--- until a record gets its first event.
-
-CREATE TABLE IF NOT EXISTS assignment_events (
-  id SERIAL PRIMARY KEY,
-  company_id UUID NOT NULL REFERENCES companies (id) ON DELETE CASCADE,
-  entity_type TEXT NOT NULL,
-  entity_id INTEGER NOT NULL,
-  user_id UUID REFERENCES users (id) ON DELETE SET NULL,
-  assigned_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT assignment_events_entity_type_check CHECK (entity_type IN ('lead', 'job'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_assignment_events_lookup
-  ON assignment_events (company_id, entity_type, entity_id, assigned_at DESC, id DESC);
-
-CREATE TABLE IF NOT EXISTS lead_status_events (
-  id SERIAL PRIMARY KEY,
-  company_id UUID NOT NULL REFERENCES companies (id) ON DELETE CASCADE,
-  lead_id INTEGER NOT NULL REFERENCES leads (id) ON DELETE CASCADE,
-  from_status TEXT,
-  to_status TEXT NOT NULL,
-  changed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_lead_status_events_lead
-  ON lead_status_events (company_id, lead_id, changed_at, id);
-
-ALTER TABLE tasks
-ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
-
-ALTER TABLE estimates
-ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
-
-CREATE OR REPLACE FUNCTION crm_assignee_at_outcome(
-  p_company_id UUID,
-  p_entity_type TEXT,
-  p_entity_id INTEGER,
-  p_at TIMESTAMPTZ,
-  p_current UUID
-) RETURNS UUID
-LANGUAGE sql
-STABLE
-AS $$
+-- The whole schema as of phase 24, in one file: every table, constraint,
+-- index and function, plus the rows a new database starts with (the
+-- built-in company and its five estimate templates).
+--
+-- Generated with pg_dump from a database built by the old patch chain,
+-- now in sql/archive/. Do not edit this file to change the schema: add a
+-- numbered file to sql/migrations/ and run `npm run db:migrate`.
+-- scripts/lib/migrations.js applies this file once, to an empty database,
+-- inside one transaction.
+--
+
+-- Functions are created before the tables their bodies name.
+SET LOCAL check_function_bodies = false;
+
+--
+-- PostgreSQL database dump
+--
+
+--
+-- Name: pgcrypto; Type: EXTENSION; Schema: -; Owner: -
+--
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;
+
+--
+-- Name: EXTENSION pgcrypto; Type: COMMENT; Schema: -; Owner: -
+--
+
+--
+-- Name: crm_assignee_at_outcome(uuid, text, integer, timestamp with time zone, uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.crm_assignee_at_outcome(p_company_id uuid, p_entity_type text, p_entity_id integer, p_at timestamp with time zone, p_current uuid) RETURNS uuid
+    LANGUAGE sql STABLE
+    AS $$
   SELECT CASE
     WHEN EXISTS (
       SELECT 1
@@ -1200,253 +59,2687 @@ AS $$
   END;
 $$;
 
--- Phase 23 job lifecycle + money. sql/patch_phase23_job_lifecycle_money.sql
--- applies the same statements on databases created before this section.
-
--- Phase 23: the job carries the work from first contact to paid and closed.
 --
--- Before this patch the job's status list was a sales pipeline that ended at
--- "Closed Won" — the moment production actually starts. Nothing after the
--- sale had a state, invoices were a Paid/not-paid flag with no payments, and
--- a won job dropped out of health, workload and the dashboard.
+-- Name: crm_default_company_id(); Type: FUNCTION; Schema: public; Owner: -
 --
--- This patch:
---   1. Renames the terminal sales states (Closed Won -> Sold, Closed Lost -> Lost)
---      and adds production and billing states after Sold. Existing won jobs
---      whose invoices are all paid become Closed; the rest become Sold so
---      they reappear as open work.
---   2. Adds lifecycle milestones on jobs (sold_at, work_completed_at,
---      closed_at, lost_at, lost_reason).
---   3. Adds a payments ledger (invoice_payments). Invoice status is derived
---      from payments + due date; amount_paid is maintained in the same
---      transaction as every payment write.
---   4. Adds invoice kinds (standard / deposit / final) and prior_billed_total
---      so a final invoice can subtract the deposit already billed.
---   5. Adds approved_at and change_order_of on estimates. Approved estimates
---      are locked by the service; scope changes go into a change order.
+
+CREATE FUNCTION public.crm_default_company_id() RETURNS uuid
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT COALESCE(
+    (SELECT id FROM companies WHERE slug = 'rooftop' LIMIT 1),
+    'c0000000-0000-4000-8000-000000000001'::uuid
+  );
+$$;
+
 --
--- Idempotent. Safe to re-run.
+-- Name: assignment_events; Type: TABLE; Schema: public; Owner: -
+--
 
--- =========================================================
--- JOBS — lifecycle
--- =========================================================
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS sold_at TIMESTAMPTZ;
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS work_completed_at TIMESTAMPTZ;
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lost_at TIMESTAMPTZ;
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lost_reason TEXT;
-
--- Won jobs: closed when every invoice is paid, otherwise back into open work.
-UPDATE jobs j
-SET status = CASE
-    WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.job_id = j.id)
-     AND NOT EXISTS (
-       SELECT 1 FROM invoices i WHERE i.job_id = j.id AND i.status <> 'Paid'
-     )
-    THEN 'Closed'
-    ELSE 'Sold'
-  END,
-  sold_at = COALESCE(j.sold_at, j.status_changed_at),
-  closed_at = CASE
-    WHEN EXISTS (SELECT 1 FROM invoices i WHERE i.job_id = j.id)
-     AND NOT EXISTS (
-       SELECT 1 FROM invoices i WHERE i.job_id = j.id AND i.status <> 'Paid'
-     )
-    THEN COALESCE(j.closed_at, j.status_changed_at)
-    ELSE j.closed_at
-  END
-WHERE j.status = 'Closed Won';
-
-UPDATE jobs
-SET status = 'Lost',
-    lost_at = COALESCE(lost_at, status_changed_at)
-WHERE status = 'Closed Lost';
-
--- Keep history readable under the new names.
-UPDATE job_activity
-SET metadata = jsonb_set(metadata, '{toStatus}', to_jsonb(
-      CASE metadata->>'toStatus' WHEN 'Closed Won' THEN 'Sold' ELSE 'Lost' END
-    ))
-WHERE type = 'JOB_STATUS_CHANGED'
-  AND metadata ? 'toStatus'
-  AND metadata->>'toStatus' IN ('Closed Won', 'Closed Lost');
-
-UPDATE job_activity
-SET metadata = jsonb_set(metadata, '{fromStatus}', to_jsonb(
-      CASE metadata->>'fromStatus' WHEN 'Closed Won' THEN 'Sold' ELSE 'Lost' END
-    ))
-WHERE type = 'JOB_STATUS_CHANGED'
-  AND metadata ? 'fromStatus'
-  AND metadata->>'fromStatus' IN ('Closed Won', 'Closed Lost');
-
-UPDATE job_activity
-SET message = replace(replace(message, 'Closed Won', 'Sold'), 'Closed Lost', 'Lost')
-WHERE type = 'JOB_STATUS_CHANGED'
-  AND (message LIKE '%Closed Won%' OR message LIKE '%Closed Lost%');
-
-UPDATE automation_rules
-SET conditions = jsonb_set(conditions, '{to_status}', to_jsonb(
-      CASE conditions->>'to_status' WHEN 'Closed Won' THEN 'Sold' ELSE 'Lost' END
-    ))
-WHERE conditions->>'to_status' IN ('Closed Won', 'Closed Lost');
-
-UPDATE automation_rules
-SET conditions = jsonb_set(conditions, '{from_status}', to_jsonb(
-      CASE conditions->>'from_status' WHEN 'Closed Won' THEN 'Sold' ELSE 'Lost' END
-    ))
-WHERE conditions->>'from_status' IN ('Closed Won', 'Closed Lost');
-
-UPDATE saved_views
-SET filters = jsonb_set(filters, '{status}', to_jsonb(
-      CASE filters->>'status' WHEN 'Closed Won' THEN 'Sold' ELSE 'Lost' END
-    ))
-WHERE entity_type = 'jobs'
-  AND filters->>'status' IN ('Closed Won', 'Closed Lost');
-
--- Status was free text. New writes must use the lifecycle vocabulary;
--- NOT VALID keeps any legacy custom value readable instead of failing.
-ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_status_check;
-ALTER TABLE jobs
-ADD CONSTRAINT jobs_status_check CHECK (
-  status IN (
-    'New',
-    'Contacted',
-    'Appointment Scheduled',
-    'Proposal Sent',
-    'Sold',
-    'Work Scheduled',
-    'In Progress',
-    'Work Complete',
-    'Closed',
-    'Lost'
-  )
-) NOT VALID;
-
-CREATE INDEX IF NOT EXISTS idx_jobs_company_status ON jobs (company_id, status);
-
--- =========================================================
--- ESTIMATES — approval time + change orders
--- =========================================================
-ALTER TABLE estimates ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
-ALTER TABLE estimates
-ADD COLUMN IF NOT EXISTS change_order_of INTEGER REFERENCES estimates (id) ON DELETE SET NULL;
-
-UPDATE estimates
-SET approved_at = COALESCE(client_responded_at, updated_at, created_at)
-WHERE status = 'Approved' AND approved_at IS NULL;
-
-CREATE INDEX IF NOT EXISTS idx_estimates_change_order_of ON estimates (change_order_of);
-
--- =========================================================
--- INVOICES — kinds, prior billing, derived payment state
--- =========================================================
-ALTER TABLE invoices ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'standard';
-ALTER TABLE invoices ADD COLUMN IF NOT EXISTS prior_billed_total NUMERIC NOT NULL DEFAULT 0;
-ALTER TABLE invoices ADD COLUMN IF NOT EXISTS amount_paid NUMERIC NOT NULL DEFAULT 0;
-ALTER TABLE invoices ADD COLUMN IF NOT EXISTS sent_at TIMESTAMPTZ;
-ALTER TABLE invoices ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;
-
-ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_kind_check;
-ALTER TABLE invoices
-ADD CONSTRAINT invoices_kind_check CHECK (kind IN ('standard', 'deposit', 'final'));
-
-ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_prior_billed_total_check;
-ALTER TABLE invoices
-ADD CONSTRAINT invoices_prior_billed_total_check CHECK (prior_billed_total >= 0);
-
-ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_amount_paid_check;
-ALTER TABLE invoices
-ADD CONSTRAINT invoices_amount_paid_check CHECK (amount_paid >= 0);
-
-ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_status_check;
-ALTER TABLE invoices
-ADD CONSTRAINT invoices_status_check CHECK (
-  status IN ('Draft', 'Sent', 'Partially Paid', 'Paid', 'Overdue', 'Void')
+CREATE TABLE public.assignment_events (
+    id integer NOT NULL,
+    company_id uuid NOT NULL,
+    entity_type text NOT NULL,
+    entity_id integer NOT NULL,
+    user_id uuid,
+    assigned_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT assignment_events_entity_type_check CHECK ((entity_type = ANY (ARRAY['lead'::text, 'job'::text])))
 );
 
-UPDATE invoices
-SET sent_at = COALESCE(sent_at, created_at)
-WHERE status <> 'Draft' AND sent_at IS NULL;
+--
+-- Name: assignment_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
 
--- =========================================================
--- INVOICE PAYMENTS — the ledger
--- =========================================================
-CREATE TABLE IF NOT EXISTS invoice_payments (
-  id SERIAL PRIMARY KEY,
-  company_id UUID NOT NULL REFERENCES companies (id) ON DELETE CASCADE,
-  invoice_id INTEGER NOT NULL REFERENCES invoices (id) ON DELETE CASCADE,
-  job_id INTEGER NOT NULL REFERENCES jobs (id) ON DELETE CASCADE,
-  recorded_by_user_id UUID REFERENCES users (id) ON DELETE SET NULL,
-  amount NUMERIC NOT NULL,
-  method TEXT NOT NULL DEFAULT 'other',
-  reference TEXT,
-  notes TEXT,
-  received_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT invoice_payments_amount_check CHECK (amount > 0),
-  CONSTRAINT invoice_payments_method_check CHECK (
-    method IN ('check', 'card', 'cash', 'ach', 'financing', 'other')
-  )
+CREATE SEQUENCE public.assignment_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: assignment_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.assignment_events_id_seq OWNED BY public.assignment_events.id;
+
+--
+-- Name: automation_rules; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.automation_rules (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    name text NOT NULL,
+    description text,
+    trigger_event text NOT NULL,
+    conditions jsonb DEFAULT '{}'::jsonb NOT NULL,
+    action_type text NOT NULL,
+    action_config jsonb DEFAULT '{}'::jsonb NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    CONSTRAINT automation_rules_action_check CHECK ((action_type = ANY (ARRAY['CREATE_TASKS'::text, 'CREATE_FOLLOW_UP_TASK'::text, 'SEND_NOTIFICATION'::text, 'UPDATE_STATUS'::text]))),
+    CONSTRAINT automation_rules_trigger_check CHECK ((trigger_event = ANY (ARRAY['ESTIMATE_APPROVED'::text, 'LEAD_INACTIVE'::text, 'JOB_STATUS_CHANGED'::text, 'TASK_COMPLETED'::text, 'JOB_CREATED'::text])))
 );
 
-CREATE INDEX IF NOT EXISTS idx_invoice_payments_invoice ON invoice_payments (invoice_id);
-CREATE INDEX IF NOT EXISTS idx_invoice_payments_job ON invoice_payments (job_id);
-CREATE INDEX IF NOT EXISTS idx_invoice_payments_company_received
-  ON invoice_payments (company_id, received_at DESC);
+--
+-- Name: automation_rules_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
 
--- Invoices already marked Paid had no payment rows. Record one so the
--- ledger and the status agree from day one.
-INSERT INTO invoice_payments (
-  company_id, invoice_id, job_id, recorded_by_user_id, amount, method, notes, received_at
-)
-SELECT
-  i.company_id,
-  i.id,
-  i.job_id,
-  i.user_id,
-  i.grand_total,
-  'other',
-  'Recorded before payment tracking',
-  COALESCE(i.paid_at, i.updated_at, i.created_at)
-FROM invoices i
-WHERE i.status = 'Paid'
-  AND i.grand_total > 0
-  AND NOT EXISTS (SELECT 1 FROM invoice_payments p WHERE p.invoice_id = i.id);
+CREATE SEQUENCE public.automation_rules_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
 
-UPDATE invoices i
-SET amount_paid = COALESCE(
-  (SELECT SUM(p.amount) FROM invoice_payments p WHERE p.invoice_id = i.id),
-  0
+--
+-- Name: automation_rules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.automation_rules_id_seq OWNED BY public.automation_rules.id;
+
+--
+-- Name: companies; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.companies (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    name text NOT NULL,
+    slug text NOT NULL,
+    palette_id text DEFAULT 'rooftop'::text NOT NULL,
+    mark_id text DEFAULT 'product'::text NOT NULL,
+    logo_storage_key text,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    workspace_defaults jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT companies_slug_check CHECK ((slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text))
 );
 
--- Phase 24 workspace preferences. sql/patch_phase24_workspace_preferences.sql
--- applies the same statements on databases created before this section.
+--
+-- Name: estimate_line_items; Type: TABLE; Schema: public; Owner: -
+--
 
--- Phase 24: the workspace remembers how each person works.
---
--- Before this patch every display choice (theme, accent, sidebar state, list
--- view mode) lived in one browser's localStorage, so a user who moved from the
--- office desktop to a phone in the truck started over. This patch stores:
---
---   user_preferences.preferences  one JSON document per user: appearance,
---                                 navigation (order, hidden items, pins),
---                                 home widgets, list columns/sort, record
---                                 section layout. Validated by Zod in
---                                 src/validators/preferences.schemas.ts.
---   companies.workspace_defaults  the same shape, set by an owner/admin, used
---                                 for anyone who has not chosen for themselves.
---
--- Effective preferences = workspace defaults overlaid with the user's own.
--- Idempotent. Safe to re-run.
-
-CREATE TABLE IF NOT EXISTS user_preferences (
-  user_id UUID PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
-  company_id UUID NOT NULL REFERENCES companies (id) ON DELETE CASCADE,
-  preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+CREATE TABLE public.estimate_line_items (
+    id integer NOT NULL,
+    estimate_id integer NOT NULL,
+    name text NOT NULL,
+    description text,
+    quantity numeric DEFAULT 1 NOT NULL,
+    unit_price numeric DEFAULT 0 NOT NULL,
+    line_total numeric DEFAULT 0 NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    source text DEFAULT 'manual'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    CONSTRAINT estimate_line_items_line_total_check CHECK ((line_total >= (0)::numeric)),
+    CONSTRAINT estimate_line_items_quantity_check CHECK ((quantity >= (0)::numeric)),
+    CONSTRAINT estimate_line_items_source_check CHECK ((source = ANY (ARRAY['manual'::text, 'abc_supply'::text]))),
+    CONSTRAINT estimate_line_items_unit_price_check CHECK ((unit_price >= (0)::numeric))
 );
 
-CREATE INDEX IF NOT EXISTS idx_user_preferences_company ON user_preferences (company_id);
+--
+-- Name: estimate_line_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
 
-ALTER TABLE companies
-ADD COLUMN IF NOT EXISTS workspace_defaults JSONB NOT NULL DEFAULT '{}'::jsonb;
+CREATE SEQUENCE public.estimate_line_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: estimate_line_items_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.estimate_line_items_id_seq OWNED BY public.estimate_line_items.id;
+
+--
+-- Name: estimate_template_line_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.estimate_template_line_items (
+    id integer NOT NULL,
+    template_id integer NOT NULL,
+    name text NOT NULL,
+    description text,
+    quantity numeric DEFAULT 1 NOT NULL,
+    unit_price numeric DEFAULT 0 NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    CONSTRAINT estimate_template_line_items_quantity_check CHECK ((quantity >= (0)::numeric)),
+    CONSTRAINT estimate_template_line_items_unit_price_check CHECK ((unit_price >= (0)::numeric))
+);
+
+--
+-- Name: estimate_template_line_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.estimate_template_line_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: estimate_template_line_items_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.estimate_template_line_items_id_seq OWNED BY public.estimate_template_line_items.id;
+
+--
+-- Name: estimate_templates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.estimate_templates (
+    id integer NOT NULL,
+    name text NOT NULL,
+    description text,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL
+);
+
+--
+-- Name: estimate_templates_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.estimate_templates_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: estimate_templates_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.estimate_templates_id_seq OWNED BY public.estimate_templates.id;
+
+--
+-- Name: estimates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.estimates (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    job_id integer NOT NULL,
+    title text NOT NULL,
+    status text DEFAULT 'Draft'::text NOT NULL,
+    subtotal numeric DEFAULT 0 NOT NULL,
+    tax_total numeric DEFAULT 0 NOT NULL,
+    discount_total numeric DEFAULT 0 NOT NULL,
+    grand_total numeric DEFAULT 0 NOT NULL,
+    notes text,
+    share_token_hash text,
+    share_expires_at timestamp with time zone,
+    client_responded_at timestamp with time zone,
+    client_response_note text,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    sent_at timestamp with time zone,
+    approved_at timestamp with time zone,
+    change_order_of integer,
+    CONSTRAINT estimates_discount_total_check CHECK ((discount_total >= (0)::numeric)),
+    CONSTRAINT estimates_grand_total_check CHECK ((grand_total >= (0)::numeric)),
+    CONSTRAINT estimates_status_check CHECK ((status = ANY (ARRAY['Draft'::text, 'Sent'::text, 'Approved'::text, 'Rejected'::text]))),
+    CONSTRAINT estimates_subtotal_check CHECK ((subtotal >= (0)::numeric)),
+    CONSTRAINT estimates_tax_total_check CHECK ((tax_total >= (0)::numeric))
+);
+
+--
+-- Name: estimates_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.estimates_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: estimates_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.estimates_id_seq OWNED BY public.estimates.id;
+
+--
+-- Name: files; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.files (
+    id integer NOT NULL,
+    uploaded_by_user_id uuid,
+    original_name text NOT NULL,
+    storage_key text NOT NULL,
+    mime_type text,
+    size_bytes integer,
+    lead_id integer,
+    job_id integer,
+    task_id integer,
+    caption text,
+    category text DEFAULT 'other'::text NOT NULL,
+    client_visible boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    CONSTRAINT files_category_check CHECK ((category = ANY (ARRAY['before'::text, 'after'::text, 'other'::text])))
+);
+
+--
+-- Name: files_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.files_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: files_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.files_id_seq OWNED BY public.files.id;
+
+--
+-- Name: intake_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.intake_tokens (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    token_hash text NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    singleton boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    CONSTRAINT intake_tokens_singleton_true CHECK ((singleton = true))
+);
+
+--
+-- Name: intake_tokens_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.intake_tokens_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: intake_tokens_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.intake_tokens_id_seq OWNED BY public.intake_tokens.id;
+
+--
+-- Name: invoice_line_items; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.invoice_line_items (
+    id integer NOT NULL,
+    invoice_id integer NOT NULL,
+    name text NOT NULL,
+    description text,
+    quantity numeric DEFAULT 1 NOT NULL,
+    unit_price numeric DEFAULT 0 NOT NULL,
+    line_total numeric DEFAULT 0 NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    CONSTRAINT invoice_line_items_line_total_check CHECK ((line_total >= (0)::numeric)),
+    CONSTRAINT invoice_line_items_quantity_check CHECK ((quantity >= (0)::numeric)),
+    CONSTRAINT invoice_line_items_unit_price_check CHECK ((unit_price >= (0)::numeric))
+);
+
+--
+-- Name: invoice_line_items_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.invoice_line_items_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: invoice_line_items_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.invoice_line_items_id_seq OWNED BY public.invoice_line_items.id;
+
+--
+-- Name: invoice_number_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.invoice_number_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: invoice_payments; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.invoice_payments (
+    id integer NOT NULL,
+    company_id uuid NOT NULL,
+    invoice_id integer NOT NULL,
+    job_id integer NOT NULL,
+    recorded_by_user_id uuid,
+    amount numeric NOT NULL,
+    method text DEFAULT 'other'::text NOT NULL,
+    reference text,
+    notes text,
+    received_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT invoice_payments_amount_check CHECK ((amount > (0)::numeric)),
+    CONSTRAINT invoice_payments_method_check CHECK ((method = ANY (ARRAY['check'::text, 'card'::text, 'cash'::text, 'ach'::text, 'financing'::text, 'other'::text])))
+);
+
+--
+-- Name: invoice_payments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.invoice_payments_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: invoice_payments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.invoice_payments_id_seq OWNED BY public.invoice_payments.id;
+
+--
+-- Name: invoices; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.invoices (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    job_id integer NOT NULL,
+    estimate_id integer,
+    invoice_number text NOT NULL,
+    status text DEFAULT 'Draft'::text NOT NULL,
+    subtotal numeric DEFAULT 0 NOT NULL,
+    tax_total numeric DEFAULT 0 NOT NULL,
+    discount_total numeric DEFAULT 0 NOT NULL,
+    grand_total numeric DEFAULT 0 NOT NULL,
+    due_date timestamp with time zone,
+    paid_at timestamp with time zone,
+    notes text,
+    share_token_hash text,
+    share_expires_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    kind text DEFAULT 'standard'::text NOT NULL,
+    prior_billed_total numeric DEFAULT 0 NOT NULL,
+    amount_paid numeric DEFAULT 0 NOT NULL,
+    sent_at timestamp with time zone,
+    voided_at timestamp with time zone,
+    CONSTRAINT invoices_amount_paid_check CHECK ((amount_paid >= (0)::numeric)),
+    CONSTRAINT invoices_discount_total_check CHECK ((discount_total >= (0)::numeric)),
+    CONSTRAINT invoices_grand_total_check CHECK ((grand_total >= (0)::numeric)),
+    CONSTRAINT invoices_kind_check CHECK ((kind = ANY (ARRAY['standard'::text, 'deposit'::text, 'final'::text]))),
+    CONSTRAINT invoices_prior_billed_total_check CHECK ((prior_billed_total >= (0)::numeric)),
+    CONSTRAINT invoices_status_check CHECK ((status = ANY (ARRAY['Draft'::text, 'Sent'::text, 'Partially Paid'::text, 'Paid'::text, 'Overdue'::text, 'Void'::text]))),
+    CONSTRAINT invoices_subtotal_check CHECK ((subtotal >= (0)::numeric)),
+    CONSTRAINT invoices_tax_total_check CHECK ((tax_total >= (0)::numeric))
+);
+
+--
+-- Name: invoices_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.invoices_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: invoices_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.invoices_id_seq OWNED BY public.invoices.id;
+
+--
+-- Name: job_activity; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.job_activity (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    job_id integer NOT NULL,
+    type text NOT NULL,
+    title text NOT NULL,
+    message text,
+    entity_type text,
+    entity_id integer,
+    metadata jsonb,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL
+);
+
+--
+-- Name: job_activity_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.job_activity_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: job_activity_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.job_activity_id_seq OWNED BY public.job_activity.id;
+
+--
+-- Name: job_measurements; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.job_measurements (
+    id integer NOT NULL,
+    job_id integer NOT NULL,
+    label text NOT NULL,
+    value numeric NOT NULL,
+    unit text DEFAULT ''::text NOT NULL,
+    sort_order integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL
+);
+
+--
+-- Name: job_measurements_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.job_measurements_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: job_measurements_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.job_measurements_id_seq OWNED BY public.job_measurements.id;
+
+--
+-- Name: jobs; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.jobs (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    assigned_to uuid,
+    lead_id integer,
+    title text NOT NULL,
+    description text,
+    status text DEFAULT 'New'::text NOT NULL,
+    address text,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    status_changed_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    sold_at timestamp with time zone,
+    work_completed_at timestamp with time zone,
+    closed_at timestamp with time zone,
+    lost_at timestamp with time zone,
+    lost_reason text
+);
+
+--
+-- Name: jobs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.jobs_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: jobs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.jobs_id_seq OWNED BY public.jobs.id;
+
+--
+-- Name: lead_status_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.lead_status_events (
+    id integer NOT NULL,
+    company_id uuid NOT NULL,
+    lead_id integer NOT NULL,
+    from_status text,
+    to_status text NOT NULL,
+    changed_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+--
+-- Name: lead_status_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.lead_status_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: lead_status_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.lead_status_events_id_seq OWNED BY public.lead_status_events.id;
+
+--
+-- Name: leads; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.leads (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    assigned_to uuid,
+    first_name text NOT NULL,
+    last_name text NOT NULL,
+    email text,
+    phone text,
+    source text,
+    status text DEFAULT 'New'::text NOT NULL,
+    budget_min numeric,
+    budget_max numeric,
+    notes text,
+    service_type text,
+    preferred_contact_method text,
+    urgency text,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    status_changed_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL
+);
+
+--
+-- Name: leads_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.leads_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: leads_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.leads_id_seq OWNED BY public.leads.id;
+
+--
+-- Name: notes; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.notes (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    entity_type text NOT NULL,
+    entity_id integer NOT NULL,
+    body text NOT NULL,
+    type text DEFAULT 'note'::text NOT NULL,
+    direction text DEFAULT 'internal'::text NOT NULL,
+    follow_up_task_id integer,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    CONSTRAINT notes_direction_check CHECK ((direction = ANY (ARRAY['inbound'::text, 'outbound'::text, 'internal'::text]))),
+    CONSTRAINT notes_entity_type_check CHECK ((entity_type = ANY (ARRAY['lead'::text, 'job'::text]))),
+    CONSTRAINT notes_type_check CHECK ((type = ANY (ARRAY['call'::text, 'text'::text, 'email'::text, 'in_person'::text, 'note'::text])))
+);
+
+--
+-- Name: notes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.notes_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: notes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.notes_id_seq OWNED BY public.notes.id;
+
+--
+-- Name: notifications; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.notifications (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    type text NOT NULL,
+    title text NOT NULL,
+    message text NOT NULL,
+    entity_type text,
+    entity_id integer,
+    metadata jsonb,
+    dedupe_key text,
+    read_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    CONSTRAINT notifications_entity_type_check CHECK (((entity_type IS NULL) OR (entity_type = ANY (ARRAY['task'::text, 'lead'::text, 'job'::text, 'invite'::text, 'estimate'::text, 'invoice'::text])))),
+    CONSTRAINT notifications_type_check CHECK ((type = ANY (ARRAY['TASK_DUE_SOON'::text, 'TASK_OVERDUE'::text, 'TASK_ASSIGNED'::text, 'TASK_COMPLETED'::text, 'FILE_UPLOADED'::text, 'INVITE_ACCEPTED'::text, 'ESTIMATE_CREATED'::text, 'ESTIMATE_STATUS_CHANGED'::text, 'ESTIMATE_CLIENT_RESPONDED'::text, 'INVOICE_CREATED'::text, 'INVOICE_STATUS_CHANGED'::text, 'INVOICE_PAID'::text, 'LEAD_CREATED'::text, 'LEAD_ASSIGNED'::text, 'JOB_ASSIGNED'::text])))
+);
+
+--
+-- Name: notifications_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.notifications_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: notifications_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.notifications_id_seq OWNED BY public.notifications.id;
+
+--
+-- Name: portal_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.portal_tokens (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    job_id integer NOT NULL,
+    token_hash text NOT NULL,
+    expires_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL
+);
+
+--
+-- Name: portal_tokens_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.portal_tokens_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: portal_tokens_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.portal_tokens_id_seq OWNED BY public.portal_tokens.id;
+
+--
+-- Name: product_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.product_events (
+    id integer NOT NULL,
+    user_id uuid,
+    event_name text NOT NULL,
+    entity_type text,
+    entity_id integer,
+    metadata jsonb,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL
+);
+
+--
+-- Name: product_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.product_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: product_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.product_events_id_seq OWNED BY public.product_events.id;
+
+--
+-- Name: saved_views; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.saved_views (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    entity_type text NOT NULL,
+    name text NOT NULL,
+    filters jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    CONSTRAINT saved_views_entity_type_check CHECK ((entity_type = ANY (ARRAY['leads'::text, 'jobs'::text, 'tasks'::text])))
+);
+
+--
+-- Name: saved_views_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.saved_views_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: saved_views_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.saved_views_id_seq OWNED BY public.saved_views.id;
+
+--
+-- Name: supplier_accounts; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supplier_accounts (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    provider text NOT NULL,
+    external_account_id text NOT NULL,
+    sold_to_number text,
+    bill_to_number text,
+    ship_to_number text,
+    raw_json jsonb,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL
+);
+
+--
+-- Name: supplier_accounts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.supplier_accounts_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: supplier_accounts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.supplier_accounts_id_seq OWNED BY public.supplier_accounts.id;
+
+--
+-- Name: supplier_connections; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supplier_connections (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    provider text NOT NULL,
+    status text DEFAULT 'disconnected'::text NOT NULL,
+    api_base_url text,
+    account_identifier text,
+    encrypted_access_token text,
+    encrypted_refresh_token text,
+    token_expires_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL
+);
+
+--
+-- Name: supplier_connections_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.supplier_connections_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: supplier_connections_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.supplier_connections_id_seq OWNED BY public.supplier_connections.id;
+
+--
+-- Name: supplier_orders; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supplier_orders (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    lead_id integer,
+    provider text NOT NULL,
+    external_order_id text,
+    external_order_status text,
+    request_payload jsonb,
+    response_payload jsonb,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL
+);
+
+--
+-- Name: supplier_orders_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.supplier_orders_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: supplier_orders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.supplier_orders_id_seq OWNED BY public.supplier_orders.id;
+
+--
+-- Name: supplier_webhook_events; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.supplier_webhook_events (
+    id integer NOT NULL,
+    provider text NOT NULL,
+    event_type text,
+    external_event_id text,
+    payload jsonb NOT NULL,
+    processed boolean DEFAULT false NOT NULL,
+    received_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid
+);
+
+--
+-- Name: supplier_webhook_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.supplier_webhook_events_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: supplier_webhook_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.supplier_webhook_events_id_seq OWNED BY public.supplier_webhook_events.id;
+
+--
+-- Name: tasks; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.tasks (
+    id integer NOT NULL,
+    user_id uuid NOT NULL,
+    assigned_to uuid,
+    lead_id integer,
+    job_id integer,
+    title text NOT NULL,
+    description text,
+    due_date timestamp with time zone,
+    kind text DEFAULT 'task'::text NOT NULL,
+    end_at timestamp with time zone,
+    location text,
+    status text DEFAULT 'Pending'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT tasks_appointment_requires_due_check CHECK (((kind <> 'appointment'::text) OR (due_date IS NOT NULL))),
+    CONSTRAINT tasks_end_at_after_due_check CHECK (((end_at IS NULL) OR (due_date IS NULL) OR (end_at > due_date))),
+    CONSTRAINT tasks_exactly_one_owner_check CHECK ((((lead_id IS NOT NULL) AND (job_id IS NULL)) OR ((lead_id IS NULL) AND (job_id IS NOT NULL)))),
+    CONSTRAINT tasks_kind_check CHECK ((kind = ANY (ARRAY['task'::text, 'appointment'::text])))
+);
+
+--
+-- Name: tasks_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.tasks_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+--
+-- Name: tasks_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.tasks_id_seq OWNED BY public.tasks.id;
+
+--
+-- Name: user_preferences; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_preferences (
+    user_id uuid NOT NULL,
+    company_id uuid NOT NULL,
+    preferences jsonb DEFAULT '{}'::jsonb NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+--
+-- Name: users; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.users (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    first_name text NOT NULL,
+    last_name text NOT NULL,
+    email text NOT NULL,
+    password_hash text,
+    role text DEFAULT 'agent'::text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    invite_token_hash text,
+    invite_expires_at timestamp with time zone,
+    invited_at timestamp with time zone,
+    password_set_at timestamp with time zone,
+    last_login_at timestamp with time zone,
+    invite_revoked_at timestamp with time zone,
+    invite_superseded_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    company_id uuid DEFAULT public.crm_default_company_id() NOT NULL,
+    CONSTRAINT users_role_check CHECK ((role = ANY (ARRAY['owner'::text, 'admin'::text, 'agent'::text]))),
+    CONSTRAINT users_status_check CHECK ((status = ANY (ARRAY['invited'::text, 'active'::text, 'disabled'::text])))
+);
+
+--
+-- Name: assignment_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.assignment_events ALTER COLUMN id SET DEFAULT nextval('public.assignment_events_id_seq'::regclass);
+
+--
+-- Name: automation_rules id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.automation_rules ALTER COLUMN id SET DEFAULT nextval('public.automation_rules_id_seq'::regclass);
+
+--
+-- Name: estimate_line_items id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_line_items ALTER COLUMN id SET DEFAULT nextval('public.estimate_line_items_id_seq'::regclass);
+
+--
+-- Name: estimate_template_line_items id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_template_line_items ALTER COLUMN id SET DEFAULT nextval('public.estimate_template_line_items_id_seq'::regclass);
+
+--
+-- Name: estimate_templates id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_templates ALTER COLUMN id SET DEFAULT nextval('public.estimate_templates_id_seq'::regclass);
+
+--
+-- Name: estimates id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimates ALTER COLUMN id SET DEFAULT nextval('public.estimates_id_seq'::regclass);
+
+--
+-- Name: files id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.files ALTER COLUMN id SET DEFAULT nextval('public.files_id_seq'::regclass);
+
+--
+-- Name: intake_tokens id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.intake_tokens ALTER COLUMN id SET DEFAULT nextval('public.intake_tokens_id_seq'::regclass);
+
+--
+-- Name: invoice_line_items id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_line_items ALTER COLUMN id SET DEFAULT nextval('public.invoice_line_items_id_seq'::regclass);
+
+--
+-- Name: invoice_payments id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_payments ALTER COLUMN id SET DEFAULT nextval('public.invoice_payments_id_seq'::regclass);
+
+--
+-- Name: invoices id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoices ALTER COLUMN id SET DEFAULT nextval('public.invoices_id_seq'::regclass);
+
+--
+-- Name: job_activity id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_activity ALTER COLUMN id SET DEFAULT nextval('public.job_activity_id_seq'::regclass);
+
+--
+-- Name: job_measurements id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_measurements ALTER COLUMN id SET DEFAULT nextval('public.job_measurements_id_seq'::regclass);
+
+--
+-- Name: jobs id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs ALTER COLUMN id SET DEFAULT nextval('public.jobs_id_seq'::regclass);
+
+--
+-- Name: lead_status_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.lead_status_events ALTER COLUMN id SET DEFAULT nextval('public.lead_status_events_id_seq'::regclass);
+
+--
+-- Name: leads id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leads ALTER COLUMN id SET DEFAULT nextval('public.leads_id_seq'::regclass);
+
+--
+-- Name: notes id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notes ALTER COLUMN id SET DEFAULT nextval('public.notes_id_seq'::regclass);
+
+--
+-- Name: notifications id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notifications ALTER COLUMN id SET DEFAULT nextval('public.notifications_id_seq'::regclass);
+
+--
+-- Name: portal_tokens id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portal_tokens ALTER COLUMN id SET DEFAULT nextval('public.portal_tokens_id_seq'::regclass);
+
+--
+-- Name: product_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_events ALTER COLUMN id SET DEFAULT nextval('public.product_events_id_seq'::regclass);
+
+--
+-- Name: saved_views id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.saved_views ALTER COLUMN id SET DEFAULT nextval('public.saved_views_id_seq'::regclass);
+
+--
+-- Name: supplier_accounts id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_accounts ALTER COLUMN id SET DEFAULT nextval('public.supplier_accounts_id_seq'::regclass);
+
+--
+-- Name: supplier_connections id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_connections ALTER COLUMN id SET DEFAULT nextval('public.supplier_connections_id_seq'::regclass);
+
+--
+-- Name: supplier_orders id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_orders ALTER COLUMN id SET DEFAULT nextval('public.supplier_orders_id_seq'::regclass);
+
+--
+-- Name: supplier_webhook_events id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_webhook_events ALTER COLUMN id SET DEFAULT nextval('public.supplier_webhook_events_id_seq'::regclass);
+
+--
+-- Name: tasks id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks ALTER COLUMN id SET DEFAULT nextval('public.tasks_id_seq'::regclass);
+
+--
+-- Name: assignment_events assignment_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.assignment_events
+    ADD CONSTRAINT assignment_events_pkey PRIMARY KEY (id);
+
+--
+-- Name: automation_rules automation_rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.automation_rules
+    ADD CONSTRAINT automation_rules_pkey PRIMARY KEY (id);
+
+--
+-- Name: companies companies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.companies
+    ADD CONSTRAINT companies_pkey PRIMARY KEY (id);
+
+--
+-- Name: estimate_line_items estimate_line_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_line_items
+    ADD CONSTRAINT estimate_line_items_pkey PRIMARY KEY (id);
+
+--
+-- Name: estimate_template_line_items estimate_template_line_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_template_line_items
+    ADD CONSTRAINT estimate_template_line_items_pkey PRIMARY KEY (id);
+
+--
+-- Name: estimate_templates estimate_templates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_templates
+    ADD CONSTRAINT estimate_templates_pkey PRIMARY KEY (id);
+
+--
+-- Name: estimates estimates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimates
+    ADD CONSTRAINT estimates_pkey PRIMARY KEY (id);
+
+--
+-- Name: files files_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.files
+    ADD CONSTRAINT files_pkey PRIMARY KEY (id);
+
+--
+-- Name: intake_tokens intake_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.intake_tokens
+    ADD CONSTRAINT intake_tokens_pkey PRIMARY KEY (id);
+
+--
+-- Name: invoice_line_items invoice_line_items_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_line_items
+    ADD CONSTRAINT invoice_line_items_pkey PRIMARY KEY (id);
+
+--
+-- Name: invoice_payments invoice_payments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_payments
+    ADD CONSTRAINT invoice_payments_pkey PRIMARY KEY (id);
+
+--
+-- Name: invoices invoices_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoices
+    ADD CONSTRAINT invoices_pkey PRIMARY KEY (id);
+
+--
+-- Name: job_activity job_activity_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_activity
+    ADD CONSTRAINT job_activity_pkey PRIMARY KEY (id);
+
+--
+-- Name: job_measurements job_measurements_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_measurements
+    ADD CONSTRAINT job_measurements_pkey PRIMARY KEY (id);
+
+--
+-- Name: jobs jobs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_pkey PRIMARY KEY (id);
+
+--
+-- Name: jobs jobs_status_check; Type: CHECK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE public.jobs
+    ADD CONSTRAINT jobs_status_check CHECK ((status = ANY (ARRAY['New'::text, 'Contacted'::text, 'Appointment Scheduled'::text, 'Proposal Sent'::text, 'Sold'::text, 'Work Scheduled'::text, 'In Progress'::text, 'Work Complete'::text, 'Closed'::text, 'Lost'::text]))) NOT VALID;
+
+--
+-- Name: lead_status_events lead_status_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.lead_status_events
+    ADD CONSTRAINT lead_status_events_pkey PRIMARY KEY (id);
+
+--
+-- Name: leads leads_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leads
+    ADD CONSTRAINT leads_pkey PRIMARY KEY (id);
+
+--
+-- Name: notes notes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notes
+    ADD CONSTRAINT notes_pkey PRIMARY KEY (id);
+
+--
+-- Name: notifications notifications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
+
+--
+-- Name: portal_tokens portal_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portal_tokens
+    ADD CONSTRAINT portal_tokens_pkey PRIMARY KEY (id);
+
+--
+-- Name: product_events product_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_events
+    ADD CONSTRAINT product_events_pkey PRIMARY KEY (id);
+
+--
+-- Name: saved_views saved_views_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.saved_views
+    ADD CONSTRAINT saved_views_pkey PRIMARY KEY (id);
+
+--
+-- Name: supplier_accounts supplier_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_accounts
+    ADD CONSTRAINT supplier_accounts_pkey PRIMARY KEY (id);
+
+--
+-- Name: supplier_connections supplier_connections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_connections
+    ADD CONSTRAINT supplier_connections_pkey PRIMARY KEY (id);
+
+--
+-- Name: supplier_orders supplier_orders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_orders
+    ADD CONSTRAINT supplier_orders_pkey PRIMARY KEY (id);
+
+--
+-- Name: supplier_webhook_events supplier_webhook_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_webhook_events
+    ADD CONSTRAINT supplier_webhook_events_pkey PRIMARY KEY (id);
+
+--
+-- Name: tasks tasks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_pkey PRIMARY KEY (id);
+
+--
+-- Name: user_preferences user_preferences_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_preferences
+    ADD CONSTRAINT user_preferences_pkey PRIMARY KEY (user_id);
+
+--
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+
+--
+-- Name: idx_assignment_events_lookup; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_assignment_events_lookup ON public.assignment_events USING btree (company_id, entity_type, entity_id, assigned_at DESC, id DESC);
+
+--
+-- Name: idx_automation_rules_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_automation_rules_company_id ON public.automation_rules USING btree (company_id);
+
+--
+-- Name: idx_automation_rules_enabled; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_automation_rules_enabled ON public.automation_rules USING btree (enabled);
+
+--
+-- Name: idx_automation_rules_trigger; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_automation_rules_trigger ON public.automation_rules USING btree (trigger_event);
+
+--
+-- Name: idx_automation_rules_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_automation_rules_user_id ON public.automation_rules USING btree (user_id);
+
+--
+-- Name: idx_companies_slug; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_companies_slug ON public.companies USING btree (slug);
+
+--
+-- Name: idx_estimate_line_items_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimate_line_items_company_id ON public.estimate_line_items USING btree (company_id);
+
+--
+-- Name: idx_estimate_line_items_estimate_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimate_line_items_estimate_id ON public.estimate_line_items USING btree (estimate_id);
+
+--
+-- Name: idx_estimate_line_items_sort_order; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimate_line_items_sort_order ON public.estimate_line_items USING btree (estimate_id, sort_order);
+
+--
+-- Name: idx_estimate_template_line_items_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimate_template_line_items_company_id ON public.estimate_template_line_items USING btree (company_id);
+
+--
+-- Name: idx_estimate_template_line_items_template_sort; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimate_template_line_items_template_sort ON public.estimate_template_line_items USING btree (template_id, sort_order);
+
+--
+-- Name: idx_estimate_templates_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimate_templates_company_id ON public.estimate_templates USING btree (company_id);
+
+--
+-- Name: idx_estimate_templates_company_lower_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_estimate_templates_company_lower_name ON public.estimate_templates USING btree (company_id, lower(name));
+
+--
+-- Name: idx_estimates_change_order_of; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimates_change_order_of ON public.estimates USING btree (change_order_of);
+
+--
+-- Name: idx_estimates_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimates_company_id ON public.estimates USING btree (company_id);
+
+--
+-- Name: idx_estimates_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimates_created_at ON public.estimates USING btree (created_at DESC);
+
+--
+-- Name: idx_estimates_job_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimates_job_id ON public.estimates USING btree (job_id);
+
+--
+-- Name: idx_estimates_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimates_status ON public.estimates USING btree (status);
+
+--
+-- Name: idx_estimates_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_estimates_user_id ON public.estimates USING btree (user_id);
+
+--
+-- Name: idx_files_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_files_company_id ON public.files USING btree (company_id);
+
+--
+-- Name: idx_files_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_files_created_at ON public.files USING btree (created_at);
+
+--
+-- Name: idx_files_job_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_files_job_id ON public.files USING btree (job_id);
+
+--
+-- Name: idx_files_lead_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_files_lead_id ON public.files USING btree (lead_id);
+
+--
+-- Name: idx_files_task_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_files_task_id ON public.files USING btree (task_id);
+
+--
+-- Name: idx_files_uploaded_by_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_files_uploaded_by_user_id ON public.files USING btree (uploaded_by_user_id);
+
+--
+-- Name: idx_intake_tokens_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_intake_tokens_company_id ON public.intake_tokens USING btree (company_id);
+
+--
+-- Name: idx_intake_tokens_company_singleton; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_intake_tokens_company_singleton ON public.intake_tokens USING btree (company_id) WHERE (singleton = true);
+
+--
+-- Name: idx_intake_tokens_hash; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_intake_tokens_hash ON public.intake_tokens USING btree (token_hash);
+
+--
+-- Name: idx_intake_tokens_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_intake_tokens_user ON public.intake_tokens USING btree (user_id);
+
+--
+-- Name: idx_invoice_line_items_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoice_line_items_company_id ON public.invoice_line_items USING btree (company_id);
+
+--
+-- Name: idx_invoice_line_items_invoice_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoice_line_items_invoice_id ON public.invoice_line_items USING btree (invoice_id);
+
+--
+-- Name: idx_invoice_line_items_sort_order; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoice_line_items_sort_order ON public.invoice_line_items USING btree (invoice_id, sort_order);
+
+--
+-- Name: idx_invoice_payments_company_received; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoice_payments_company_received ON public.invoice_payments USING btree (company_id, received_at DESC);
+
+--
+-- Name: idx_invoice_payments_invoice; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoice_payments_invoice ON public.invoice_payments USING btree (invoice_id);
+
+--
+-- Name: idx_invoice_payments_job; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoice_payments_job ON public.invoice_payments USING btree (job_id);
+
+--
+-- Name: idx_invoices_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoices_company_id ON public.invoices USING btree (company_id);
+
+--
+-- Name: idx_invoices_company_number; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_invoices_company_number ON public.invoices USING btree (company_id, invoice_number);
+
+--
+-- Name: idx_invoices_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoices_created_at ON public.invoices USING btree (created_at DESC);
+
+--
+-- Name: idx_invoices_estimate_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoices_estimate_id ON public.invoices USING btree (estimate_id);
+
+--
+-- Name: idx_invoices_job_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoices_job_id ON public.invoices USING btree (job_id);
+
+--
+-- Name: idx_invoices_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoices_status ON public.invoices USING btree (status);
+
+--
+-- Name: idx_invoices_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoices_user_id ON public.invoices USING btree (user_id);
+
+--
+-- Name: idx_job_activity_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_job_activity_company_id ON public.job_activity USING btree (company_id);
+
+--
+-- Name: idx_job_activity_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_job_activity_created_at ON public.job_activity USING btree (created_at DESC);
+
+--
+-- Name: idx_job_activity_job_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_job_activity_job_id ON public.job_activity USING btree (job_id);
+
+--
+-- Name: idx_job_activity_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_job_activity_user_id ON public.job_activity USING btree (user_id);
+
+--
+-- Name: idx_job_measurements_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_job_measurements_company_id ON public.job_measurements USING btree (company_id);
+
+--
+-- Name: idx_job_measurements_job_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_job_measurements_job_id ON public.job_measurements USING btree (job_id);
+
+--
+-- Name: idx_jobs_assigned_to; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_assigned_to ON public.jobs USING btree (assigned_to);
+
+--
+-- Name: idx_jobs_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_company_id ON public.jobs USING btree (company_id);
+
+--
+-- Name: idx_jobs_company_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_company_status ON public.jobs USING btree (company_id, status);
+
+--
+-- Name: idx_jobs_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_created_at ON public.jobs USING btree (created_at);
+
+--
+-- Name: idx_jobs_lead_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_lead_id ON public.jobs USING btree (lead_id);
+
+--
+-- Name: idx_jobs_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_status ON public.jobs USING btree (status);
+
+--
+-- Name: idx_jobs_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_user_id ON public.jobs USING btree (user_id);
+
+--
+-- Name: idx_jobs_user_status_changed_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_jobs_user_status_changed_at ON public.jobs USING btree (user_id, status, status_changed_at);
+
+--
+-- Name: idx_lead_status_events_lead; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_lead_status_events_lead ON public.lead_status_events USING btree (company_id, lead_id, changed_at, id);
+
+--
+-- Name: idx_leads_assigned_to; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_leads_assigned_to ON public.leads USING btree (assigned_to);
+
+--
+-- Name: idx_leads_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_leads_company_id ON public.leads USING btree (company_id);
+
+--
+-- Name: idx_leads_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_leads_created_at ON public.leads USING btree (created_at);
+
+--
+-- Name: idx_leads_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_leads_name ON public.leads USING btree (last_name, first_name);
+
+--
+-- Name: idx_leads_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_leads_status ON public.leads USING btree (status);
+
+--
+-- Name: idx_leads_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_leads_user_id ON public.leads USING btree (user_id);
+
+--
+-- Name: idx_leads_user_status_changed_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_leads_user_status_changed_at ON public.leads USING btree (user_id, status, status_changed_at);
+
+--
+-- Name: idx_notes_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notes_company_id ON public.notes USING btree (company_id);
+
+--
+-- Name: idx_notes_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notes_created_at ON public.notes USING btree (created_at DESC);
+
+--
+-- Name: idx_notes_entity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notes_entity ON public.notes USING btree (entity_type, entity_id);
+
+--
+-- Name: idx_notes_entity_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notes_entity_created ON public.notes USING btree (entity_type, entity_id, created_at DESC);
+
+--
+-- Name: idx_notes_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notes_user_id ON public.notes USING btree (user_id);
+
+--
+-- Name: idx_notifications_company_dedupe_key; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_notifications_company_dedupe_key ON public.notifications USING btree (company_id, dedupe_key) WHERE (dedupe_key IS NOT NULL);
+
+--
+-- Name: idx_notifications_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notifications_company_id ON public.notifications USING btree (company_id);
+
+--
+-- Name: idx_notifications_type; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notifications_type ON public.notifications USING btree (type);
+
+--
+-- Name: idx_notifications_user_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notifications_user_created_at ON public.notifications USING btree (user_id, created_at DESC);
+
+--
+-- Name: idx_notifications_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notifications_user_id ON public.notifications USING btree (user_id);
+
+--
+-- Name: idx_notifications_user_read_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_notifications_user_read_at ON public.notifications USING btree (user_id, read_at);
+
+--
+-- Name: idx_portal_tokens_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_portal_tokens_company_id ON public.portal_tokens USING btree (company_id);
+
+--
+-- Name: idx_portal_tokens_hash; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_portal_tokens_hash ON public.portal_tokens USING btree (token_hash);
+
+--
+-- Name: idx_portal_tokens_job; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_portal_tokens_job ON public.portal_tokens USING btree (job_id);
+
+--
+-- Name: idx_portal_tokens_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_portal_tokens_user ON public.portal_tokens USING btree (user_id);
+
+--
+-- Name: idx_product_events_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_product_events_company_id ON public.product_events USING btree (company_id);
+
+--
+-- Name: idx_product_events_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_product_events_created ON public.product_events USING btree (created_at DESC);
+
+--
+-- Name: idx_product_events_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_product_events_name ON public.product_events USING btree (event_name);
+
+--
+-- Name: idx_product_events_name_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_product_events_name_created ON public.product_events USING btree (event_name, created_at DESC);
+
+--
+-- Name: idx_product_events_user; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_product_events_user ON public.product_events USING btree (user_id);
+
+--
+-- Name: idx_saved_views_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_saved_views_company_id ON public.saved_views USING btree (company_id);
+
+--
+-- Name: idx_saved_views_user_entity; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_saved_views_user_entity ON public.saved_views USING btree (user_id, entity_type);
+
+--
+-- Name: idx_saved_views_user_entity_name; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_saved_views_user_entity_name ON public.saved_views USING btree (user_id, entity_type, lower(name));
+
+--
+-- Name: idx_supplier_accounts_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_accounts_company_id ON public.supplier_accounts USING btree (company_id);
+
+--
+-- Name: idx_supplier_accounts_company_provider_external; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_supplier_accounts_company_provider_external ON public.supplier_accounts USING btree (company_id, provider, external_account_id);
+
+--
+-- Name: idx_supplier_accounts_provider; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_accounts_provider ON public.supplier_accounts USING btree (provider);
+
+--
+-- Name: idx_supplier_accounts_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_accounts_user_id ON public.supplier_accounts USING btree (user_id);
+
+--
+-- Name: idx_supplier_connections_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_connections_company_id ON public.supplier_connections USING btree (company_id);
+
+--
+-- Name: idx_supplier_connections_user_provider; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_supplier_connections_user_provider ON public.supplier_connections USING btree (user_id, provider);
+
+--
+-- Name: idx_supplier_orders_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_orders_company_id ON public.supplier_orders USING btree (company_id);
+
+--
+-- Name: idx_supplier_orders_lead_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_orders_lead_id ON public.supplier_orders USING btree (lead_id);
+
+--
+-- Name: idx_supplier_orders_provider; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_orders_provider ON public.supplier_orders USING btree (provider);
+
+--
+-- Name: idx_supplier_orders_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_orders_user_id ON public.supplier_orders USING btree (user_id);
+
+--
+-- Name: idx_supplier_webhook_events_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_webhook_events_company_id ON public.supplier_webhook_events USING btree (company_id);
+
+--
+-- Name: idx_supplier_webhook_events_processed; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_webhook_events_processed ON public.supplier_webhook_events USING btree (processed);
+
+--
+-- Name: idx_supplier_webhook_events_provider; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_supplier_webhook_events_provider ON public.supplier_webhook_events USING btree (provider);
+
+--
+-- Name: idx_tasks_assigned_to; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_tasks_assigned_to ON public.tasks USING btree (assigned_to);
+
+--
+-- Name: idx_tasks_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_tasks_company_id ON public.tasks USING btree (company_id);
+
+--
+-- Name: idx_tasks_due_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_tasks_due_date ON public.tasks USING btree (due_date);
+
+--
+-- Name: idx_tasks_job_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_tasks_job_id ON public.tasks USING btree (job_id);
+
+--
+-- Name: idx_tasks_lead_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_tasks_lead_id ON public.tasks USING btree (lead_id);
+
+--
+-- Name: idx_tasks_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_tasks_status ON public.tasks USING btree (status);
+
+--
+-- Name: idx_tasks_user_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_tasks_user_id ON public.tasks USING btree (user_id);
+
+--
+-- Name: idx_tasks_user_kind_due_date; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_tasks_user_kind_due_date ON public.tasks USING btree (user_id, kind, due_date);
+
+--
+-- Name: idx_user_preferences_company; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_user_preferences_company ON public.user_preferences USING btree (company_id);
+
+--
+-- Name: idx_users_company_id; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_company_id ON public.users USING btree (company_id);
+
+--
+-- Name: idx_users_company_lower_email; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_users_company_lower_email ON public.users USING btree (company_id, lower(email));
+
+--
+-- Name: idx_users_invite_expires_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_invite_expires_at ON public.users USING btree (invite_expires_at);
+
+--
+-- Name: idx_users_role; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_role ON public.users USING btree (role);
+
+--
+-- Name: idx_users_status; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_users_status ON public.users USING btree (status);
+
+--
+-- Name: assignment_events assignment_events_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.assignment_events
+    ADD CONSTRAINT assignment_events_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: assignment_events assignment_events_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.assignment_events
+    ADD CONSTRAINT assignment_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: automation_rules automation_rules_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.automation_rules
+    ADD CONSTRAINT automation_rules_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: automation_rules automation_rules_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.automation_rules
+    ADD CONSTRAINT automation_rules_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: estimate_line_items estimate_line_items_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_line_items
+    ADD CONSTRAINT estimate_line_items_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: estimate_line_items estimate_line_items_estimate_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_line_items
+    ADD CONSTRAINT estimate_line_items_estimate_id_fkey FOREIGN KEY (estimate_id) REFERENCES public.estimates(id) ON DELETE CASCADE;
+
+--
+-- Name: estimate_template_line_items estimate_template_line_items_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_template_line_items
+    ADD CONSTRAINT estimate_template_line_items_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: estimate_template_line_items estimate_template_line_items_template_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_template_line_items
+    ADD CONSTRAINT estimate_template_line_items_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.estimate_templates(id) ON DELETE CASCADE;
+
+--
+-- Name: estimate_templates estimate_templates_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimate_templates
+    ADD CONSTRAINT estimate_templates_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: estimates estimates_change_order_of_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimates
+    ADD CONSTRAINT estimates_change_order_of_fkey FOREIGN KEY (change_order_of) REFERENCES public.estimates(id) ON DELETE SET NULL;
+
+--
+-- Name: estimates estimates_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimates
+    ADD CONSTRAINT estimates_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: estimates estimates_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimates
+    ADD CONSTRAINT estimates_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(id) ON DELETE CASCADE;
+
+--
+-- Name: estimates estimates_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.estimates
+    ADD CONSTRAINT estimates_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: files files_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.files
+    ADD CONSTRAINT files_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: files files_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.files
+    ADD CONSTRAINT files_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(id) ON DELETE CASCADE;
+
+--
+-- Name: files files_lead_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.files
+    ADD CONSTRAINT files_lead_id_fkey FOREIGN KEY (lead_id) REFERENCES public.leads(id) ON DELETE CASCADE;
+
+--
+-- Name: files files_task_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.files
+    ADD CONSTRAINT files_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+
+--
+-- Name: files files_uploaded_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.files
+    ADD CONSTRAINT files_uploaded_by_user_id_fkey FOREIGN KEY (uploaded_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: intake_tokens intake_tokens_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.intake_tokens
+    ADD CONSTRAINT intake_tokens_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: intake_tokens intake_tokens_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.intake_tokens
+    ADD CONSTRAINT intake_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: invoice_line_items invoice_line_items_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_line_items
+    ADD CONSTRAINT invoice_line_items_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: invoice_line_items invoice_line_items_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_line_items
+    ADD CONSTRAINT invoice_line_items_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id) ON DELETE CASCADE;
+
+--
+-- Name: invoice_payments invoice_payments_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_payments
+    ADD CONSTRAINT invoice_payments_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: invoice_payments invoice_payments_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_payments
+    ADD CONSTRAINT invoice_payments_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id) ON DELETE CASCADE;
+
+--
+-- Name: invoice_payments invoice_payments_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_payments
+    ADD CONSTRAINT invoice_payments_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(id) ON DELETE CASCADE;
+
+--
+-- Name: invoice_payments invoice_payments_recorded_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_payments
+    ADD CONSTRAINT invoice_payments_recorded_by_user_id_fkey FOREIGN KEY (recorded_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: invoices invoices_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoices
+    ADD CONSTRAINT invoices_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: invoices invoices_estimate_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoices
+    ADD CONSTRAINT invoices_estimate_id_fkey FOREIGN KEY (estimate_id) REFERENCES public.estimates(id) ON DELETE SET NULL;
+
+--
+-- Name: invoices invoices_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoices
+    ADD CONSTRAINT invoices_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(id) ON DELETE CASCADE;
+
+--
+-- Name: invoices invoices_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoices
+    ADD CONSTRAINT invoices_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: job_activity job_activity_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_activity
+    ADD CONSTRAINT job_activity_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: job_activity job_activity_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_activity
+    ADD CONSTRAINT job_activity_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(id) ON DELETE CASCADE;
+
+--
+-- Name: job_activity job_activity_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_activity
+    ADD CONSTRAINT job_activity_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: job_measurements job_measurements_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_measurements
+    ADD CONSTRAINT job_measurements_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: job_measurements job_measurements_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.job_measurements
+    ADD CONSTRAINT job_measurements_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(id) ON DELETE CASCADE;
+
+--
+-- Name: jobs jobs_assigned_to_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: jobs jobs_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: jobs jobs_lead_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_lead_id_fkey FOREIGN KEY (lead_id) REFERENCES public.leads(id) ON DELETE SET NULL;
+
+--
+-- Name: jobs jobs_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.jobs
+    ADD CONSTRAINT jobs_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: lead_status_events lead_status_events_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.lead_status_events
+    ADD CONSTRAINT lead_status_events_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: lead_status_events lead_status_events_lead_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.lead_status_events
+    ADD CONSTRAINT lead_status_events_lead_id_fkey FOREIGN KEY (lead_id) REFERENCES public.leads(id) ON DELETE CASCADE;
+
+--
+-- Name: leads leads_assigned_to_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leads
+    ADD CONSTRAINT leads_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: leads leads_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leads
+    ADD CONSTRAINT leads_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: leads leads_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.leads
+    ADD CONSTRAINT leads_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: notes notes_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notes
+    ADD CONSTRAINT notes_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: notes notes_follow_up_task_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notes
+    ADD CONSTRAINT notes_follow_up_task_id_fkey FOREIGN KEY (follow_up_task_id) REFERENCES public.tasks(id) ON DELETE SET NULL;
+
+--
+-- Name: notes notes_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notes
+    ADD CONSTRAINT notes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: notifications notifications_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: notifications notifications_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: portal_tokens portal_tokens_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portal_tokens
+    ADD CONSTRAINT portal_tokens_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: portal_tokens portal_tokens_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portal_tokens
+    ADD CONSTRAINT portal_tokens_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(id) ON DELETE CASCADE;
+
+--
+-- Name: portal_tokens portal_tokens_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.portal_tokens
+    ADD CONSTRAINT portal_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: product_events product_events_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_events
+    ADD CONSTRAINT product_events_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: product_events product_events_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.product_events
+    ADD CONSTRAINT product_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: saved_views saved_views_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.saved_views
+    ADD CONSTRAINT saved_views_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: saved_views saved_views_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.saved_views
+    ADD CONSTRAINT saved_views_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: supplier_accounts supplier_accounts_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_accounts
+    ADD CONSTRAINT supplier_accounts_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: supplier_accounts supplier_accounts_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_accounts
+    ADD CONSTRAINT supplier_accounts_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: supplier_connections supplier_connections_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_connections
+    ADD CONSTRAINT supplier_connections_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: supplier_connections supplier_connections_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_connections
+    ADD CONSTRAINT supplier_connections_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: supplier_orders supplier_orders_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_orders
+    ADD CONSTRAINT supplier_orders_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: supplier_orders supplier_orders_lead_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_orders
+    ADD CONSTRAINT supplier_orders_lead_id_fkey FOREIGN KEY (lead_id) REFERENCES public.leads(id) ON DELETE SET NULL;
+
+--
+-- Name: supplier_orders supplier_orders_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_orders
+    ADD CONSTRAINT supplier_orders_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: supplier_webhook_events supplier_webhook_events_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.supplier_webhook_events
+    ADD CONSTRAINT supplier_webhook_events_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: tasks tasks_assigned_to_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.users(id) ON DELETE SET NULL;
+
+--
+-- Name: tasks tasks_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: tasks tasks_job_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_job_id_fkey FOREIGN KEY (job_id) REFERENCES public.jobs(id) ON DELETE CASCADE;
+
+--
+-- Name: tasks tasks_lead_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_lead_id_fkey FOREIGN KEY (lead_id) REFERENCES public.leads(id) ON DELETE CASCADE;
+
+--
+-- Name: tasks tasks_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.tasks
+    ADD CONSTRAINT tasks_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: user_preferences user_preferences_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_preferences
+    ADD CONSTRAINT user_preferences_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- Name: user_preferences user_preferences_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_preferences
+    ADD CONSTRAINT user_preferences_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+--
+-- Name: users users_company_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id) ON DELETE CASCADE;
+
+--
+-- PostgreSQL database dump complete
+--
+
+--
+-- Starting rows
+--
+
+--
+-- PostgreSQL database dump
+--
+
+--
+-- Data for Name: companies; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+INSERT INTO public.companies (id, name, slug, palette_id, mark_id, logo_storage_key, created_at, updated_at, workspace_defaults) VALUES ('c0000000-0000-4000-8000-000000000001', 'Rooftop Realty', 'rooftop', 'rooftop', 'product', NULL, '2026-11-09 13:00:27.126434-06', '2026-11-09 13:00:27.126434-06', '{}');
+
+--
+-- Data for Name: estimate_templates; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+INSERT INTO public.estimate_templates (id, name, description, created_at, updated_at, company_id) VALUES (1, 'Inspection', 'Standard roof inspection visit and written report.', '2026-11-09 13:00:27.631125-06', '2026-11-09 13:00:27.631125-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_templates (id, name, description, created_at, updated_at, company_id) VALUES (2, 'Repair', 'Typical leak or flashing repair package.', '2026-11-09 13:00:27.633353-06', '2026-11-09 13:00:27.633353-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_templates (id, name, description, created_at, updated_at, company_id) VALUES (3, 'Replacement', 'Full roof replacement starter package.', '2026-11-09 13:00:27.633759-06', '2026-11-09 13:00:27.633759-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_templates (id, name, description, created_at, updated_at, company_id) VALUES (4, 'Gutters', 'Seamless gutter and downspout install.', '2026-11-09 13:00:27.633935-06', '2026-11-09 13:00:27.633935-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_templates (id, name, description, created_at, updated_at, company_id) VALUES (5, 'Maintenance', 'Seasonal clean-out and minor sealing.', '2026-11-09 13:00:27.634096-06', '2026-11-09 13:00:27.634096-06', 'c0000000-0000-4000-8000-000000000001');
+
+--
+-- Data for Name: estimate_template_line_items; Type: TABLE DATA; Schema: public; Owner: -
+--
+
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (1, 1, 'Written condition report', 'Summary of findings and recommendations', 1, 75, 1, '2026-11-09 13:00:27.634268-06', '2026-11-09 13:00:27.634268-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (2, 1, 'Roof inspection', 'On-site inspection of roof system', 1, 250, 0, '2026-11-09 13:00:27.634268-06', '2026-11-09 13:00:27.634268-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (3, 2, 'Debris removal', 'Haul-off of repair debris', 1, 95, 2, '2026-11-09 13:00:27.635097-06', '2026-11-09 13:00:27.635097-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (4, 2, 'Flashing and materials', 'Pipe boots, sealant, and flashing', 1, 185, 1, '2026-11-09 13:00:27.635097-06', '2026-11-09 13:00:27.635097-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (5, 2, 'Leak repair labor', 'Locate and repair active leaks', 1, 450, 0, '2026-11-09 13:00:27.635097-06', '2026-11-09 13:00:27.635097-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (6, 3, 'Tear-off', 'Remove existing roofing to deck', 1, 1200, 0, '2026-11-09 13:00:27.635445-06', '2026-11-09 13:00:27.635445-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (7, 3, 'Underlayment', 'Synthetic underlayment', 1, 650, 1, '2026-11-09 13:00:27.635445-06', '2026-11-09 13:00:27.635445-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (8, 3, 'Architectural shingles', 'Laminate shingle install', 1, 4200, 2, '2026-11-09 13:00:27.635445-06', '2026-11-09 13:00:27.635445-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (9, 3, 'Ridge cap and vents', 'Ridge, pipe boots, and ventilation', 1, 380, 3, '2026-11-09 13:00:27.635445-06', '2026-11-09 13:00:27.635445-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (10, 3, 'Labor', 'Install labor', 1, 2800, 4, '2026-11-09 13:00:27.635445-06', '2026-11-09 13:00:27.635445-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (11, 4, 'Hang and seal', 'Install, hangers, and end caps', 1, 350, 2, '2026-11-09 13:00:27.635819-06', '2026-11-09 13:00:27.635819-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (12, 4, 'Downspouts', 'Each downspout and outlet', 4, 45, 1, '2026-11-09 13:00:27.635819-06', '2026-11-09 13:00:27.635819-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (13, 4, 'Seamless gutters', 'Linear feet of 5" or 6" gutter', 120, 12, 0, '2026-11-09 13:00:27.635819-06', '2026-11-09 13:00:27.635819-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (14, 5, 'Sealant and minor repairs', 'Touch-up sealing at penetrations', 1, 125, 1, '2026-11-09 13:00:27.636075-06', '2026-11-09 13:00:27.636075-06', 'c0000000-0000-4000-8000-000000000001');
+INSERT INTO public.estimate_template_line_items (id, template_id, name, description, quantity, unit_price, sort_order, created_at, updated_at, company_id) VALUES (15, 5, 'Debris clean-out', 'Roof and gutter debris removal', 1, 175, 0, '2026-11-09 13:00:27.636075-06', '2026-11-09 13:00:27.636075-06', 'c0000000-0000-4000-8000-000000000001');
+
+--
+-- Name: estimate_template_line_items_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.estimate_template_line_items_id_seq', 15, true);
+
+--
+-- Name: estimate_templates_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
+--
+
+SELECT pg_catalog.setval('public.estimate_templates_id_seq', 5, true);
+
+--
+-- PostgreSQL database dump complete
+--

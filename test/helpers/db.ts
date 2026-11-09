@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { pool } from '../../src/db';
-import { DEFAULT_COMPANY_ID } from './auth';
+const { startingRowsSql } = require('../../scripts/lib/migrations');
 
 export async function resetDb() {
   await pool.query(`
@@ -33,14 +33,8 @@ export async function resetDb() {
     RESTART IDENTITY CASCADE;
   `);
 
-  await pool.query(
-    `
-    INSERT INTO companies (id, name, slug, palette_id)
-    VALUES ($1, 'Rooftop Realty', 'rooftop', 'rooftop')
-    ON CONFLICT (id) DO NOTHING
-    `,
-    [DEFAULT_COMPANY_ID]
-  );
+  // The built-in company and its estimate templates, as a new database has them.
+  await pool.query(startingRowsSql());
 
   const uploadsDir = path.join(process.cwd(), 'uploads');
 
@@ -53,32 +47,5 @@ export async function resetDb() {
         // ignore cleanup failures for test temp files
       }
     }
-  }
-
-  const seedPath = path.join(
-    process.cwd(),
-    'sql',
-    'patch_phase17_quotes_photos.sql'
-  );
-  if (fs.existsSync(seedPath)) {
-    await pool.query(fs.readFileSync(seedPath, 'utf8'));
-  }
-
-  const companiesPatchPath = path.join(
-    process.cwd(),
-    'sql',
-    'patch_phase20_companies.sql'
-  );
-  if (fs.existsSync(companiesPatchPath)) {
-    await pool.query(fs.readFileSync(companiesPatchPath, 'utf8'));
-  }
-
-  const brandingPatchPath = path.join(
-    process.cwd(),
-    'sql',
-    'patch_phase21_company_branding.sql'
-  );
-  if (fs.existsSync(brandingPatchPath)) {
-    await pool.query(fs.readFileSync(brandingPatchPath, 'utf8'));
   }
 }
