@@ -10,7 +10,7 @@ Apply the Rooftop Realty walkthrough dataset to the hosted CRM database on the W
 Narrative demo covering a real roofing/exterior workflow:
 
 - 7 leads across New → Contacted → Qualified → Closed / Inactive
-- 4 jobs including Proposal Sent, Appointment Scheduled, Closed Won, Closed Lost
+- 4 jobs including Proposal Sent, Appointment Scheduled, Closed (paid in full) and Lost
 - Tasks + Phase 19 appointments (`kind`, `end_at`, `location`)
 - Typed notes (call / text / email / in_person)
 - Estimates (Draft / Sent / Approved / Rejected) + line items
@@ -129,9 +129,9 @@ Treat those tokens as sensitive.
 
 Suggested path:
 
-1. Login as owner → Dashboard (workload, overdue, appointments)
+1. Login as owner → Today (what needs you, money owed, the agenda)
 2. Leads → Marcus Nelson / Priya Patel
-3. Jobs → Patel proposal / Nelson appointment / Andersen closed won
+3. Jobs → Patel proposal / Nelson appointment / Andersen closed (paid in full)
 4. Estimates + Invoices
 5. Tasks calendar / appointments
 6. Notifications bell
