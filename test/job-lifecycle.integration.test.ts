@@ -193,6 +193,11 @@ describe('job lifecycle — API', () => {
     expect(deposit.body.invoice.status).toBe('Draft');
     const depositId = deposit.body.invoice.id;
 
+    // A drafted deposit is not a request yet: the next step is to send it.
+    current = await getJob(owner.headers, job.id);
+    expect(current.next_step.action).toBe('send_invoice');
+    expect(current.next_step.label).toMatch(/deposit/i);
+
     // Asking again returns the same deposit.
     const depositAgain = await request(app)
       .post(`/invoices/from-estimate/${estimateId}`)
@@ -690,5 +695,70 @@ describe('job lifecycle — API', () => {
     const job2 = await getJob(owner.headers, job.id);
     expect(job2.health.level).toBe('red');
     expect(job2.next_step.action).toBe('collect_payment');
+  });
+  it('keeps a deposit that a final invoice already subtracts', async () => {
+    const owner = await createAuthedUser('owner');
+    const lead = await createLead(owner.headers);
+    const job = await createJob(owner.headers, lead.id, 'Deposit guard');
+    const estimateId = await createEstimate(owner.headers, job.id, [
+      { name: 'Scope', quantity: 1, unit_price: 2000 },
+    ]);
+    await request(app)
+      .patch(`/estimates/${estimateId}`)
+      .set(owner.headers)
+      .send({ status: 'Approved' });
+
+    const deposit = await request(app)
+      .post(`/invoices/from-estimate/${estimateId}`)
+      .set(owner.headers)
+      .send({ kind: 'deposit', deposit_percent: 25 });
+    expect(deposit.status).toBe(201);
+    const depositId = deposit.body.invoice.id;
+    expect(deposit.body.invoice.locked).toBe(false);
+
+    const final = await request(app)
+      .post(`/invoices/from-estimate/${estimateId}`)
+      .set(owner.headers)
+      .send({ kind: 'final' });
+    expect(final.body.invoice.prior_billed_total).toBe(500);
+    const finalNumber = final.body.invoice.invoice_number;
+
+    // The deposit is now part of the final's math: it cannot change or vanish.
+    const read = await request(app).get(`/invoices/${depositId}`).set(owner.headers);
+    expect(read.body.invoice.applied_on).toBe(finalNumber);
+    expect(read.body.invoice.locked).toBe(true);
+
+    const voidDeposit = await request(app)
+      .patch(`/invoices/${depositId}`)
+      .set(owner.headers)
+      .send({ status: 'Void' });
+    expect(voidDeposit.status).toBe(409);
+    expect(voidDeposit.body.error).toContain(finalNumber);
+
+    const editDeposit = await request(app)
+      .post(`/invoices/${depositId}/line-items`)
+      .set(owner.headers)
+      .send({ name: 'More', quantity: 1, unit_price: 10 });
+    expect(editDeposit.status).toBe(409);
+
+    const deleteDeposit = await request(app)
+      .delete(`/invoices/${depositId}`)
+      .set(owner.headers);
+    expect(deleteDeposit.status).toBe(409);
+
+    // Void the final first, and the deposit is free again; the job money
+    // stops counting the voided final everywhere.
+    const voidFinal = await request(app)
+      .patch(`/invoices/${final.body.invoice.id}`)
+      .set(owner.headers)
+      .send({ status: 'Void' });
+    expect(voidFinal.status).toBe(200);
+    const freed = await request(app).get(`/invoices/${depositId}`).set(owner.headers);
+    expect(freed.body.invoice.applied_on).toBeNull();
+    expect(freed.body.invoice.locked).toBe(false);
+
+    const current = await getJob(owner.headers, job.id);
+    expect(current.money.draft_total).toBe(500);
+    expect(current.money.unbilled_total).toBe(1500);
   });
 });

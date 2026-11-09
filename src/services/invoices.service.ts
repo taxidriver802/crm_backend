@@ -204,7 +204,20 @@ const INVOICE_SELECT = `
 
     l.first_name AS lead_first_name,
     l.last_name AS lead_last_name,
-    l.email AS lead_email
+    l.email AS lead_email,
+
+    -- A deposit that a live final invoice already subtracts (prior_billed_total).
+    (
+      SELECT f.invoice_number FROM invoices f
+      WHERE i.kind = 'deposit'
+        AND f.estimate_id = i.estimate_id
+        AND f.company_id = i.company_id
+        AND f.kind <> 'deposit'
+        AND f.status <> 'Void'
+        AND f.prior_billed_total > 0
+      ORDER BY f.id ASC
+      LIMIT 1
+    ) AS applied_on_number
   FROM invoices i
   INNER JOIN jobs j ON j.id = i.job_id
   LEFT JOIN leads l ON l.id = j.lead_id
@@ -277,7 +290,12 @@ function normalizeInvoice(row: any, lineItems: any[] = [], payments: any[] = [])
     share_expires_at: row.share_expires_at ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
-    locked: row.status === 'Void' || Number(row.amount_paid ?? 0) > 0,
+    /** For a deposit: the final invoice that already subtracts it. */
+    applied_on: (row.applied_on_number as string | null) ?? null,
+    locked:
+      row.status === 'Void' ||
+      Number(row.amount_paid ?? 0) > 0 ||
+      Boolean(row.applied_on_number),
     job: {
       id: row.job_id,
       title: row.job_title ?? `Job #${row.job_id}`,
@@ -468,6 +486,11 @@ async function syncPaymentState(client: any, invoiceId: number, companyId: strin
 function assertLineItemsEditable(invoice: NormalizedInvoice) {
   if (invoice.status === 'Void') {
     throw new InvoiceStateError('A void invoice cannot be edited.');
+  }
+  if (invoice.applied_on) {
+    throw new InvoiceStateError(
+      `${invoice.applied_on} already subtracts this deposit, so its lines are locked. Void ${invoice.applied_on} first if the deposit has to change.`
+    );
   }
   if (invoice.amount_paid > 0) {
     throw new InvoiceStateError(
@@ -913,6 +936,11 @@ export async function updateInvoice(
     if (existing.status === 'Void') {
       throw new InvoiceStateError('A void invoice cannot change status.');
     }
+    if (target === 'Void' && existing.applied_on) {
+      throw new InvoiceStateError(
+        `${existing.applied_on} already subtracts this deposit. Void ${existing.applied_on} first, then this deposit, so the job is not under-billed.`
+      );
+    }
     if ((target === 'Draft' || target === 'Void') && existing.amount_paid > 0) {
       throw new InvoiceStateError(
         `Payments have been recorded on this invoice. Remove them before moving it to ${target}.`
@@ -1084,6 +1112,11 @@ export async function deleteInvoice(
   if (existing.payments.length > 0) {
     throw new InvoiceStateError(
       'This invoice has payments recorded. Void it instead, or remove the payments first.'
+    );
+  }
+  if (existing.applied_on) {
+    throw new InvoiceStateError(
+      `${existing.applied_on} already subtracts this deposit. Void ${existing.applied_on} first, then remove this deposit.`
     );
   }
   const result = await pool.query(

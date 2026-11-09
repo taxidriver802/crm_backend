@@ -457,10 +457,20 @@ export function computeNextStep(ctx: NextStepContext): NextStep {
         `${usd(m.contract_total)} approved. Bill the deposit before you order material.`
       );
     }
+    // A drafted deposit is not a request until the client has it.
+    if (m.draft_invoice_count > 0) {
+      return step(
+        'send_invoice',
+        'Send the deposit invoice',
+        `${usd(m.draft_total)} is drafted but the client has not been sent it.`
+      );
+    }
     return step(
       'schedule_work',
       'Schedule the work',
-      'Put the crew on the calendar.',
+      m.outstanding_total > 0.004
+        ? `${usd(m.outstanding_total)} deposit still due. Put the crew on the calendar.`
+        : 'Put the crew on the calendar.',
       'Work Scheduled'
     );
   }
