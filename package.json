@@ -10,6 +10,7 @@
     "test": "cross-env NODE_ENV=test jest --runInBand",
     "test:watch": "cross-env NODE_ENV=test jest --watch",
     "test:debug": "cross-env NODE_ENV=test jest --runInBand --detectOpenHandles",
+    "help:articles": "ts-node --transpile-only scripts/help-articles.ts",
     "db:patch-phase9": "node scripts/apply-phase9-patch.js",
     "db:patch-notifications": "node scripts/apply-notifications-patch.js",
     "db:patch-phase10-notes": "node scripts/apply-phase10-notes-patch.js",

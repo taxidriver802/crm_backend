@@ -31,6 +31,7 @@ import { notesRouter } from './routes/notes.routes';
 import { searchRouter } from './routes/search.routes';
 import { reportsRouter } from './routes/reports.routes';
 import { savedViewsRouter } from './routes/savedViews.routes';
+import { helpRouter } from './routes/help.routes';
 import {
   invoicesRouter,
   publicInvoicesRouter,
@@ -88,6 +89,7 @@ app.use('/notes', notesRouter);
 app.use('/search', searchRouter);
 app.use('/reports', reportsRouter);
 app.use('/saved-views', savedViewsRouter);
+app.use('/help', helpRouter);
 app.use('/invoices', invoicesRouter);
 app.use('/public/invoices', publicInvoicesRouter);
 app.use('/automation', automationRouter);
