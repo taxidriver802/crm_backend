@@ -146,9 +146,9 @@ will see it on the portal; untick it to keep it internal.
 1. Choose **New estimate** on the job's next step.
 2. Give it a **Title** and, if you like, **Notes for the client** (the
    client reads these). Choose **Create estimate**.
-3. On the estimate, under **Scope**, fill in **Item name**, **Quantity** and
-   **Unit price**, and choose **Add line**. Add as many lines as the job
-   needs.
+3. On the estimate, under **Scope**, choose **Add line**. Fill in **Item
+   name**, **Quantity** and **Unit price**, and choose **Add line** again.
+   Add as many lines as the job needs.
 
 The total updates as you add lines, and the estimate's next step says
 **Send it to the client**.
@@ -438,8 +438,8 @@ Estimate.
 2. Give it a **Title** and any **Notes for the client**. To start from a
    saved package, pick a **Template (optional)**.
 3. Choose **Create estimate**.
-4. Under **Scope**, fill in **Item name**, **Quantity** and **Unit price**,
-   and choose **Add line**. Repeat for each line.
+4. Under **Scope**, choose **Add line**. Fill in **Item name**, **Quantity**
+   and **Unit price**, and choose **Add line** again. Repeat for each line.
 
 **When it worked:** the estimate is a **Draft** with its total in the
 details panel, and its next step says **Send it to the client**.

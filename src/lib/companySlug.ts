@@ -96,7 +96,12 @@ export async function insertCompanyWithSlug(
       continue;
     }
 
+    // A unique violation aborts the surrounding transaction. The next try
+    // has to roll back to a savepoint, or Postgres rejects it with
+    // "current transaction is aborted" and registration returns 500.
+    const savepoint = `company_slug_${i}`;
     try {
+      await client.query(`SAVEPOINT ${savepoint}`);
       const { rows } = await client.query(
         `
         INSERT INTO companies (name, slug, palette_id, mark_id)
@@ -105,6 +110,7 @@ export async function insertCompanyWithSlug(
         `,
         [input.name, candidate, palette_id, mark_id]
       );
+      await client.query(`RELEASE SAVEPOINT ${savepoint}`);
       return rows[0] as {
         id: string;
         name: string;
@@ -115,6 +121,7 @@ export async function insertCompanyWithSlug(
       };
     } catch (error) {
       if (isPgUniqueViolation(error) && i < maxAttempts - 1) {
+        await client.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
         continue;
       }
       throw error;

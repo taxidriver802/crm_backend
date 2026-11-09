@@ -12,7 +12,9 @@ import { GUIDE_PATH, loadGuide } from '../src/lib/helpGuide';
 
 const file = process.argv[2] || GUIDE_PATH;
 const guide = loadGuide(file);
-process.stdout.write(
+// Let Node flush stdout. process.exit() here drops the tail of a piped
+// write once the buffer fills, so a check reading this sees broken JSON.
+console.log(
   JSON.stringify({ file, articles: guide.articles, sources: guide.sources, errors: guide.errors }, null, 2)
 );
-process.exit(guide.errors.length ? 1 : 0);
+if (guide.errors.length) process.exitCode = 1;

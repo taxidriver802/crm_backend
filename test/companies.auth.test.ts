@@ -62,6 +62,29 @@ describe('Phase 20 auth / company register', () => {
     expect(me.body.company.slug).toBe('northside-auth');
   });
 
+  it('suffixes a generated slug when the company name is already taken', async () => {
+    const first = await request(app).post('/auth/register').send({
+      first_name: 'Pat',
+      last_name: 'Owner',
+      email: 'dup-a@example.com',
+      password: 'Testpass1!',
+      company_name: 'Duplicate Roofing',
+    });
+    expect(first.status).toBe(201);
+    expect(first.body.company.slug).toBe('duplicate-roofing');
+
+    const second = await request(app).post('/auth/register').send({
+      first_name: 'Quinn',
+      last_name: 'Owner',
+      email: 'dup-b@example.com',
+      password: 'Testpass1!',
+      company_name: 'Duplicate Roofing',
+    });
+    expect(second.status).toBe(201);
+    expect(second.body.company.slug).toBe('duplicate-roofing-2');
+    expect(second.body.company.id).not.toBe(first.body.company.id);
+  });
+
   it('rejects a caller-supplied slug that is already taken', async () => {
     const res = await request(app).post('/auth/register').send({
       first_name: 'Pat',
