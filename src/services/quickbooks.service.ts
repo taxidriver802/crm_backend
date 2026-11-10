@@ -148,11 +148,15 @@ export async function handleOAuthCallback(
 
   const expiresAt = new Date(Date.now() + (tokens.expires_in || 3600) * 1000);
 
-  await pool.query(
+  // company_id comes from the connecting user's own row.
+  const inserted = await pool.query(
     `INSERT INTO supplier_connections (
        user_id, provider, status, api_base_url, account_identifier,
-       encrypted_access_token, encrypted_refresh_token, token_expires_at
-     ) VALUES ($1, $2, 'connected', $3, $4, $5, $6, $7)
+       encrypted_access_token, encrypted_refresh_token, token_expires_at, company_id
+     )
+     SELECT $1, $2, 'connected', $3, $4, $5, $6, $7, u.company_id
+     FROM users u
+     WHERE u.id = $1
      ON CONFLICT (user_id, provider)
      DO UPDATE SET
        status = 'connected',
@@ -172,6 +176,8 @@ export async function handleOAuthCallback(
       expiresAt,
     ]
   );
+  if (inserted.rowCount === 0)
+    throw new Error('The connecting user no longer exists.');
 
   return { connected: true, realm_id: realmId };
 }

@@ -321,6 +321,38 @@ export const RULE_TEMPLATES = [
 
 // ─── AUTOMATION ENGINE ─────────────────────────────────
 
+/**
+ * Whether every record a manual trigger's context names (job_id, lead_id)
+ * belongs to this company. POST /automation/evaluate takes the context from
+ * the request body.
+ */
+export async function contextBelongsToCompany(
+  companyId: string,
+  context: Record<string, any>
+) {
+  const tables: Record<string, string> = { job: 'jobs', lead: 'leads' };
+  const checks: [unknown, string][] = [
+    [context.job_id, 'jobs'],
+    [context.lead_id, 'leads'],
+  ];
+  if (context.entity_id != null) {
+    const table = tables[String(context.entity_type)];
+    if (!table) return false;
+    checks.push([context.entity_id, table]);
+  }
+  for (const [value, table] of checks) {
+    if (value == null) continue;
+    const id = Number(value);
+    if (!Number.isInteger(id)) return false;
+    const found = await pool.query(
+      `SELECT 1 FROM ${table} WHERE id = $1 AND company_id = $2`,
+      [id, companyId]
+    );
+    if (found.rowCount === 0) return false;
+  }
+  return true;
+}
+
 export async function evaluateRules(
   userId: string,
   triggerEvent: TriggerEvent,
@@ -399,10 +431,13 @@ async function executeAction(
       if (!jobId) break;
 
       for (const t of tasks) {
+        // Only a job in the rule owner's company gets the task.
         await pool.query(
           `INSERT INTO tasks (user_id, job_id, title, description, status, company_id)
-           SELECT $1, $2, $3, $4, 'Pending', u.company_id
-           FROM users u WHERE u.id = $1`,
+           SELECT $1, j.id, $3, $4, 'Pending', j.company_id
+           FROM users u
+           JOIN jobs j ON j.id = $2 AND j.company_id = u.company_id
+           WHERE u.id = $1`,
           [
             userId,
             jobId,
@@ -434,15 +469,19 @@ async function executeAction(
       if (jobId) {
         await pool.query(
           `INSERT INTO tasks (user_id, job_id, title, description, due_date, status, company_id)
-           SELECT $1, $2, $3, $4, $5, 'Pending', u.company_id
-           FROM users u WHERE u.id = $1`,
+           SELECT $1, j.id, $3, $4, $5, 'Pending', j.company_id
+           FROM users u
+           JOIN jobs j ON j.id = $2 AND j.company_id = u.company_id
+           WHERE u.id = $1`,
           [userId, jobId, title, description, dueDate.toISOString()]
         );
       } else {
         await pool.query(
           `INSERT INTO tasks (user_id, lead_id, title, description, due_date, status, company_id)
-           SELECT $1, $2, $3, $4, $5, 'Pending', u.company_id
-           FROM users u WHERE u.id = $1`,
+           SELECT $1, l.id, $3, $4, $5, 'Pending', l.company_id
+           FROM users u
+           JOIN leads l ON l.id = $2 AND l.company_id = u.company_id
+           WHERE u.id = $1`,
           [userId, leadId, title, description, dueDate.toISOString()]
         );
       }

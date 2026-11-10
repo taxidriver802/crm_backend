@@ -79,6 +79,8 @@ npm run build
 npm run db:migrate                    # baseline on an empty database, then sql/migrations/
 ```
 
+A new database has no company until the first one registers (section 5).
+
 Required in `.env`:
 
 - **`NODE_ENV`**: `production`.
@@ -278,6 +280,13 @@ whole-database restore: one company can't be restored on its own yet
 3. Backend: `npm run db:migrate`.
 4. Restart the backend, then the frontend.
 
+Migration `0002_company_scoping` gives each company its own invoice
+numbers (each carries on from its own highest `INV-` number) and allows one
+live deposit and one live final invoice per estimate. If an estimate
+already has two, it stops before changing anything and names them: void
+the extra one in the app, then run `npm run db:migrate` again. It also
+removes the built-in Rooftop Realty row if no user or record belongs to it.
+
 ## Limits on the public surface
 
 All limits are counted per client address unless noted. A 429 carries
@@ -302,8 +311,9 @@ this change may still be an SVG; the public logo route serves it with
 
 - **Don't set `QB_*` or `ABC_*`.** The boot refuses them.
 - **Don't run `db:seed-walkthrough` on a host with customers.** It writes
-  demo records into the default company. Its `--reset` truncates tables for
-  every company, so it refuses whenever another company has data in them.
+  demo records into the company you name with `--company <slug>` (with one
+  company, that one). Its `--reset` truncates tables for every company, so
+  it refuses whenever another company has data in them.
 - **Don't restore into the live database by hand.** Restore into
   `joist_restore_check` with `db:restore-check`, then swap it in (above).
 - **Don't run more than one backend process.** See "One backend process"

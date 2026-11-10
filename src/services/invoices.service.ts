@@ -9,7 +9,7 @@ import {
   calculateEstimateTotals,
 } from './estimateCalculations';
 import { trackEvent } from './productEvents.service';
-import { reconcileJobAfterPayment } from './jobs.service';
+import { lockJobRow, reconcileJobAfterPayment } from './jobs.service';
 import {
   applyOwnOrAssignedJob,
   applyTenantScope,
@@ -382,10 +382,27 @@ async function getInvoicePaymentsRaw(invoiceId: number) {
   return result.rows;
 }
 
-async function nextInvoiceNumber(): Promise<string> {
-  const seq = await pool.query(`SELECT nextval('invoice_number_seq') AS val`);
-  const num = Number(seq.rows[0].val);
-  return `INV-${String(num).padStart(4, '0')}`;
+/**
+ * The company's next invoice number, taken inside the caller's transaction.
+ * Each company counts from INV-0001 on its own. The counter row stays locked
+ * until that transaction ends, so two invoices never share a number and a
+ * rolled-back invoice gives its number back. The counter never falls behind
+ * an INV-number already stored for the company (a seed or import can write
+ * those directly).
+ */
+async function nextInvoiceNumber(client: any, companyId: string): Promise<string> {
+  const res = await client.query(
+    `INSERT INTO company_invoice_counters (company_id, last_number)
+     SELECT $1::uuid,
+            COALESCE(MAX(substring(invoice_number FROM '^INV-([0-9]{1,9})$')::integer), 0) + 1
+     FROM invoices
+     WHERE company_id = $1
+     ON CONFLICT (company_id) DO UPDATE
+       SET last_number = GREATEST(company_invoice_counters.last_number, EXCLUDED.last_number - 1) + 1
+     RETURNING last_number`,
+    [companyId]
+  );
+  return `INV-${String(res.rows[0].last_number).padStart(4, '0')}`;
 }
 
 /** subtotal + tax − discount − previous billing, never below zero. */
@@ -615,38 +632,56 @@ export async function createInvoice(
   input: CreateInvoiceInput,
   options: ScopeOpts = {}
 ) {
-  await ensureJobBelongsToUser(input.job_id, userId, options);
+  const scope = await ensureJobBelongsToUser(input.job_id, userId, options);
   const status = input.status ?? 'Draft';
   if (status !== 'Draft' && status !== 'Sent') {
     throw new InvoiceInputError(
       'A new invoice starts as Draft or Sent. Payments set the rest.'
     );
   }
-  const invoiceNumber = await nextInvoiceNumber();
+  if (input.estimate_id != null) {
+    // Only an estimate on this job, in this company.
+    const estRes = await pool.query(
+      `SELECT 1 FROM estimates WHERE id = $1 AND job_id = $2 AND company_id = $3`,
+      [input.estimate_id, input.job_id, scope.companyId]
+    );
+    if (estRes.rowCount === 0) throw new EstimateNotFoundError('Estimate not found on this job');
+  }
 
-  const result = await pool.query(
-    `INSERT INTO invoices (
-       user_id, job_id, estimate_id, invoice_number, status, due_date, notes,
-       kind, sent_at, company_id
-     )
-     SELECT $1, $2, $3, $4, $5, $6, $7, 'standard',
-       CASE WHEN $5 = 'Sent' THEN CURRENT_TIMESTAMP ELSE NULL END,
-       u.company_id
-     FROM users u
-     WHERE u.id = $1
-     RETURNING id`,
-    [
-      userId,
-      input.job_id,
-      input.estimate_id ?? null,
-      invoiceNumber,
-      status,
-      input.due_date ?? null,
-      input.notes ?? null,
-    ]
-  );
+  const client = await pool.connect();
+  let invoiceId: number;
+  try {
+    await client.query('BEGIN');
+    const invoiceNumber = await nextInvoiceNumber(client, scope.companyId);
+    const result = await client.query(
+      `INSERT INTO invoices (
+         user_id, job_id, estimate_id, invoice_number, status, due_date, notes,
+         kind, sent_at, company_id
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'standard',
+         CASE WHEN $5 = 'Sent' THEN CURRENT_TIMESTAMP ELSE NULL END, $8)
+       RETURNING id`,
+      [
+        userId,
+        input.job_id,
+        input.estimate_id ?? null,
+        invoiceNumber,
+        status,
+        input.due_date ?? null,
+        input.notes ?? null,
+        scope.companyId,
+      ]
+    );
+    invoiceId = result.rows[0].id;
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
-  const invoice = await getInvoiceById(userId, result.rows[0].id, options);
+  const invoice = await getInvoiceById(userId, invoiceId, options);
 
   await createJobActivity({
     userId,
@@ -705,156 +740,163 @@ export async function createInvoiceFromEstimate(
   const estParams: any[] = [estimateId];
   const estWhere = [`e.id = $1`, `e.status = 'Approved'`];
   applyOwnOrAssignedJob(estWhere, estParams, scope, { alias: 'e' });
-  const estRes = await pool.query(
-    `SELECT e.* FROM estimates e
-     INNER JOIN jobs j ON j.id = e.job_id
-     WHERE ${estWhere.join(' AND ')}
-     LIMIT 1`,
-    estParams
-  );
-  if (estRes.rowCount === 0) throw new EstimateNotFoundError();
-  const est = estRes.rows[0];
-  const estimateTotal = normalizeMoney(est.grand_total ?? 0);
-
-  const priorRes = await pool.query(
-    `SELECT id, kind, grand_total FROM invoices
-     WHERE estimate_id = $1 AND company_id = $2 AND status <> 'Void'
-     ORDER BY created_at ASC, id ASC`,
-    [estimateId, scope.companyId]
-  );
-  const liveFinal = priorRes.rows.find((row: any) => row.kind !== 'deposit');
-  const liveDeposits = priorRes.rows.filter((row: any) => row.kind === 'deposit');
-  const depositBilled = normalizeMoney(
-    liveDeposits.reduce((sum: number, row: any) => sum + Number(row.grand_total || 0), 0)
-  );
-
-  if (kind === 'final' && liveFinal) {
-    return getInvoiceById(userId, liveFinal.id, options);
-  }
-  if (kind === 'deposit') {
-    if (liveFinal) {
-      throw new InvoiceStateError(
-        'This estimate already has a final invoice. Record payments against it instead.'
-      );
-    }
-    if (liveDeposits.length > 0) {
-      return getInvoiceById(userId, liveDeposits[0].id, options);
-    }
-  }
-
-  let depositAmount = 0;
-  let depositLabel = '';
-  if (kind === 'deposit') {
-    if (options.deposit_amount != null && Number.isFinite(Number(options.deposit_amount))) {
-      depositAmount = normalizeMoney(options.deposit_amount);
-      depositLabel = `Deposit on ${est.title}`;
-    } else {
-      const percent = Number(options.deposit_percent ?? 30);
-      if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
-        throw new InvoiceInputError('Deposit percent must be between 1 and 100.');
-      }
-      depositAmount = normalizeMoney((estimateTotal * percent) / 100);
-      depositLabel = `${normalizeMoney(percent)}% deposit on ${est.title}`;
-    }
-    if (depositAmount <= 0) {
-      throw new InvoiceInputError('The deposit must be more than $0.');
-    }
-    if (depositAmount > estimateTotal + 0.004) {
-      throw new InvoiceInputError('The deposit cannot be more than the estimate total.');
-    }
-  }
-
-  const invoiceNumber = await nextInvoiceNumber();
 
   const client = await pool.connect();
   let invoiceId: number;
+  let existingId: number | null = null;
+  let est: any;
+  let depositBilled = 0;
+  let depositLabel = '';
   try {
     await client.query('BEGIN');
 
-    if (kind === 'deposit') {
-      const invRes = await client.query(
-        `INSERT INTO invoices (
-           user_id, job_id, estimate_id, invoice_number, status, kind,
-           subtotal, tax_total, discount_total, grand_total,
-           due_date, notes, company_id
-         )
-         SELECT $1, $2, $3, $4, 'Draft', 'deposit', $5, 0, 0, $5, $6, $7, u.company_id
-         FROM users u
-         WHERE u.id = $1
-         RETURNING id`,
-        [
-          userId,
-          est.job_id,
-          estimateId,
-          invoiceNumber,
-          depositAmount,
-          options.due_date ?? null,
-          `Deposit due before work is scheduled. Applied to the final invoice for ${est.title}.`,
-        ]
-      );
-      invoiceId = invRes.rows[0].id;
-      await client.query(
-        `INSERT INTO invoice_line_items (
-           invoice_id, name, description, quantity, unit_price, line_total, sort_order, company_id
-         )
-         SELECT $1, 'Deposit', $2, 1, $3, $3, 0, i.company_id
-         FROM invoices i WHERE i.id = $1`,
-        [invoiceId, depositLabel, depositAmount]
-      );
-    } else {
-      const grand = Math.max(0, normalizeMoney(estimateTotal - depositBilled));
-      const invRes = await client.query(
-        `INSERT INTO invoices (
-           user_id, job_id, estimate_id, invoice_number, status, kind,
-           subtotal, tax_total, discount_total, prior_billed_total, grand_total,
-           due_date, notes, company_id
-         )
-         SELECT $1, $2, $3, $4, 'Draft', 'final', $5, $6, $7, $8, $9, $10, $11, u.company_id
-         FROM users u
-         WHERE u.id = $1
-         RETURNING id`,
-        [
-          userId,
-          est.job_id,
-          estimateId,
-          invoiceNumber,
-          est.subtotal,
-          est.tax_total,
-          est.discount_total,
-          depositBilled,
-          grand,
-          options.due_date ?? null,
-          est.notes,
-        ]
-      );
-      invoiceId = invRes.rows[0].id;
+    // The estimate row is the lock: a second request for the same estimate
+    // (a double click, a retry) waits here until the first commits, then
+    // finds its invoice below and returns it. NO KEY UPDATE, so inserts that
+    // only reference the estimate (foreign keys) are not blocked.
+    const estRes = await client.query(
+      `SELECT e.* FROM estimates e
+       INNER JOIN jobs j ON j.id = e.job_id
+       WHERE ${estWhere.join(' AND ')}
+       LIMIT 1
+       FOR NO KEY UPDATE OF e`,
+      estParams
+    );
+    if (estRes.rowCount === 0) throw new EstimateNotFoundError();
+    est = estRes.rows[0];
+    const estimateTotal = normalizeMoney(est.grand_total ?? 0);
 
-      const items = await client.query(
-        `SELECT * FROM estimate_line_items WHERE estimate_id = $1 ORDER BY sort_order, id`,
-        [estimateId]
+    const priorRes = await client.query(
+      `SELECT id, kind, grand_total FROM invoices
+       WHERE estimate_id = $1 AND company_id = $2 AND status <> 'Void'
+       ORDER BY created_at ASC, id ASC`,
+      [estimateId, scope.companyId]
+    );
+    const liveFinal = priorRes.rows.find((row: any) => row.kind !== 'deposit');
+    const liveDeposits = priorRes.rows.filter((row: any) => row.kind === 'deposit');
+    depositBilled = normalizeMoney(
+      liveDeposits.reduce((sum: number, row: any) => sum + Number(row.grand_total || 0), 0)
+    );
+
+    if (kind === 'final' && liveFinal) {
+      existingId = liveFinal.id;
+    } else if (kind === 'deposit' && liveFinal) {
+      throw new InvoiceStateError(
+        'This estimate already has a final invoice. Record payments against it instead.'
       );
-      for (const item of items.rows) {
+    } else if (kind === 'deposit' && liveDeposits.length > 0) {
+      existingId = liveDeposits[0].id;
+    }
+
+    if (existingId != null) {
+      await client.query('COMMIT');
+    } else {
+      let depositAmount = 0;
+      if (kind === 'deposit') {
+        if (options.deposit_amount != null && Number.isFinite(Number(options.deposit_amount))) {
+          depositAmount = normalizeMoney(options.deposit_amount);
+          depositLabel = `Deposit on ${est.title}`;
+        } else {
+          const percent = Number(options.deposit_percent ?? 30);
+          if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+            throw new InvoiceInputError('Deposit percent must be between 1 and 100.');
+          }
+          depositAmount = normalizeMoney((estimateTotal * percent) / 100);
+          depositLabel = `${normalizeMoney(percent)}% deposit on ${est.title}`;
+        }
+        if (depositAmount <= 0) {
+          throw new InvoiceInputError('The deposit must be more than $0.');
+        }
+        if (depositAmount > estimateTotal + 0.004) {
+          throw new InvoiceInputError('The deposit cannot be more than the estimate total.');
+        }
+      }
+
+      const invoiceNumber = await nextInvoiceNumber(client, scope.companyId);
+
+      if (kind === 'deposit') {
+        const invRes = await client.query(
+          `INSERT INTO invoices (
+             user_id, job_id, estimate_id, invoice_number, status, kind,
+             subtotal, tax_total, discount_total, grand_total,
+             due_date, notes, company_id
+           )
+           VALUES ($1, $2, $3, $4, 'Draft', 'deposit', $5, 0, 0, $5, $6, $7, $8)
+           RETURNING id`,
+          [
+            userId,
+            est.job_id,
+            estimateId,
+            invoiceNumber,
+            depositAmount,
+            options.due_date ?? null,
+            `Deposit due before work is scheduled. Applied to the final invoice for ${est.title}.`,
+            scope.companyId,
+          ]
+        );
+        invoiceId = invRes.rows[0].id;
         await client.query(
           `INSERT INTO invoice_line_items (
              invoice_id, name, description, quantity, unit_price, line_total, sort_order, company_id
            )
-           SELECT $1, $2, $3, $4, $5, $6, $7, i.company_id
-           FROM invoices i
-           WHERE i.id = $1`,
+           VALUES ($1, 'Deposit', $2, 1, $3, $3, 0, $4)`,
+          [invoiceId, depositLabel, depositAmount, scope.companyId]
+        );
+      } else {
+        const grand = Math.max(0, normalizeMoney(estimateTotal - depositBilled));
+        const invRes = await client.query(
+          `INSERT INTO invoices (
+             user_id, job_id, estimate_id, invoice_number, status, kind,
+             subtotal, tax_total, discount_total, prior_billed_total, grand_total,
+             due_date, notes, company_id
+           )
+           VALUES ($1, $2, $3, $4, 'Draft', 'final', $5, $6, $7, $8, $9, $10, $11, $12)
+           RETURNING id`,
           [
-            invoiceId,
-            item.name,
-            item.description,
-            item.quantity,
-            item.unit_price,
-            item.line_total,
-            item.sort_order,
+            userId,
+            est.job_id,
+            estimateId,
+            invoiceNumber,
+            est.subtotal,
+            est.tax_total,
+            est.discount_total,
+            depositBilled,
+            grand,
+            options.due_date ?? null,
+            est.notes,
+            scope.companyId,
           ]
         );
-      }
-    }
+        invoiceId = invRes.rows[0].id;
 
-    await client.query('COMMIT');
+        const items = await client.query(
+          `SELECT * FROM estimate_line_items
+           WHERE estimate_id = $1 AND company_id = $2
+           ORDER BY sort_order, id`,
+          [estimateId, scope.companyId]
+        );
+        for (const item of items.rows) {
+          await client.query(
+            `INSERT INTO invoice_line_items (
+               invoice_id, name, description, quantity, unit_price, line_total, sort_order, company_id
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              invoiceId,
+              item.name,
+              item.description,
+              item.quantity,
+              item.unit_price,
+              item.line_total,
+              item.sort_order,
+              scope.companyId,
+            ]
+          );
+        }
+      }
+
+      await client.query('COMMIT');
+    }
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -862,7 +904,11 @@ export async function createInvoiceFromEstimate(
     client.release();
   }
 
-  const invoice = await getInvoiceById(userId, invoiceId, options);
+  if (existingId != null) {
+    return getInvoiceById(userId, existingId, options);
+  }
+
+  const invoice = await getInvoiceById(userId, invoiceId!, options);
   const label = kind === 'deposit' ? 'Deposit invoice' : 'Final invoice';
 
   await createJobActivity({
@@ -1367,6 +1413,10 @@ export async function deletePayment(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // The job first (then the invoice, in syncPaymentState): a close running
+    // right now finishes before this removal, and the reconcile below then
+    // reopens the job; a close that starts after waits and sees the balance.
+    await lockJobRow(client, existing.job_id, scope.companyId);
     await client.query(
       `DELETE FROM invoice_payments WHERE id = $1 AND invoice_id = $2 AND company_id = $3`,
       [paymentId, invoiceId, scope.companyId]

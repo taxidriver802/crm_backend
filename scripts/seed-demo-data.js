@@ -19,6 +19,11 @@
  *   --owner-email     Map all backup user_id references to an existing account
  *
  * Notes:
+ *   - Writes into the database's only company, and refuses to run when there
+ *     is more than one: the dump's rows keep their original ids, and --reset
+ *     empties whole tables. Every row names that company (company_id has no
+ *     default). For a database with several companies, use
+ *     npm run db:seed-walkthrough -- --company <slug>.
  *   - File rows are metadata only; binary uploads are not included in the backup.
  *   - Default behavior keeps your existing login and assigns demo records to the owner.
  */
@@ -29,6 +34,7 @@ const path = require('path');
 const { Pool } = require('pg');
 const { v5: uuidv5 } = require('uuid');
 const { parsePgCopyBlocks } = require('./lib/parse-pg-copy');
+const { companyScoped } = require('./lib/company-scope');
 
 const DEMO_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 const BACKUP_PATH = path.join(__dirname, '..', 'crm_dev_backup.sql');
@@ -67,7 +73,7 @@ function asInt(value) {
 
 async function loadExistingUsers(pool) {
   const { rows } = await pool.query(
-    `SELECT id, email, role FROM users ORDER BY created_at ASC`
+    `SELECT id, email, role FROM users WHERE company_id = $company ORDER BY created_at ASC`
   );
   const byEmail = new Map(
     rows.map((row) => [row.email.toLowerCase(), row])
@@ -148,7 +154,7 @@ async function insertUsers(pool, backupUsers, userIdMap, dryRun) {
         company_id, created_at, updated_at, invited_at, password_set_at, last_login_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7,
-        'c0000000-0000-4000-8000-000000000001',
+        $company,
         $8, $9, $10, $11, $12
       )
       ON CONFLICT (company_id, lower(email)) DO NOTHING
@@ -190,10 +196,10 @@ async function insertLeads(pool, rows, userIdMap, dryRun) {
 
     const sql = `
       INSERT INTO leads (
-        id, user_id, first_name, last_name, email, phone, source, status,
+        company_id, id, user_id, first_name, last_name, email, phone, source, status,
         budget_min, budget_max, notes, created_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8,
+        $company, $1, $2, $3, $4, $5, $6, $7, $8,
         $9, $10, $11, $12, $13
       )
       ON CONFLICT (id) DO NOTHING
@@ -236,9 +242,9 @@ async function insertJobs(pool, rows, userIdMap, dryRun) {
 
     const sql = `
       INSERT INTO jobs (
-        id, user_id, title, description, status, address, created_at, updated_at
+        company_id, id, user_id, title, description, status, address, created_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8
+        $company, $1, $2, $3, $4, $5, $6, $7, $8
       )
       ON CONFLICT (id) DO NOTHING
     `;
@@ -284,10 +290,10 @@ async function insertTasks(pool, rows, userIdMap, dryRun) {
 
     const sql = `
       INSERT INTO tasks (
-        id, user_id, lead_id, job_id, title, description, due_date, status,
+        company_id, id, user_id, lead_id, job_id, title, description, due_date, status,
         created_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8,
+        $company, $1, $2, $3, $4, $5, $6, $7, $8,
         $9, $10
       )
       ON CONFLICT (id) DO NOTHING
@@ -327,10 +333,10 @@ async function insertFiles(pool, rows, userIdMap, dryRun) {
 
     const sql = `
       INSERT INTO files (
-        id, uploaded_by_user_id, original_name, storage_key, mime_type, size_bytes,
+        company_id, id, uploaded_by_user_id, original_name, storage_key, mime_type, size_bytes,
         lead_id, task_id, job_id, created_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6,
+        $company, $1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10
       )
       ON CONFLICT (id) DO NOTHING
@@ -370,10 +376,10 @@ async function insertNotifications(pool, rows, userIdMap, dryRun) {
 
     const sql = `
       INSERT INTO notifications (
-        id, user_id, type, title, message, entity_type, entity_id,
+        company_id, id, user_id, type, title, message, entity_type, entity_id,
         metadata, read_at, created_at, dedupe_key
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7,
+        $company, $1, $2, $3, $4, $5, $6, $7,
         $8, $9, $10, $11
       )
       ON CONFLICT (id) DO NOTHING
@@ -447,9 +453,25 @@ async function main() {
   const backupSql = fs.readFileSync(BACKUP_PATH, 'utf8');
   const data = parsePgCopyBlocks(backupSql);
 
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const rawPool = new Pool({ connectionString: process.env.DATABASE_URL });
 
   try {
+    const { rows: companies } = await rawPool.query(
+      `SELECT id, name, slug FROM companies ORDER BY created_at, slug`
+    );
+    if (companies.length !== 1) {
+      throw new Error(
+        companies.length === 0
+          ? 'This database has no company yet. Register on the site first.'
+          : `This database has ${companies.length} companies. The legacy demo dump loads into a ` +
+              'single-company database only; use npm run db:seed-walkthrough -- --company <slug>.'
+      );
+    }
+    const company = companies[0];
+    console.log(`Demo seed company: ${company.name} (${company.slug})`);
+    // Every write below names this company.
+    const pool = companyScoped(rawPool, company.id);
+
     const userIdMap = await buildUserIdMap(pool, data.users || [], options);
 
     if (userIdMap.size === 0) {
@@ -500,7 +522,7 @@ async function main() {
       options.dryRun
     );
 
-    await syncSequences(pool, options.dryRun);
+    await syncSequences(rawPool, options.dryRun);
 
     console.log('');
     console.log(options.dryRun ? 'Dry run complete.' : 'Demo seed complete.');
@@ -526,7 +548,7 @@ async function main() {
       );
     }
   } finally {
-    await pool.end();
+    await rawPool.end();
   }
 }
 

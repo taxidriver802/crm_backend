@@ -1031,9 +1031,56 @@ landed on.
   and opened job #1's restored photo, identical to the original. **Not yet
   on a real host**: the off-host copy went to a local directory, not
   another machine, and the nightly timer hasn't run.
-- [ ] **Step 3** — prospects **3 + 6**, one migration window (rows that
+- [x] **Step 3** — prospects **3 + 6**, one migration window (rows that
   can't land in another company; money writes that survive a double
-  submit)
+  submit). Landed on `experiment/CC_tenancy` (backend; the QA seed and a
+  spec in `crm_qa`; no frontend change). Built:
+  - Migration `0002_company_scoping`. No `company_id` has a default and
+    `crm_default_company_id()` is gone, so an insert that leaves it out
+    fails. Each company has its own invoice counter, started from its own
+    highest `INV-` number and taken inside the invoice transaction; the
+    global sequence is gone and no number changes. A partial unique index
+    allows one live deposit and one live final per estimate; the migration
+    stops, naming them, if an estimate already has two. The built-in
+    Rooftop Realty row and its templates are removed while nothing belongs
+    to them, so a new database has no company until someone registers.
+  - The QuickBooks connection takes its user's company; product events
+    require one (the fail-open filter is gone).
+  - Money: "Final invoice" locks the estimate and checks for a live
+    invoice inside its transaction, so a second request gets the first
+    one's invoice. A status change locks the job and rereads its money
+    before closing, and removing a payment locks the job first. Lock
+    order: job before invoice, estimate before counter.
+  - `test/tenancy.matrix.test.ts`: company B gets a full job (lead,
+    measurement, estimate, invoice and payment, file, note, task, portal
+    token, saved view, rule, template, invite, intake link). Company A's
+    owner then goes through all 154 routes Express has mounted. A route
+    with neither a case nor a written exemption fails the test (29 are
+    exempt, each with its reason).
+  - What the matrix found, all fixed: `POST /automation/evaluate` could
+    add one of A's tasks to B's job; `POST /invoices` accepted an estimate
+    from another job or company; revoking the portal on B's job answered
+    200 (it deleted nothing); B's ids gave 500, not 404, on task edits,
+    notification read and delete, and a job from B's lead. The walkthrough
+    seed's updates and its payments insert touched every company.
+  - Seeds name their company. The walkthrough seed takes `--company
+    <slug>` (with one company, that one) and limits every write to it; the
+    demo seed runs only on a database with exactly one company; the QA
+    seed puts Rooftop back from the baseline's own starting rows.
+
+  Checked: typecheck; Jest 34 suites / 269 tests (the fresh-database check
+  included). `test/money.double-submit.test.ts` (10) holds the estimate
+  or job lock in a test transaction so the race happens every time: two
+  Final or two deposit requests at once return one invoice, five clicks
+  return one, a close racing a payment removal leaves the job in Work
+  Complete with the balance in either order, and a new company starts at
+  INV-0001. `npm run test:qa` 292 passed (96 skipped at other widths, none failed), with
+  `tests/e2e/tenancy.spec.ts`: a company registered beside Rooftop sees
+  none of Rooftop's records in its lists or search, Rooftop's record URLs
+  read "isn’t available", its first invoice is INV-0001, and Rooftop's
+  owner can't find or open its records. The seeds were run against a
+  scratch database. **Not done here**: the copied-link staff reset stays
+  with step 4.
 - [ ] **Step 4** — prospect **4**, once SMTP exists on the host (a way back
   in, sessions that end). The copied-link staff reset can go with step 3.
 - [ ] **Milestone** — *the first outside company goes live*
@@ -1173,10 +1220,12 @@ reports 28 suites and 207 tests passing.
   - *What it meant for the rank:* nothing moved. Logos are now raster only
     anyway, so the CSP is a second guard for logos stored before the
     change.
-- **The two money races (6).** Read from code, not reproduced.
-  - *Would change the rank:* a failing concurrent test confirms them. If
-    the UI's disabled buttons make the race unreachable in practice, 6
-    still holds for two people in two tabs.
+- **The two money races (6).** *Fixed in step 3*, and pinned by
+  concurrent tests that force the interleaving with a held lock. Those
+  tests were written against the fixed code; I didn't run them against
+  the old code, so the races themselves are still read from code, not
+  reproduced.
+  - *Would change the rank:* nothing now; 6 is built.
 - **The QuickBooks callback forgery.** Read from code (the callback never
   reads `state`), not exercised; there are no app keys.
   - *Would change the rank:* nothing moves. The rule keeping QuickBooks off
@@ -1195,6 +1244,11 @@ reports 28 suites and 207 tests passing.
   performance, automation or search.
   - *Would change the rank:* if 3's matrix finds a leak, fixing it ranks
     first.
+  - *Answered in step 3.* The matrix covers every mounted route, reports,
+    dashboard, team performance, automation and search included. It found
+    two crossings (automation evaluate, an invoice naming another
+    company's estimate) and a few wrong status codes, all fixed in that
+    pass. Reads were scoped everywhere.
 - **Load.** One Node process, the default `pg` pool of 10, and an
   in-memory limiter look adequate for one company, by reading. Untested.
   - *Would change the rank:* if the first company is large, multi-process

@@ -162,15 +162,19 @@ npm run dev
 Listens on **http://localhost:4000**. `GET /health` returns `{ ok: true,
 database: "ok" }`, or 503 when the database cannot be reached.
 
-**First company and owner:** start `crm_frontend` and use
-http://localhost:3000/register, then sign in at `/login`.
+**First company and owner:** a migrated database has no company. Start
+`crm_frontend`, register one at http://localhost:3000/register, then sign in
+at `/login`.
 
 **Demo data** (optional): `npm run db:seed-walkthrough` — see
 [`docs/guide/hosted-demo-seed.md`](docs/guide/hosted-demo-seed.md). It
-writes into the default company (Rooftop), and its `--reset` refuses when
-any other company has data.
+writes into one company: the only one, or the one named with
+`--company <slug>`. With several companies and no `--company` it stops and
+lists them, and with none it asks you to register first. Its `--reset`
+refuses when any other company has data.
 `npm run db:seed-demo` loads an older local dump, `crm_dev_backup.sql`,
-which is not in git; a fresh clone has none.
+which is not in git; a fresh clone has none. It runs only on a database
+with exactly one company.
 
 Local ports: **UI 3000 / API 4000**. QA uses 3100 / 4100 so it never binds
 these. `FRONTEND_URL` defaults to `http://localhost:3000`.

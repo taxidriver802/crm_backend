@@ -48,7 +48,14 @@ portalRouter.delete(
       return res.status(400).json({ ok: false, error: 'Invalid job id' });
     }
 
-    await portalService.revokePortalToken(userId, jobId, { companyId });
+    try {
+      await portalService.revokePortalToken(userId, jobId, { companyId });
+    } catch (error: any) {
+      if (error.message === 'Job not found') {
+        return res.status(404).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
     res.json({ ok: true });
   })
 );

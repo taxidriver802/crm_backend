@@ -1,6 +1,7 @@
 import { pool } from '../db';
 
 export class NotificationNotFoundError extends Error {
+  status = 404;
   constructor(message = 'Notification not found.') {
     super(message);
     this.name = 'NotificationNotFoundError';

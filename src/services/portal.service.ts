@@ -294,6 +294,11 @@ export async function revokePortalToken(
     companyId: options.companyId,
     includeAll: true,
   });
+  const jobRes = await pool.query(
+    `SELECT id FROM jobs WHERE id = $1 AND company_id = $2`,
+    [jobId, scope.companyId]
+  );
+  if (jobRes.rowCount === 0) throw new Error('Job not found');
   await pool.query(
     `DELETE FROM portal_tokens WHERE job_id = $1 AND company_id = $2`,
     [jobId, scope.companyId]

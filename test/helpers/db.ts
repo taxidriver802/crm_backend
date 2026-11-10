@@ -34,7 +34,10 @@ export async function resetDb() {
     RESTART IDENTITY CASCADE;
   `);
 
-  // The built-in company and its estimate templates, as a new database has them.
+  // Company A for the tests: the baseline's starting rows (Rooftop Realty and
+  // its estimate templates). A migrated database no longer keeps that row
+  // while nobody uses it (migration 0002), so a new database has no company;
+  // the tests put it back as their first company.
   await pool.query(startingRowsSql());
 
   // Only ever the per-run temporary directory from test/setupEnv.ts, never

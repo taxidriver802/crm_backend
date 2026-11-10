@@ -41,6 +41,7 @@ export class JobNotFoundError extends Error {
 }
 
 export class LeadNotFoundError extends Error {
+  status = 404;
   constructor(message = 'Lead not found') {
     super(message);
     this.name = 'LeadNotFoundError';
@@ -387,14 +388,30 @@ export async function getJobById(
   return normalizeJob(result.rows[0]);
 }
 
+type Queryable = { query: (text: string, values?: unknown[]) => Promise<any> };
+
 /** Job row without a viewer check. Callers must already hold company access. */
-async function getJobForCompany(jobId: number, companyId: string) {
-  const result = await pool.query(
+async function getJobForCompany(jobId: number, companyId: string, db: Queryable = pool) {
+  const result = await db.query(
     `${JOB_SELECT} WHERE j.id = $1 AND j.company_id = $2 LIMIT 1`,
     [jobId, companyId]
   );
   if (result.rowCount === 0) throw new JobNotFoundError();
   return normalizeJob(result.rows[0]);
+}
+
+/**
+ * Locks the job row until the caller's transaction ends. Every status change
+ * takes this lock before it reads status and money, and a payment removal
+ * takes it before it deletes, so a close and a removal on the same job run
+ * one after the other, never interleaved.
+ */
+export async function lockJobRow(client: Queryable, jobId: number, companyId: string) {
+  const result = await client.query(
+    `SELECT id FROM jobs WHERE id = $1 AND company_id = $2 FOR UPDATE`,
+    [jobId, companyId]
+  );
+  if (result.rowCount === 0) throw new JobNotFoundError();
 }
 
 export async function getJobMoney(
@@ -419,36 +436,60 @@ export async function transitionJobStatus(input: {
   automatic?: boolean;
   reason?: string | null;
   lostReason?: string | null;
+  /**
+   * An automatic move's own condition, checked again under the job lock: a
+   * payment written or removed since the caller looked can make it false,
+   * and then the job stays where it is.
+   */
+  onlyIf?: (job: ReturnType<typeof normalizeJob>) => boolean;
 }) {
-  const job = await getJobForCompany(input.jobId, input.companyId);
-  const from = job.status;
-  if (from === input.to) return job;
+  const client = await pool.connect();
+  let job: ReturnType<typeof normalizeJob>;
+  let from: JobStatus;
+  try {
+    await client.query('BEGIN');
+    await lockJobRow(client, input.jobId, input.companyId);
+    // Status and money as of now, and nobody else can change status until
+    // COMMIT. A payment removal waits for this lock before it deletes.
+    job = await getJobForCompany(input.jobId, input.companyId, client);
+    from = job.status;
+    if (from === input.to || (input.onlyIf && !input.onlyIf(job))) {
+      await client.query('COMMIT');
+      return job;
+    }
 
-  if (!input.automatic) {
-    assertTransition({
-      from,
-      to: input.to,
-      role: input.actorRole,
-      money: job.money,
-    });
+    if (!input.automatic) {
+      assertTransition({
+        from,
+        to: input.to,
+        role: input.actorRole,
+        money: job.money,
+      });
+    }
+
+    const sets = [
+      'status = $3',
+      'status_changed_at = CURRENT_TIMESTAMP',
+      'updated_at = CURRENT_TIMESTAMP',
+      ...milestoneUpdates(from, input.to),
+    ];
+    const values: unknown[] = [input.jobId, input.companyId, input.to];
+    if (input.to === 'Lost') {
+      values.push(input.lostReason?.trim() || null);
+      sets.push(`lost_reason = $${values.length}`);
+    }
+
+    await client.query(
+      `UPDATE jobs SET ${sets.join(', ')} WHERE id = $1 AND company_id = $2`,
+      values
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
   }
-
-  const sets = [
-    'status = $3',
-    'status_changed_at = CURRENT_TIMESTAMP',
-    'updated_at = CURRENT_TIMESTAMP',
-    ...milestoneUpdates(from, input.to),
-  ];
-  const values: unknown[] = [input.jobId, input.companyId, input.to];
-  if (input.to === 'Lost') {
-    values.push(input.lostReason?.trim() || null);
-    sets.push(`lost_reason = $${values.length}`);
-  }
-
-  await pool.query(
-    `UPDATE jobs SET ${sets.join(', ')} WHERE id = $1 AND company_id = $2`,
-    values
-  );
 
   const metadata: Record<string, unknown> = {
     fromStatus: from,
@@ -525,20 +566,25 @@ export async function reconcileJobAfterPayment(input: {
   actorUserId: string;
 }) {
   const job = await getJobForCompany(input.jobId, input.companyId);
-  if (job.status === 'Work Complete' && isSettled(job.money)) {
+  const shouldClose = (j: typeof job) => j.status === 'Work Complete' && isSettled(j.money);
+  const shouldReopen = (j: typeof job) =>
+    j.status === 'Closed' && j.money.outstanding_total > 0.004;
+  if (shouldClose(job)) {
     return transitionJobStatus({
       ...input,
       to: 'Closed',
       automatic: true,
       reason: 'paid in full',
+      onlyIf: shouldClose,
     });
   }
-  if (job.status === 'Closed' && job.money.outstanding_total > 0.004) {
+  if (shouldReopen(job)) {
     return transitionJobStatus({
       ...input,
       to: 'Work Complete',
       automatic: true,
       reason: 'a payment was removed',
+      onlyIf: shouldReopen,
     });
   }
   return job;

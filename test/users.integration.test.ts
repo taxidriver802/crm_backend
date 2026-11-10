@@ -4,7 +4,7 @@ import { app } from '../src/app';
 import { pool } from '../src/db';
 import { ensureSchema } from './helpers/setup';
 import { resetDb } from './helpers/db';
-import { createAuthedUser } from './helpers/auth';
+import { createAuthedUser, DEFAULT_COMPANY_ID } from './helpers/auth';
 
 async function insertInvitedUser(email: string) {
   const { rows } = await pool.query(
@@ -17,12 +17,13 @@ async function insertInvitedUser(email: string) {
       status,
       invite_token_hash,
       invite_expires_at,
-      invited_at
+      invited_at,
+      company_id
     )
-    VALUES ($1, $2, $3, 'agent', 'invited', $4, NOW() + interval '7 days', NOW())
+    VALUES ($1, $2, $3, 'agent', 'invited', $4, NOW() + interval '7 days', NOW(), $5)
     RETURNING id
     `,
-    ['Invited', 'User', email, 'a'.repeat(64)]
+    ['Invited', 'User', email, 'a'.repeat(64), DEFAULT_COMPANY_ID]
   );
   return rows[0].id as string;
 }

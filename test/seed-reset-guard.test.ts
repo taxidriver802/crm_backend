@@ -25,10 +25,10 @@ async function leadFor(companyId: string, ownerId: string, email: string) {
   );
 }
 
-function seedDryRunReset() {
+function seedDryRunReset(...extra: string[]) {
   return spawnSync(
     process.execPath,
-    [path.join('scripts', 'seed-walkthrough-data.js'), '--reset', '--dry-run'],
+    [path.join('scripts', 'seed-walkthrough-data.js'), '--reset', '--dry-run', ...extra],
     { cwd: BACKEND_ROOT, encoding: 'utf8', env: { ...process.env } }
   );
 }
@@ -82,12 +82,19 @@ describe('Walkthrough seed --reset', () => {
     const otherOwner = await createTestUser({ role: 'owner', company_id: other.id });
     await leadFor(other.id, otherOwner.id, 'their-lead@example.com');
 
-    const result = seedDryRunReset();
+    const result = seedDryRunReset('--company', 'rooftop');
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/Refusing --reset.*Gutter Guys/);
 
     const { rows } = await pool.query('SELECT count(*)::int AS n FROM leads');
     expect(rows[0].n).toBe(2);
+  });
+
+  it('asks which company to seed when there is more than one', async () => {
+    await createTestCompany({ name: 'Gutter Guys', slug: 'gutter-guys' });
+    const result = seedDryRunReset();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/2 companies \(rooftop, gutter-guys\).*--company <slug>/);
   });
 
   it('the seed accepts a reset of a single-company database', () => {

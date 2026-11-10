@@ -155,7 +155,10 @@ invoicesRouter.post(
       );
       res.status(201).json({ ok: true, invoice });
     } catch (error) {
-      if (error instanceof invoicesService.JobNotFoundError) {
+      if (
+        error instanceof invoicesService.JobNotFoundError ||
+        error instanceof invoicesService.EstimateNotFoundError
+      ) {
         return res.status(404).json({ ok: false, error: error.message });
       }
       throw error;

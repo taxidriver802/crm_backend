@@ -11,6 +11,7 @@ export class TaskNotFoundError extends Error {
 }
 
 export class TaskOwnershipError extends Error {
+  status = 400;
   constructor(message: string) {
     super(message);
     this.name = 'TaskOwnershipError';
@@ -755,7 +756,7 @@ export async function updateTask(
     const sameLead = updates.lead_id === existingTask.lead_id;
 
     if (!sameJob && !sameLead) {
-      throw new Error('Task ownership cannot be changed after creation');
+      throw new TaskOwnershipError('Task ownership cannot be changed after creation');
     }
   }
 

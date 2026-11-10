@@ -9,6 +9,7 @@
  *   npm run db:seed-walkthrough -- --dry-run
  *   npm run db:seed-walkthrough -- --reset
  *   npm run db:seed-walkthrough -- --owner-email you@example.com
+ *   npm run db:seed-walkthrough -- --company rooftop
  *   npm run db:seed-walkthrough -- --include-team
  *   npm run db:seed-walkthrough -- --confirm --reset   # required for non-local DB hosts
  *
@@ -19,12 +20,15 @@
  *                     the truncate is not scoped to one company.
  *   --force           Allow appending even if walkthrough leads already exist
  *   --confirm         Required when DATABASE_URL host is not localhost/127.0.0.1
- *   --owner-email     Target a specific active owner (default: oldest active owner)
+ *   --company         Slug of the company to seed. Required when the database
+ *                     has more than one company; with exactly one, that one.
+ *   --owner-email     Target a specific active owner in that company
+ *                     (default: its oldest active owner)
  *   --include-team    Create/reuse demo agents and assign some work to them
  *
- * The seed's rows carry no company_id, so they land in the database's
- * default company (crm_default_company_id(), Rooftop). The owner and the
- * demo agents are therefore looked up in that company only.
+ * Every row the seed writes names its company (company_id is required;
+ * there is no default company), and every update it makes is limited to
+ * that company. The owner and the demo agents are looked up in it only.
  *
  * Suggested demo path:
  *   Dashboard → Leads (Nelson/Patel) → Jobs → Estimates → Invoices →
@@ -36,6 +40,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
 const { assertResetTouchesOnlyCompany } = require('./lib/reset-guard');
+const { companyScoped, pickCompany } = require('./lib/company-scope');
 
 const WALKTHROUGH_LEAD_EMAILS = [
   'marcus.nelson@example.com',
@@ -81,6 +86,7 @@ function parseArgs(argv) {
     confirm: argv.includes('--confirm'),
     includeTeam: argv.includes('--include-team'),
     ownerEmail: getArgValue(argv, '--owner-email'),
+    company: getArgValue(argv, '--company'),
   };
 }
 
@@ -129,20 +135,20 @@ function assertSafeDatabaseTarget(databaseUrl, options) {
   return hostname;
 }
 
-async function getOwner(pool, ownerEmail) {
+async function getOwner(pool, companyId, ownerEmail) {
   if (ownerEmail) {
     const { rows } = await pool.query(
       `
       SELECT id, email, first_name, last_name, role, status, company_id
       FROM users
-      WHERE lower(email) = lower($1) AND company_id = crm_default_company_id()
+      WHERE lower(email) = lower($1) AND company_id = $2
       LIMIT 1
       `,
-      [ownerEmail]
+      [ownerEmail, companyId]
     );
     if (!rows[0]) {
       throw new Error(
-        `No user ${ownerEmail} in the default company. The seed writes into that company only.`
+        `No user ${ownerEmail} in this company. The seed writes into that company only.`
       );
     }
     if (rows[0].role !== 'owner' || rows[0].status !== 'active') {
@@ -157,20 +163,21 @@ async function getOwner(pool, ownerEmail) {
     `
     SELECT id, email, first_name, last_name, role, status, company_id
     FROM users
-    WHERE role = 'owner' AND status = 'active' AND company_id = crm_default_company_id()
+    WHERE role = 'owner' AND status = 'active' AND company_id = $1
     ORDER BY created_at ASC
     LIMIT 1
-    `
+    `,
+    [companyId]
   );
   if (!rows[0]) {
     throw new Error(
-      'No active owner in the default company. Register/login once on the hosted site, then rerun this seed.'
+      'No active owner in this company. Register/login once on the hosted site, then rerun this seed.'
     );
   }
   return rows[0];
 }
 
-async function ensureDemoAgents(pool, dryRun) {
+async function ensureDemoAgents(pool, companyId, dryRun) {
   const agents = [
     {
       email: 'alex.morgan@example.com',
@@ -203,8 +210,8 @@ async function ensureDemoAgents(pool, dryRun) {
 
     const existing = await pool.query(
       `SELECT id, email, first_name, last_name FROM users
-       WHERE lower(email) = lower($1) AND company_id = crm_default_company_id()`,
-      [agent.email]
+       WHERE lower(email) = lower($1) AND company_id = $2`,
+      [agent.email, companyId]
     );
     if (existing.rows[0]) {
       byKey[agent.key] = existing.rows[0];
@@ -215,11 +222,11 @@ async function ensureDemoAgents(pool, dryRun) {
       `
       INSERT INTO users (
         first_name, last_name, email, password_hash, role, status,
-        invited_at, password_set_at
-      ) VALUES ($1, $2, $3, $4, 'agent', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        invited_at, password_set_at, company_id
+      ) VALUES ($1, $2, $3, $4, 'agent', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $5)
       RETURNING id, email, first_name, last_name
       `,
-      [agent.first_name, agent.last_name, agent.email, passwordHash]
+      [agent.first_name, agent.last_name, agent.email, passwordHash, companyId]
     );
     byKey[agent.key] = rows[0];
   }
@@ -237,15 +244,15 @@ async function resetDemoTables(pool, dryRun) {
   console.log('Cleared CRM business tables (users preserved).');
 }
 
-async function walkthroughAlreadyPresent(pool) {
+async function walkthroughAlreadyPresent(pool, companyId) {
   const { rows } = await pool.query(
     `
     SELECT email
     FROM leads
-    WHERE lower(email) = ANY($1::text[])
+    WHERE lower(email) = ANY($1::text[]) AND company_id = $2
     LIMIT 1
     `,
-    [WALKTHROUGH_LEAD_EMAILS]
+    [WALKTHROUGH_LEAD_EMAILS, companyId]
   );
   return Boolean(rows[0]);
 }
@@ -259,7 +266,8 @@ async function insertReturning(pool, sql, params, dryRun, label) {
   return rows[0];
 }
 
-async function seed(pool, owner, agents, dryRun, options) {
+async function seed(rawPool, owner, agents, dryRun, options) {
+  const pool = companyScoped(rawPool, owner.company_id);
   const userId = owner.id;
   const alexId = agents?.alex?.id || userId;
   const samId = agents?.sam?.id || userId;
@@ -430,12 +438,12 @@ async function seed(pool, owner, agents, dryRun, options) {
       pool,
       `
       INSERT INTO leads (
-        user_id, assigned_to, first_name, last_name, email, phone,
+        company_id, user_id, assigned_to, first_name, last_name, email, phone,
         source, status, budget_min, budget_max, notes,
         service_type, preferred_contact_method, urgency,
         created_at, updated_at, status_changed_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6,
+        $company, $1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10, $11,
         $12, $13, $14,
         $15, $15, $16
@@ -519,10 +527,10 @@ async function seed(pool, owner, agents, dryRun, options) {
       pool,
       `
       INSERT INTO jobs (
-        user_id, assigned_to, lead_id, title, description, status, address,
+        company_id, user_id, assigned_to, lead_id, title, description, status, address,
         created_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $8
+        $company, $1, $2, $3, $4, $5, $6, $7, $8, $8
       )
       RETURNING id
       `,
@@ -553,8 +561,8 @@ async function seed(pool, owner, agents, dryRun, options) {
     await insertReturning(
       pool,
       `
-      INSERT INTO job_measurements (job_id, label, value, unit, sort_order)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO job_measurements (company_id, job_id, label, value, unit, sort_order)
+      VALUES ($company, $1, $2, $3, $4, $5)
       RETURNING id
       `,
       [jobs.patelRoof, m.label, m.value, m.unit, m.sort],
@@ -683,10 +691,10 @@ async function seed(pool, owner, agents, dryRun, options) {
       pool,
       `
       INSERT INTO tasks (
-        user_id, assigned_to, lead_id, job_id, title, description,
+        company_id, user_id, assigned_to, lead_id, job_id, title, description,
         due_date, end_at, location, kind, status, created_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6,
+        $company, $1, $2, $3, $4, $5, $6,
         $7, $8, $9, $10, $11, $12, $12
       )
       RETURNING id
@@ -766,9 +774,9 @@ async function seed(pool, owner, agents, dryRun, options) {
       pool,
       `
       INSERT INTO notes (
-        user_id, entity_type, entity_id, body, type, direction, created_at, updated_at
+        company_id, user_id, entity_type, entity_id, body, type, direction, created_at, updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+      VALUES ($company, $1, $2, $3, $4, $5, $6, $7, $7)
       RETURNING id
       `,
       [
@@ -830,8 +838,8 @@ async function seed(pool, owner, agents, dryRun, options) {
       pool,
       `
       INSERT INTO job_activity (
-        user_id, job_id, type, title, message, entity_type, entity_id, created_at
-      ) VALUES ($1, $2, $3, $4, $5, 'job', $2, $6)
+        company_id, user_id, job_id, type, title, message, entity_type, entity_id, created_at
+      ) VALUES ($company, $1, $2, $3, $4, $5, 'job', $2, $6)
       RETURNING id
       `,
       [
@@ -854,12 +862,12 @@ async function seed(pool, owner, agents, dryRun, options) {
     pool,
     `
     INSERT INTO estimates (
-      user_id, job_id, title, status,
+      company_id, user_id, job_id, title, status,
       subtotal, tax_total, discount_total, grand_total, notes,
       share_token_hash, share_expires_at,
       created_at, updated_at
     ) VALUES (
-      $1, $2, $3, 'Sent',
+      $company, $1, $2, $3, 'Sent',
       $4, $5, 0, $6, $7,
       $8, $9,
       $10, $10
@@ -888,12 +896,12 @@ async function seed(pool, owner, agents, dryRun, options) {
     pool,
     `
     INSERT INTO estimates (
-      user_id, job_id, title, status,
+      company_id, user_id, job_id, title, status,
       subtotal, tax_total, discount_total, grand_total, notes,
       client_responded_at, client_response_note,
       created_at, updated_at
     ) VALUES (
-      $1, $2, $3, 'Approved',
+      $company, $1, $2, $3, 'Approved',
       $4, $5, $6, $7, $8,
       $9, $10,
       $11, $11
@@ -922,11 +930,11 @@ async function seed(pool, owner, agents, dryRun, options) {
     pool,
     `
     INSERT INTO estimates (
-      user_id, job_id, title, status,
+      company_id, user_id, job_id, title, status,
       subtotal, tax_total, discount_total, grand_total, notes,
       created_at, updated_at
     ) VALUES (
-      $1, $2, $3, 'Draft',
+      $company, $1, $2, $3, 'Draft',
       $4, $5, 0, $6, $7,
       $8, $8
     )
@@ -951,12 +959,12 @@ async function seed(pool, owner, agents, dryRun, options) {
     pool,
     `
     INSERT INTO estimates (
-      user_id, job_id, title, status,
+      company_id, user_id, job_id, title, status,
       subtotal, tax_total, discount_total, grand_total, notes,
       client_responded_at, client_response_note,
       created_at, updated_at
     ) VALUES (
-      $1, $2, $3, 'Rejected',
+      $company, $1, $2, $3, 'Rejected',
       $4, $5, 0, $6, $7,
       $8, $9,
       $10, $10
@@ -1049,9 +1057,9 @@ async function seed(pool, owner, agents, dryRun, options) {
         pool,
         `
         INSERT INTO estimate_line_items (
-          estimate_id, name, description, quantity, unit_price, line_total,
+          company_id, estimate_id, name, description, quantity, unit_price, line_total,
           sort_order, source
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'manual')
+        ) VALUES ($company, $1, $2, $3, $4, $5, $6, $7, 'manual')
         RETURNING id
         `,
         [
@@ -1075,11 +1083,11 @@ async function seed(pool, owner, agents, dryRun, options) {
     pool,
     `
     INSERT INTO invoices (
-      user_id, job_id, estimate_id, invoice_number, status,
+      company_id, user_id, job_id, estimate_id, invoice_number, status,
       subtotal, tax_total, discount_total, grand_total,
       due_date, notes, created_at, updated_at
     ) VALUES (
-      $1, $2, $3, 'INV-1001', 'Sent',
+      $company, $1, $2, $3, 'INV-1001', 'Sent',
       $4, $5, 0, $6,
       $7, $8, $9, $9
     )
@@ -1105,11 +1113,11 @@ async function seed(pool, owner, agents, dryRun, options) {
     pool,
     `
     INSERT INTO invoices (
-      user_id, job_id, estimate_id, invoice_number, status,
+      company_id, user_id, job_id, estimate_id, invoice_number, status,
       subtotal, tax_total, discount_total, grand_total,
       due_date, paid_at, notes, created_at, updated_at
     ) VALUES (
-      $1, $2, $3, 'INV-0988', 'Paid',
+      $company, $1, $2, $3, 'INV-0988', 'Paid',
       $4, $5, $6, $7,
       $8, $9, $10, $11, $11
     )
@@ -1137,11 +1145,11 @@ async function seed(pool, owner, agents, dryRun, options) {
     pool,
     `
     INSERT INTO invoices (
-      user_id, job_id, estimate_id, invoice_number, status,
+      company_id, user_id, job_id, estimate_id, invoice_number, status,
       subtotal, tax_total, discount_total, grand_total,
       due_date, notes, created_at, updated_at
     ) VALUES (
-      $1, $2, NULL, 'INV-0971', 'Overdue',
+      $company, $1, $2, NULL, 'INV-0971', 'Overdue',
       $3, $4, 0, $5,
       $6, $7, $8, $8
     )
@@ -1196,8 +1204,8 @@ async function seed(pool, owner, agents, dryRun, options) {
         pool,
         `
         INSERT INTO invoice_line_items (
-          invoice_id, name, description, quantity, unit_price, line_total, sort_order
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          company_id, invoice_id, name, description, quantity, unit_price, line_total, sort_order
+        ) VALUES ($company, $1, $2, $3, $4, $5, $6, $7)
         RETURNING id
         `,
         [
@@ -1227,28 +1235,31 @@ async function seed(pool, owner, agents, dryRun, options) {
       SELECT i.company_id, i.id, i.job_id, i.user_id, i.grand_total, 'check', '4412',
              COALESCE(i.paid_at, i.updated_at)
       FROM invoices i
-      WHERE i.status = 'Paid'
+      WHERE i.company_id = $company
+        AND i.status = 'Paid'
         AND NOT EXISTS (SELECT 1 FROM invoice_payments p WHERE p.invoice_id = i.id)
     `);
     await pool.query(`
       UPDATE invoices i
       SET amount_paid = COALESCE((SELECT SUM(p.amount) FROM invoice_payments p WHERE p.invoice_id = i.id), 0),
           sent_at = CASE WHEN i.status <> 'Draft' THEN COALESCE(i.sent_at, i.created_at) ELSE i.sent_at END
+      WHERE i.company_id = $company
     `);
     await pool.query(`
       UPDATE jobs
       SET sold_at = COALESCE(sold_at, created_at + INTERVAL '7 days'),
           work_completed_at = CASE WHEN status = 'Closed' THEN COALESCE(work_completed_at, updated_at) ELSE work_completed_at END,
           closed_at = CASE WHEN status = 'Closed' THEN COALESCE(closed_at, updated_at) ELSE closed_at END
-      WHERE status IN ('Sold', 'Work Scheduled', 'In Progress', 'Work Complete', 'Closed')
+      WHERE company_id = $company
+        AND status IN ('Sold', 'Work Scheduled', 'In Progress', 'Work Complete', 'Closed')
     `);
     await pool.query(`
       UPDATE estimates SET approved_at = COALESCE(approved_at, client_responded_at, updated_at)
-      WHERE status = 'Approved'
+      WHERE company_id = $company AND status = 'Approved'
     `);
     await pool.query(`
       UPDATE jobs SET lost_at = COALESCE(lost_at, updated_at), lost_reason = COALESCE(lost_reason, 'Competitor scheduled sooner')
-      WHERE status = 'Lost'
+      WHERE company_id = $company AND status = 'Lost'
     `);
   }
 
@@ -1285,10 +1296,10 @@ async function seed(pool, owner, agents, dryRun, options) {
       pool,
       `
       INSERT INTO files (
-        uploaded_by_user_id, original_name, storage_key, mime_type, size_bytes,
+        company_id, uploaded_by_user_id, original_name, storage_key, mime_type, size_bytes,
         lead_id, job_id, category, client_visible, caption, created_at
       ) VALUES (
-        $1, $2, $3, $4, $5,
+        $company, $1, $2, $3, $4, $5,
         $6, $7, $8, $9, $10, $11
       )
       RETURNING id
@@ -1317,8 +1328,8 @@ async function seed(pool, owner, agents, dryRun, options) {
   await insertReturning(
     pool,
     `
-    INSERT INTO portal_tokens (user_id, job_id, token_hash, expires_at)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO portal_tokens (company_id, user_id, job_id, token_hash, expires_at)
+    VALUES ($company, $1, $2, $3, $4)
     ON CONFLICT (job_id) DO UPDATE SET
       token_hash = EXCLUDED.token_hash,
       expires_at = EXCLUDED.expires_at,
@@ -1389,9 +1400,9 @@ async function seed(pool, owner, agents, dryRun, options) {
       pool,
       `
       INSERT INTO notifications (
-        user_id, type, title, message, entity_type, entity_id,
+        company_id, user_id, type, title, message, entity_type, entity_id,
         created_at, dedupe_key
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ) VALUES ($company, $1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING id
       `,
       [
@@ -1414,8 +1425,8 @@ async function seed(pool, owner, agents, dryRun, options) {
   await insertReturning(
     pool,
     `
-    INSERT INTO saved_views (user_id, entity_type, name, filters)
-    VALUES ($1, 'leads', 'New website leads', $2::jsonb)
+    INSERT INTO saved_views (company_id, user_id, entity_type, name, filters)
+    VALUES ($company, $1, 'leads', 'New website leads', $2::jsonb)
     RETURNING id
     `,
     [userId, JSON.stringify({ status: 'New', source: 'Website' })],
@@ -1427,8 +1438,8 @@ async function seed(pool, owner, agents, dryRun, options) {
   await insertReturning(
     pool,
     `
-    INSERT INTO saved_views (user_id, entity_type, name, filters)
-    VALUES ($1, 'jobs', 'Active proposals', $2::jsonb)
+    INSERT INTO saved_views (company_id, user_id, entity_type, name, filters)
+    VALUES ($company, $1, 'jobs', 'Active proposals', $2::jsonb)
     RETURNING id
     `,
     [userId, JSON.stringify({ status: 'Proposal Sent' })],
@@ -1440,8 +1451,8 @@ async function seed(pool, owner, agents, dryRun, options) {
   await insertReturning(
     pool,
     `
-    INSERT INTO saved_views (user_id, entity_type, name, filters)
-    VALUES ($1, 'tasks', 'Appointments this week', $2::jsonb)
+    INSERT INTO saved_views (company_id, user_id, entity_type, name, filters)
+    VALUES ($company, $1, 'tasks', 'Appointments this week', $2::jsonb)
     RETURNING id
     `,
     [userId, JSON.stringify({ kind: 'appointment', status: 'Pending' })],
@@ -1455,10 +1466,10 @@ async function seed(pool, owner, agents, dryRun, options) {
     pool,
     `
     INSERT INTO automation_rules (
-      user_id, name, description, trigger_event, conditions,
+      company_id, user_id, name, description, trigger_event, conditions,
       action_type, action_config, enabled
     ) VALUES (
-      $1, $2, $3, 'ESTIMATE_APPROVED', '{}'::jsonb,
+      $company, $1, $2, $3, 'ESTIMATE_APPROVED', '{}'::jsonb,
       'CREATE_FOLLOW_UP_TASK', $4::jsonb, true
     )
     RETURNING id
@@ -1492,14 +1503,16 @@ async function main() {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
   try {
-    const owner = await getOwner(pool, options.ownerEmail);
+    const company = await pickCompany(pool, options.company);
+    const owner = await getOwner(pool, company.id, options.ownerEmail);
+    console.log(`Walkthrough seed company: ${company.name} (${company.slug})`);
     console.log(
       `Walkthrough seed target owner: ${owner.first_name} ${owner.last_name} <${owner.email}>`
     );
     console.log(`Database host: ${hostname}`);
 
     if (!options.reset && !options.force) {
-      const present = await walkthroughAlreadyPresent(pool);
+      const present = await walkthroughAlreadyPresent(pool, company.id);
       if (present) {
         throw new Error(
           'Walkthrough leads already exist (@example.com). ' +
@@ -1518,7 +1531,7 @@ async function main() {
     }
 
     const agents = options.includeTeam
-      ? await ensureDemoAgents(pool, options.dryRun)
+      ? await ensureDemoAgents(pool, company.id, options.dryRun)
       : null;
 
     const { counts, publicLinks } = await seed(

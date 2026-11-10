@@ -1,9 +1,10 @@
 # Hosted Demo Seed Guide
 
 > **Not on a host that serves real companies.** The seed writes demo
-> records into the default company (Rooftop). `--reset` truncates business
-> tables for every company, so it refuses whenever another company has data
-> in them. Use this only on a demo database, and take a backup first
+> records into one company: the one named with `--company <slug>`, or the
+> only one. There is no default company, so a new database needs a company
+> registered first. `--reset` truncates business tables for every company,
+> so it refuses whenever another company has data in them. Use this only on a demo database, and take a backup first
 > (`npm run db:backup`). The production runbook is [`hosting.md`](hosting.md).
 
 Apply the Rooftop Realty walkthrough dataset to the hosted CRM database on the Windows home server, using the same SSH + Docker pattern as the Phase 19 patch fallback.
@@ -32,10 +33,11 @@ File rows are **metadata only** (no photo binaries).
 | Flag | Meaning |
 |------|---------|
 | `--confirm` | **Required** when `DATABASE_URL` host is not `localhost` / `127.0.0.1` (includes Docker host `crm-db`) |
-| `--reset` | Truncates CRM business tables, **keeps users**. Wipes existing hosted CRM data. Refused when any company other than the default one has rows in those tables (it names them) |
+| `--reset` | Truncates CRM business tables, **keeps users**. Wipes existing hosted CRM data. Refused when any company other than the seeded one has rows in those tables (it names them) |
 | `--force` | Append even if `@example.com` walkthrough leads already exist |
 | `--dry-run` | Print planned work; no writes |
-| `--owner-email` | Target a specific active owner of the default company |
+| `--company` | Slug of the company to seed. Required when there is more than one company (it lists them); with exactly one, that one |
+| `--owner-email` | Target a specific active owner of that company |
 | `--include-team` | Create/reuse Alex + Sam demo agents |
 
 Without `--reset` / `--force`, the script refuses to run if walkthrough leads already exist.
@@ -173,7 +175,9 @@ Localhost does not require `--confirm`.
 |---------|-----|
 | `Refusing to write to non-local database host` | Add `--confirm` |
 | `Walkthrough leads already exist` | Use `--reset` (wipe) or `--force` (append) |
-| `No active owner in the default company` | Register/login once on the hosted site first. The seed only writes into the default company (Rooftop) |
+| `This database has no company yet` | Register on the hosted site first, then rerun |
+| `This database has N companies (…). Name the one to seed with --company <slug>` | Pass `--company` with one of the slugs it lists |
+| `No active owner in this company` | Register/login once on the hosted site first, or pass the right `--company` |
 | `Refusing --reset: … other company has data` | The database serves more than one company. Seed without `--reset`, or use a demo database |
 | `Cannot find module 'pg'` / `bcryptjs` | Ensure `NODE_PATH=/app/node_modules` and you are exec'ing the **API** container, not `crm-db` |
 | Wrong owner targeted | Pass `--owner-email` |

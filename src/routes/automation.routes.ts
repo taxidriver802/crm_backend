@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { requestScope } from '../lib/tenant';
 import { requireAuth } from '../middleware/auth';
 import { requireRole } from '../middleware/requireRole';
 import { asyncHandler } from '../utils/asyncHandler';
@@ -162,13 +163,29 @@ automationRouter.delete(
 automationRouter.post(
   '/evaluate',
   asyncHandler(async (req, res) => {
-    const userId = req.user!.userId;
+    const { userId, companyId } = requestScope(req);
     const { trigger_event, context } = req.body;
 
     if (!trigger_event) {
       return res
         .status(400)
         .json({ ok: false, error: 'trigger_event is required' });
+    }
+    if (
+      context != null &&
+      (typeof context !== 'object' || Array.isArray(context))
+    ) {
+      return res
+        .status(400)
+        .json({ ok: false, error: 'context must be an object' });
+    }
+    if (
+      context &&
+      !(await automationService.contextBelongsToCompany(companyId, context))
+    ) {
+      return res
+        .status(404)
+        .json({ ok: false, error: 'Job or lead not found' });
     }
 
     const executed = await automationService.evaluateRules(
