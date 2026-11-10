@@ -17,25 +17,34 @@ export class QuickBooksConfigError extends Error {
 
 const PROVIDER = 'quickbooks';
 
+/**
+ * The key QuickBooks tokens are encrypted with. There is no built-in
+ * fallback: a key written in this repository would be public. Without
+ * ENCRYPTION_KEY, QuickBooks reports itself as not configured.
+ */
+function encryptionKey(): Buffer {
+  const key = process.env.ENCRYPTION_KEY?.trim();
+  if (!key) {
+    throw new QuickBooksConfigError(
+      'ENCRYPTION_KEY must be set before QuickBooks can be connected'
+    );
+  }
+  return Buffer.from(key.padEnd(32, '0').slice(0, 32));
+}
+
 function encrypt(text: string): string {
-  const key = process.env.ENCRYPTION_KEY || 'default-dev-key-32chars-padded!!';
   const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(
-    'aes-256-cbc',
-    Buffer.from(key.padEnd(32, '0').slice(0, 32)),
-    iv
-  );
+  const cipher = crypto.createCipheriv('aes-256-cbc', encryptionKey(), iv);
   let encrypted = cipher.update(text, 'utf8', 'hex');
   encrypted += cipher.final('hex');
   return iv.toString('hex') + ':' + encrypted;
 }
 
 function decrypt(data: string): string {
-  const key = process.env.ENCRYPTION_KEY || 'default-dev-key-32chars-padded!!';
   const [ivHex, encrypted] = data.split(':');
   const decipher = crypto.createDecipheriv(
     'aes-256-cbc',
-    Buffer.from(key.padEnd(32, '0').slice(0, 32)),
+    encryptionKey(),
     Buffer.from(ivHex, 'hex')
   );
   let decrypted = decipher.update(encrypted, 'hex', 'utf8');
@@ -83,6 +92,7 @@ export function buildAuthUrl(userId: string): string {
       'QB_CLIENT_ID and QB_REDIRECT_URI must be set'
     );
   }
+  encryptionKey();
 
   const state = Buffer.from(
     JSON.stringify({ userId, ts: Date.now() })

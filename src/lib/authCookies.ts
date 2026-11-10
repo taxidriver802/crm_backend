@@ -15,9 +15,11 @@ export function authCookieOptions(): CookieOptions {
     };
   }
 
+  // Production is served over HTTPS (docs/guide/hosting.md), so the cookie
+  // never travels over plain HTTP there. Local development stays on http.
   return {
     httpOnly: true,
-    secure: false,
+    secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
     maxAge: ONE_WEEK_MS,

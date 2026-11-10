@@ -4,6 +4,7 @@ import { requireRole } from '../middleware/requireRole';
 import { asyncHandler } from '../utils/asyncHandler';
 import { publicIntakeSubmitSchema } from '../validators/intake.schemas';
 import { checkIntakeRateLimit } from '../lib/intakeRateLimit';
+import { clientIp } from '../lib/rateLimit';
 import * as intakeService from '../services/intake.service';
 
 export const intakeRouter = Router();
@@ -97,14 +98,9 @@ publicIntakeRouter.post(
       return res.status(404).json({ ok: false, error: 'Not found' });
     }
 
-    const ip =
-      (typeof req.headers['x-forwarded-for'] === 'string'
-        ? req.headers['x-forwarded-for'].split(',')[0]?.trim()
-        : null) ||
-      req.ip ||
-      'unknown';
-
-    const rate = checkIntakeRateLimit(ip);
+    // req.ip honours X-Forwarded-For only from a trusted hop (`trust proxy`
+    // in app.ts); a header the client wrote itself does not pick the key.
+    const rate = checkIntakeRateLimit(clientIp(req), token);
     if (!rate.allowed) {
       res.setHeader('Retry-After', String(rate.retryAfterSec || 60));
       return res.status(429).json({

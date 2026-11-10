@@ -100,7 +100,10 @@ quickbooksRouter.post(
       if (error instanceof invoicesService.InvoiceNotFoundError) {
         return res.status(404).json({ ok: false, error: error.message });
       }
-      if (error instanceof qbService.QuickBooksNotConnectedError) {
+      if (
+        error instanceof qbService.QuickBooksNotConnectedError ||
+        error instanceof qbService.QuickBooksConfigError
+      ) {
         return res.status(400).json({ ok: false, error: error.message });
       }
       throw error;
@@ -119,7 +122,10 @@ quickbooksRouter.get(
       const result = await qbService.getPaymentStatus(userId, qbInvoiceId);
       res.json({ ok: true, payment: result });
     } catch (error) {
-      if (error instanceof qbService.QuickBooksNotConnectedError) {
+      if (
+        error instanceof qbService.QuickBooksNotConnectedError ||
+        error instanceof qbService.QuickBooksConfigError
+      ) {
         return res.status(400).json({ ok: false, error: error.message });
       }
       throw error;

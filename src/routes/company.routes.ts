@@ -12,13 +12,45 @@ import { removeUploadedLogo } from '../lib/companyLogo';
 
 export const companyRouter = Router();
 
-const LOGO_TYPES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/webp',
-  'image/gif',
-  'image/svg+xml',
-]);
+/**
+ * Logos are raster images only. A logo is served publicly on the app's own
+ * origin, and an SVG can carry script, so SVG (and GIF, which mail clients
+ * and the brand tile do not need) are refused. The type is read from the
+ * file's first bytes; the type the browser declared is not trusted.
+ */
+const LOGO_REFUSED =
+  'Logo must be a PNG, JPEG or WebP image. SVG and GIF are not accepted.';
+
+function sniffLogoType(filePath: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const head = Buffer.alloc(12);
+    const read = fs.readSync(fd, head, 0, 12, 0);
+    const bytes = head.subarray(0, read);
+    if (
+      bytes.length >= 8 &&
+      bytes.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))
+    ) {
+      return 'image/png';
+    }
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+      return 'image/jpeg';
+    }
+    if (
+      bytes.length >= 12 &&
+      bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+    ) {
+      return 'image/webp';
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
 
 async function loadCompany(companyId: string) {
   const result = await pool.query(
@@ -99,13 +131,13 @@ companyRouter.post(
     if (!req.file) {
       return res.status(400).json({ ok: false, error: 'No file uploaded' });
     }
-    if (!LOGO_TYPES.has(req.file.mimetype)) {
+    if (!sniffLogoType(req.file.path)) {
       try {
         fs.unlinkSync(req.file.path);
       } catch {
         // ignore
       }
-      return res.status(400).json({ ok: false, error: 'Logo must be an image' });
+      return res.status(400).json({ ok: false, error: LOGO_REFUSED });
     }
 
     const { companyId } = requestScope(req);

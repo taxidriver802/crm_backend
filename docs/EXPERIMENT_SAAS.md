@@ -986,19 +986,38 @@ hand.
 
 ## 5. Sequence
 
-| Step | Build | Rank |
-|---|---|---|
-| 1 | **1 + 2**, as one pass | 1, 2 |
-| 2 | **5** | 5 |
-| 3 | **3 + 6**, one migration window | 3, 6 |
-| 4 | **4**, when SMTP exists on the host (the copied-link staff reset can go with step 3) | 4 |
-| — | *First outside company goes live* | |
-| 5 | **7** | 7 |
-| 6 | **9** | 9 |
-| 7 | **8** | 8 |
-| 8 | **10** | 10 |
-| 9 | **11** | 11 |
-| 10 | **12** | 12 |
+Tick a step when its pass is built and checked, and name the branch it
+landed on.
+
+- [x] **Step 1** — prospects **1 + 2**, as one pass (a public host that
+  fails closed; abuse limits). Landed on `experiment/CC_public_host`, all
+  three repos. Built: the production boot check, `HOST` and `TRUST_PROXY`,
+  the Secure cookie, invite links from `APP_BASE_URL` only, no built-in
+  QuickBooks key, a `/health` that checks the database, the rate limits,
+  raster-only logos served sandboxed, page headers, both
+  `.env.production.example` files and the runbook
+  (`docs/guide/hosting.md`). The tracked `crm_dev_backup.sql` is out of
+  git. Checked: typecheck, Jest 30 suites / 230 tests, frontend lint,
+  `npm run test:qa` 287 passed, `tests/e2e/public-host.spec.ts` (headers
+  through the rewrite), and a production boot of `dist/server.js`: a bad
+  environment exits 1 naming every reason; a good one listens on
+  127.0.0.1 only and `/health` answers 503 while the database is down.
+  **Not yet walked on a real host**: the runbook's TLS proxy, systemd and
+  `Secure` cookie steps are unexercised. The leaked hashes' passwords
+  still need rotating if those accounts are live (Unverified).
+- [ ] **Step 2** — prospect **5** (backups, and one restore done)
+- [ ] **Step 3** — prospects **3 + 6**, one migration window (rows that
+  can't land in another company; money writes that survive a double
+  submit)
+- [ ] **Step 4** — prospect **4**, once SMTP exists on the host (a way back
+  in, sessions that end). The copied-link staff reset can go with step 3.
+- [ ] **Milestone** — *the first outside company goes live*
+- [ ] **Step 5** — prospect **7** (a company's account with Joist)
+- [ ] **Step 6** — prospect **9** (telling what broke)
+- [ ] **Step 7** — prospect **8** (isolation enforced by the database)
+- [ ] **Step 8** — prospect **10** (one company out, one company back)
+- [ ] **Step 9** — prospect **11** (each company's own clock)
+- [ ] **Step 10** — prospect **12** (self-serve subscription billing)
 
 Where the build order differs from the rank:
 
@@ -1118,13 +1137,17 @@ reports 28 suites and 207 tests passing.
   - *Would change the rank:* if that host already terminates TLS, holds
     real secrets and takes nightly dumps, 1 and 5 shrink. They don't move,
     because the code's defaults still fail open.
-- **What the Next rewrite passes through.** I didn't confirm that the
-  `/api` rewrite forwards `X-Forwarded-For`, or carries helmet's CSP and
-  `nosniff` to the browser.
-  - *Would change the rank:* if CSP doesn't survive the rewrite, an SVG
-    logo is stored script on the app's own origin that any registered
-    company can plant. That's cross-company, and it would move logos to
-    the top of 2. 2 already ranks second, so the order holds.
+- **What the Next rewrite passes through.** *Answered in step 1.* Next
+  16's rewrite proxy passes the request's headers through and adds only
+  `X-Forwarded-Host`: it writes no `X-Forwarded-For` of its own, so the TLS
+  proxy must set it (`docs/guide/hosting.md`). Read from
+  `next/dist/server/lib/router-utils/proxy-request.js`. Helmet's CSP,
+  `X-Frame-Options` and `nosniff` reach the browser on `/api/*`, and the
+  logo route's `sandbox` CSP does too. `crm_qa/tests/e2e/public-host.spec.ts`
+  checks this through the real rewrite.
+  - *What it meant for the rank:* nothing moved. Logos are now raster only
+    anyway, so the CSP is a second guard for logos stored before the
+    change.
 - **The two money races (6).** Read from code, not reproduced.
   - *Would change the rank:* a failing concurrent test confirms them. If
     the UI's disabled buttons make the race unreachable in practice, 6

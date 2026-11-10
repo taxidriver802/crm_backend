@@ -50,14 +50,19 @@ docs/               Product docs (source of truth)
 
 Roles: `owner`, `admin`, `agent`.
 
-- First `POST /auth/register` becomes **owner**. There is no frontend register
-  page — bootstrap with curl (below), then sign in at the UI.
+- `POST /auth/register` creates a **company and its owner** together. The
+  frontend's `/register` screen calls it; sign-in is per company (slug +
+  email + password).
 - Later users are invited (`POST /users/invite`) and activate at `/accept-invite`.
 - `requireAuth` sits on almost every router. Owner/admin gates use
   `requireOwnerOrAdmin` or `requireRole`.
-- Cookie: `access_token`, httpOnly, `SameSite=Lax` locally. Set
-  `AUTH_COOKIE_CROSS_SITE=true` only when the UI and API are on different sites
-  (Secure + `SameSite=None`).
+- Cookie: `access_token`, httpOnly, `SameSite=Lax`, and `Secure` when
+  `NODE_ENV=production`. `AUTH_COOKIE_CROSS_SITE=true` (Secure +
+  `SameSite=None`) is for a development setup where the UI and API are on
+  different sites; production refuses it.
+- Sign-in, registration, invites and the client's token pages are rate
+  limited (`src/lib/rateLimit.ts`; the table is in
+  [`docs/guide/hosting.md`](docs/guide/hosting.md)).
 
 `view=all` on list/dashboard endpoints is honored for owner/admin only.
 Agents see their own assigned work.
@@ -154,26 +159,24 @@ npm install
 npm run dev
 ```
 
-Listens on **http://localhost:4000** (`GET /health` should return `{ ok: true }`).
+Listens on **http://localhost:4000**. `GET /health` returns `{ ok: true,
+database: "ok" }`, or 503 when the database cannot be reached.
 
-**First user** (owner) — the UI only has `/login`:
-
-```bash
-curl -X POST http://localhost:4000/auth/register \
-  -H 'Content-Type: application/json' \
-  -d '{"first_name":"Ada","last_name":"Owner","email":"ada@example.com","password":"changeme1"}'
-```
-
-Then start `crm_frontend` and sign in at http://localhost:3000/login.
+**First company and owner:** start `crm_frontend` and use
+http://localhost:3000/register, then sign in at `/login`.
 
 **Demo data** (optional): `npm run db:seed-walkthrough` — see
 [`docs/guide/hosted-demo-seed.md`](docs/guide/hosted-demo-seed.md).
-`npm run db:seed-demo` loads an older backup dump.
+`npm run db:seed-demo` loads an older local dump, `crm_dev_backup.sql`,
+which is not in git; a fresh clone has none.
 
 Local ports: **UI 3000 / API 4000**. QA uses 3100 / 4100 so it never binds
-these. `FRONTEND_URL` in `src/config/env.ts` falls back to `:3001` if unset —
-that fallback is stale. Always set `FRONTEND_URL=http://localhost:3000` or
-CORS will reject the Next app.
+these. `FRONTEND_URL` defaults to `http://localhost:3000`.
+
+**Production:** [`docs/guide/hosting.md`](docs/guide/hosting.md) is the
+runbook, and `.env.production.example` names every variable. With
+`NODE_ENV=production` the backend refuses to start on unsafe config
+(`src/config/production.ts`).
 
 ## Environment variables
 
@@ -188,12 +191,16 @@ loads `.env.test` when `NODE_ENV=test`.
 **App / HTTP**
 
 - `PORT` — default `4000`
-- `NODE_ENV`
-- `FRONTEND_URL` — CORS origin; use `http://localhost:3000`
-- `APP_BASE_URL` — invite, portal, and estimate links; defaults to `:3000`
-- `CORS_ORIGINS` — extra comma-separated origins
+- `HOST` — interface to listen on; production uses `127.0.0.1`
+- `NODE_ENV` — `production` turns on the boot checks and the `Secure` cookie
+- `FRONTEND_URL` — CORS origin; default `http://localhost:3000`
+- `APP_BASE_URL` — invite links. In production it is the only source (https
+  required); in development the inviter's browser origin is used
+- `CORS_ORIGINS` — extra comma-separated origins (a LAN address or tunnel in
+  development)
+- `TRUST_PROXY` — which hop may supply `X-Forwarded-For`; default `loopback`
 - `JWT_EXPIRES_IN` — default `7d`
-- `AUTH_COOKIE_CROSS_SITE` — `true` for cross-site cookies
+- `AUTH_COOKIE_CROSS_SITE` — `true` for cross-site cookies (development only)
 
 **SMTP (invites)** — nodemailer. Invite send fails until these are set.
 (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` are the ones that gate
@@ -210,7 +217,11 @@ loads `.env.test` when `NODE_ENV=test`.
 **QuickBooks (optional)**
 
 - `QB_CLIENT_ID`, `QB_CLIENT_SECRET`, `QB_REDIRECT_URI`, `QB_API_BASE_URL`
-- `ENCRYPTION_KEY` — token encryption at rest
+- `ENCRYPTION_KEY` — token encryption at rest; required to connect (there
+  is no built-in key)
+
+QuickBooks and ABC Supply use one account for the whole install, so a
+production boot refuses `QB_*` and `ABC_*`.
 
 ## Scripts
 
@@ -304,4 +315,5 @@ and a full leads CRUD file (leads are created as fixtures in other tests).
 - [`docs/guide/realtor_testing_guide.md`](docs/guide/realtor_testing_guide.md)
   (filename is historical; the walkthrough is a roofing intake)
 
+Hosting runbook: [`docs/guide/hosting.md`](docs/guide/hosting.md).
 Hosted demo seed: [`docs/guide/hosted-demo-seed.md`](docs/guide/hosted-demo-seed.md).

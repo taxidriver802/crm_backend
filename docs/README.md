@@ -9,6 +9,7 @@ Contents include:
 - `build_plan_updated.md` — phased delivery checklist
 - `context.md` — next directions (e.g. team management)
 - `guide/using-the-crm.md` — the user guide; the in-app Help panel serves its sections (see `EXPERIMENT_HELP.md`)
+- `guide/hosting.md` — the production runbook: one host, TLS proxy, boot checks, rate limits
 - `guide/` — testing walkthroughs and dev guides
 - `EXPERIMENT.md` — decision log for `experiment/CC_expansion` (job lifecycle past the sale + payments ledger, phase 23)
 - `archive/` — older roadmaps

@@ -34,6 +34,13 @@ publicCompaniesRouter.get(
       if (!fs.existsSync(filePath)) {
         return res.status(404).json({ ok: false, error: 'Not found' });
       }
+      // A logo uploaded before raster-only may still be an SVG. Served on
+      // the app's origin, it must never run script or be framed.
+      res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
+      );
+      res.setHeader('X-Content-Type-Options', 'nosniff');
       res.sendFile(filePath);
     } catch {
       return res.status(404).json({ ok: false, error: 'Not found' });

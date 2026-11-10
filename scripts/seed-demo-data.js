@@ -1,6 +1,10 @@
 /**
  * Loads demo CRM data from crm_dev_backup.sql into the current UUID-based schema.
  *
+ * The dump is local data and is not in git (it held real accounts). Keep your
+ * own copy at crm_backend/crm_dev_backup.sql; a fresh clone has none, so use
+ * `npm run db:seed-walkthrough` there instead.
+ *
  * Usage (from crm_backend):
  *   npm run db:seed-demo
  *   npm run db:seed-demo -- --dry-run
@@ -15,7 +19,7 @@
  *   --owner-email     Map all backup user_id references to an existing account
  *
  * Notes:
- *   - File rows are metadata only; binary uploads are not included in the repo backup.
+ *   - File rows are metadata only; binary uploads are not included in the backup.
  *   - Default behavior keeps your existing login and assigns demo records to the owner.
  */
 require('dotenv').config();
@@ -436,6 +440,7 @@ async function main() {
 
   if (!fs.existsSync(BACKUP_PATH)) {
     console.error(`Backup file not found: ${BACKUP_PATH}`);
+    console.error('The dump is local-only (not in git). Use npm run db:seed-walkthrough instead.');
     process.exit(1);
   }
 

@@ -1,5 +1,9 @@
 # Hosted Demo Seed Guide
 
+> **Not on a host that serves real companies.** `--reset` truncates every
+> company's business data, not one company's. Use this only on a demo
+> database. The production runbook is [`hosting.md`](hosting.md).
+
 Apply the Rooftop Realty walkthrough dataset to the hosted CRM database on the Windows home server, using the same SSH + Docker pattern as the Phase 19 patch fallback.
 
 **Script:** `crm_backend/scripts/seed-walkthrough-data.js`  

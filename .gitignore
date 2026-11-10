@@ -19,5 +19,7 @@ build/
 # uploads
 uploads/
 
-users_backup.sql
+# Database dumps are local data, never source (any *_backup.sql,
+# including the old crm_dev_backup.sql that db:seed-demo reads)
+*_backup.sql
 cookies.txt

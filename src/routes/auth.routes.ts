@@ -19,6 +19,15 @@ import {
   publicCompany,
   slugifyCompanyName,
 } from '../lib/companySlug';
+import {
+  LIMITS,
+  check,
+  clear,
+  clientIp,
+  limitByIp,
+  record,
+  tooManyRequests,
+} from '../lib/rateLimit';
 
 export const authRouter = Router();
 
@@ -71,6 +80,7 @@ async function loadCompany(companyId: string) {
 // POST /auth/register
 authRouter.post(
   '/register',
+  limitByIp(LIMITS.register),
   asyncHandler(async (req, res) => {
     const parsed = registerSchema.safeParse(req.body);
     if (!parsed.success)
@@ -154,6 +164,25 @@ authRouter.post(
     const { email, password, company_slug } = parsed.data;
     const normalEmail = email.toLocaleLowerCase();
 
+    // Failed sign-ins are counted per account (company + email) and per
+    // client address. While either limit holds, every attempt is refused,
+    // the right password included, so guessing cannot continue behind it.
+    const accountKey = `${company_slug}|${normalEmail}`;
+    const ip = clientIp(req);
+    const byAccount = check(LIMITS.loginAccount, accountKey);
+    if (!byAccount.allowed) {
+      return tooManyRequests(res, byAccount, LIMITS.loginAccount);
+    }
+    const byIp = check(LIMITS.loginIp, ip);
+    if (!byIp.allowed) {
+      return tooManyRequests(res, byIp, LIMITS.loginIp);
+    }
+    const invalidCredentials = () => {
+      record(LIMITS.loginAccount, accountKey);
+      record(LIMITS.loginIp, ip);
+      return res.status(401).json({ ok: false, error: 'Invalid credentials' });
+    };
+
     const companyResult = await pool.query(
       `
       SELECT id, name, slug, palette_id, mark_id, logo_storage_key
@@ -165,7 +194,7 @@ authRouter.post(
     );
 
     if (!companyResult.rowCount) {
-      return res.status(401).json({ ok: false, error: 'Invalid credentials' });
+      return invalidCredentials();
     }
 
     const companyRow = companyResult.rows[0];
@@ -179,19 +208,20 @@ authRouter.post(
     );
 
     if (!result.rowCount) {
-      return res.status(401).json({ ok: false, error: 'Invalid credentials' });
+      return invalidCredentials();
     }
 
     const user = result.rows[0];
 
     if (!user.password_hash) {
-      return res.status(401).json({ ok: false, error: 'Invalid credentials' });
+      return invalidCredentials();
     }
 
     const matches = await bcrypt.compare(password, user.password_hash);
 
-    if (!matches)
-      return res.status(401).json({ ok: false, error: 'Invalid credentials' });
+    if (!matches) return invalidCredentials();
+
+    clear(LIMITS.loginAccount, accountKey);
 
     const token = signToken(user.id, user.email, user.role, user.company_id);
 
@@ -208,6 +238,7 @@ authRouter.post(
 // POST /auth/accept-invite
 authRouter.post(
   '/accept-invite',
+  limitByIp(LIMITS.acceptInvite),
   asyncHandler(async (req, res) => {
     const parsed = acceptInviteSchema.safeParse(req.body);
 

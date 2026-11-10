@@ -12,6 +12,7 @@ import { loadPublicBrandingByCompanyId } from '../lib/companySlug';
 import { sendMail } from '../lib/mailer';
 import { getAppBaseUrl } from '../utils/appBase';
 import { requestScope } from '../lib/tenant';
+import { LIMITS, limitByIp } from '../lib/rateLimit';
 
 export const usersRouter = Router();
 
@@ -222,6 +223,7 @@ usersRouter.post(
 // GET /users/invites/validate
 usersRouter.get(
   '/invites/validate',
+  limitByIp(LIMITS.inviteValidate),
   asyncHandler(async (req, res) => {
     const token = req.query.token as string;
 
