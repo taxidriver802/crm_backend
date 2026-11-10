@@ -199,6 +199,14 @@ export async function ensureSchema() {
     );
     const patchPhase23Sql = fs.readFileSync(patchPhase23Path, 'utf8');
     await client.query(patchPhase23Sql);
+
+    const patchPhase24Path = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase24_workspace.sql'
+    );
+    const patchPhase24Sql = fs.readFileSync(patchPhase24Path, 'utf8');
+    await client.query(patchPhase24Sql);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

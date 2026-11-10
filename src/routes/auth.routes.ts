@@ -10,6 +10,10 @@ import {
   loginSchema,
   acceptInviteSchema,
 } from '../validators/auth.schemas';
+import {
+  normalizeUiPreferences,
+  updateWorkspaceSchema,
+} from '../validators/workspace.schemas';
 
 import jwt, { type Secret, type SignOptions } from 'jsonwebtoken';
 import { authCookieOptions } from '../lib/authCookies';
@@ -44,6 +48,7 @@ function publicUser(row: {
   last_name: string;
   role: string;
   status: string;
+  ui_preferences?: unknown;
 }) {
   return {
     id: row.id,
@@ -52,6 +57,7 @@ function publicUser(row: {
     last_name: row.last_name,
     role: row.role,
     status: row.status,
+    ui_preferences: normalizeUiPreferences(row.ui_preferences),
   };
 }
 
@@ -329,6 +335,7 @@ authRouter.get(
         u.last_name,
         u.role,
         u.status,
+        u.ui_preferences,
         u.company_id,
         c.name AS company_name,
         c.slug AS company_slug,
@@ -358,6 +365,46 @@ authRouter.get(
         mark_id: row.mark_id,
         logo_storage_key: row.logo_storage_key,
       }),
+    });
+  })
+);
+
+authRouter.patch(
+  '/preferences',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const parsed = updateWorkspaceSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        ok: false,
+        error: parsed.error.issues[0]?.message || 'Invalid preferences',
+      });
+    }
+
+    const userId = req.user!.userId;
+    const current = await pool.query(
+      `SELECT ui_preferences FROM users WHERE id = $1`,
+      [userId]
+    );
+    if (current.rowCount === 0) {
+      return res.status(401).json({ ok: false, error: 'Invalid token' });
+    }
+
+    const next = {
+      ...normalizeUiPreferences(current.rows[0].ui_preferences),
+      ...parsed.data,
+    };
+    const saved = await pool.query(
+      `UPDATE users
+       SET ui_preferences = $2::jsonb, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1
+       RETURNING ui_preferences`,
+      [userId, JSON.stringify(next)]
+    );
+
+    res.json({
+      ok: true,
+      ui_preferences: normalizeUiPreferences(saved.rows[0].ui_preferences),
     });
   })
 );

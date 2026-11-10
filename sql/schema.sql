@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
   last_login_at TIMESTAMPTZ,
   invite_revoked_at TIMESTAMPTZ,
   invite_superseded_at TIMESTAMPTZ,
+  ui_preferences JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT users_role_check CHECK (role IN ('owner', 'admin', 'agent')),
