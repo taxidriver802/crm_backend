@@ -1,7 +1,8 @@
 import { rgb, type RGB } from 'pdf-lib';
 
 /**
- * Default light print theme (Rooftop). Hex must match
+ * Default light print theme: the Ember palette (id `rooftop`, kept so stored
+ * palette ids still resolve). Hex must match
  * crm_frontend/src/theme/themes/rooftop.js `print`.
  * PDFs stay on this map. Invite email uses resolveEmailTheme.
  * Stay light — no dark mode.
@@ -33,7 +34,7 @@ export type PrintTheme = {
  * block in crm_frontend/src/theme/themes. PDFs stay on PRINT_THEME.
  */
 const EMAIL_THEMES: Record<string, PrintTheme> = {
-  rooftop: PRINT_THEME,
+  rooftop: PRINT_THEME, // Ember
   azure: {
     accent: '#2563eb',
     accentSoft: '#e5ecfd',

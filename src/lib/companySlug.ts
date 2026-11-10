@@ -2,6 +2,12 @@ import { pool } from '../db';
 
 export const COMPANY_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+/**
+ * Palette ids are stored on companies and in preferences, so they never
+ * change. `rooftop` is the orange palette, shown to people as "Ember"
+ * (crm_frontend/src/theme/themes/rooftop.js); the id is kept so saved
+ * choices keep resolving.
+ */
 export const COMPANY_PALETTE_IDS = [
   'rooftop',
   'azure',
@@ -13,6 +19,11 @@ export const COMPANY_PALETTE_IDS = [
   'graphite',
 ] as const;
 
+/**
+ * `product` is the default mark. It used to draw the old product logo; it now
+ * draws the company's initials (the monogram). The id stays because rows
+ * and the column default already hold it.
+ */
 export const COMPANY_MARK_IDS = [
   'product',
   'home',
