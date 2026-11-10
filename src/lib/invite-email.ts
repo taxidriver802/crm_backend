@@ -1,5 +1,7 @@
 import { isCompanyMarkId } from './companySlug';
 import { resolveEmailTheme } from './print-theme';
+import { companyMonogram } from './monogram';
+import { POWERED_BY } from './brand';
 
 function escapeHtml(value: string) {
   return value
@@ -18,13 +20,6 @@ const ROLE_LABELS: Record<string, string> = {
 
 function roleLabel(role: string) {
   return ROLE_LABELS[role] || role;
-}
-
-function companyInitials(name: string) {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return 'C';
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0] || ''}${parts[1][0] || ''}`.toUpperCase();
 }
 
 /** Stroke icons match crm_frontend/src/components/icons.js. */
@@ -90,7 +85,7 @@ function companyIconHtml({
   return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;">
     <tr>
       <td width="36" height="36" align="center" valign="middle" style="width:36px;height:36px;background:${accent};color:${onAccent};border-radius:8px;font-family:Arial,sans-serif;font-size:13px;font-weight:700;line-height:36px;">
-        ${escapeHtml(companyInitials(companyName))}
+        ${escapeHtml(companyMonogram(companyName) || '·')}
       </td>
     </tr>
   </table>`;
@@ -141,6 +136,9 @@ export function buildInviteEmail({
     inviteUrl,
     ``,
     `This invite link expires in ${expiresHours} hours and can only be used once.`,
+    ``,
+    `—`,
+    POWERED_BY,
   ]
     .filter((line) => line !== null)
     .join('\n');
@@ -227,6 +225,9 @@ export function buildInviteEmail({
         </p>
       </div>
     </div>
+    <p style="max-width: 600px; margin: 12px auto 0; text-align: center; font-size: 11px; color: ${t.muted};">
+      ${POWERED_BY}
+    </p>
   </div>
 `;
   return { subject, text, html };
