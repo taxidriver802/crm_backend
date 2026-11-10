@@ -146,8 +146,8 @@ npm run db:migrate
 On an empty `crm_dev` this applies the baseline; run it again after pulling
 new migrations. `npm test` migrates the test database the same way.
 
-**Hosted database.** Back up first, deploy the backend files, then run
-`npm run db:migrate` on the server with `DATABASE_URL` set to the hosted
+**Hosted database.** Back up first (`npm run db:backup`), deploy the
+backend files, then run `npm run db:migrate` on the server with `DATABASE_URL` set to the hosted
 database, and restart the backend after it succeeds. A hosted database built
 from the old patches is brought up to the baseline the first time; after that
 only new migrations run.
@@ -166,7 +166,9 @@ database: "ok" }`, or 503 when the database cannot be reached.
 http://localhost:3000/register, then sign in at `/login`.
 
 **Demo data** (optional): `npm run db:seed-walkthrough` — see
-[`docs/guide/hosted-demo-seed.md`](docs/guide/hosted-demo-seed.md).
+[`docs/guide/hosted-demo-seed.md`](docs/guide/hosted-demo-seed.md). It
+writes into the default company (Rooftop), and its `--reset` refuses when
+any other company has data.
 `npm run db:seed-demo` loads an older local dump, `crm_dev_backup.sql`,
 which is not in git; a fresh clone has none.
 
@@ -177,6 +179,13 @@ these. `FRONTEND_URL` defaults to `http://localhost:3000`.
 runbook, and `.env.production.example` names every variable. With
 `NODE_ENV=production` the backend refuses to start on unsafe config
 (`src/config/production.ts`).
+
+**Backups:** `npm run db:backup` writes a set (a `pg_dump` of the database
+and an archive of the uploads, checksummed in a manifest) and copies it off
+the machine; `npm run db:restore-check` restores a set into a scratch
+database (`joist_restore_check`) and checks every row count and file. See
+"Backups" in the hosting runbook. Both need the PostgreSQL client tools
+(`pg_dump`, `pg_restore`) at the server's major version or newer.
 
 ## Environment variables
 
@@ -199,8 +208,22 @@ loads `.env.test` when `NODE_ENV=test`.
 - `CORS_ORIGINS` — extra comma-separated origins (a LAN address or tunnel in
   development)
 - `TRUST_PROXY` — which hop may supply `X-Forwarded-For`; default `loopback`
+- `UPLOADS_DIR` — where uploaded files live; default `uploads/` under the
+  working directory. A host keeps it outside the checkout. Jest always uses
+  a temporary directory
 - `JWT_EXPIRES_IN` — default `7d`
 - `AUTH_COOKIE_CROSS_SITE` — `true` for cross-site cookies (development only)
+
+**Backups** — read by `db:backup` and `db:restore-check`, not by the API
+
+- `BACKUP_DIR` — where sets are written; default `backups/` (gitignored)
+- `BACKUP_REMOTE` — rsync destination for the off-host copy
+  (`user@host:/path` over ssh, or a mounted path). Without it a production
+  backup exits 2
+- `BACKUP_KEEP_DAYS` (default `14`), `BACKUP_KEEP_MIN` (default `3`) — local
+  retention; the newest `BACKUP_KEEP_MIN` sets are always kept
+- `RESTORE_ADMIN_URL` — a role that may create and drop databases, on the
+  `postgres` database; default: `DATABASE_URL`'s server and role
 
 **SMTP (invites)** — nodemailer. Invite send fails until these are set.
 (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` are the ones that gate
@@ -232,6 +255,8 @@ production boot refuses `QB_*` and `ABC_*`.
 | `npm test` | Jest, `NODE_ENV=test`, `--runInBand` |
 | `npm run test:watch` / `test:debug` | Watch / open-handle detection |
 | `npm run db:migrate` | Bring `DATABASE_URL` up to date (baseline, then `sql/migrations/`) |
+| `npm run db:backup` | Back up the database and uploads as one set; copy it off the host; prune old sets |
+| `npm run db:restore-check` | Restore a set into `joist_restore_check` and check it (`--drop` removes it after) |
 | `npm run db:seed-walkthrough` | Narrative demo dataset |
 | `npm run db:seed-demo` | Older backup-based seed |
 
@@ -302,7 +327,15 @@ npm test
 Covered (integration): auth/dashboard smoke, authorization, automation,
 dashboard actions, estimates (authenticated + public), estimate templates,
 files, intake, invoices, jobs, notes, notifications, portal, reports, saved
-views, tasks, users.
+views, tasks, users, the production boot check, rate limits, backups and
+the seed's reset guard.
+
+The backup round trip (`test/backup.test.ts`) creates and drops a database,
+so it runs only when a role that may do that is named:
+
+```bash
+RESTORE_ADMIN_URL=postgresql://<superuser>@localhost:5432/postgres npm test -- backup
+```
 
 Not covered as dedicated suites: `/search`, `/product-metrics`, ABC, QuickBooks,
 and a full leads CRUD file (leads are created as fixtures in other tests).

@@ -2,6 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import request from 'supertest';
+import { uploadsRoot } from '../src/lib/uploadsDir';
 import { app } from '../src/app';
 import { pool } from '../src/db';
 import { companyMonogram } from '../src/lib/monogram';
@@ -79,7 +80,7 @@ describe('Joist brand: Rooftop Realty keeps its own logo', () => {
     const user = await createTestUser({ role: 'owner' });
     const headers = authHeaderFor(user);
 
-    const tmp = path.join(process.cwd(), 'uploads', 'brand-replace.png');
+    const tmp = path.join(uploadsRoot(), 'brand-replace.png');
     fs.mkdirSync(path.dirname(tmp), { recursive: true });
     fs.writeFileSync(tmp, Buffer.from('89504e470d0a1a0a', 'hex'));
     const replaced = await request(app)

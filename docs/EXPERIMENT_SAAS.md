@@ -1005,7 +1005,32 @@ landed on.
   **Not yet walked on a real host**: the runbook's TLS proxy, systemd and
   `Secure` cookie steps are unexercised. The leaked hashes' passwords
   still need rotating if those accounts are live (Unverified).
-- [ ] **Step 2** — prospect **5** (backups, and one restore done)
+- [x] **Step 2** — prospect **5** (backups, and one restore done). Landed
+  on `experiment/CC_backups` (backend; a note in `crm_qa`; no frontend
+  change). Built:
+  - `npm run db:backup`: a set of a custom-format dump, an uploads archive
+    and a manifest (checksums, plus every table's row count taken in the
+    dump's own snapshot); an rsync off-host copy (`BACKUP_REMOTE`, without
+    which a production backup exits 2); retention that always keeps the
+    newest sets.
+  - `npm run db:restore-check`: checks the checksums, restores into a
+    guarded `*_restore_check` database (never the live or source one),
+    unpacks the uploads apart from the live ones, compares every count and
+    checks every file row and logo, prints a job photo to open; `--owner`
+    and a recovery procedure in `docs/guide/hosting.md`.
+  - `UPLOADS_DIR`. Jest had emptied the app's own `uploads/` on every run;
+    it now uses a temporary directory.
+  - The walkthrough seed's `--reset` refuses when any other company has
+    rows it would truncate (`lead_status_events`, which the cascade
+    reaches, included), and the seed only targets the default company.
+
+  Checked: Jest 32 suites / 248 tests with the backup round trip on, and
+  `npm run test:qa` 290 passed. The drill: backed up `crm_qa`, copied the
+  set to a second directory, restored it from there into
+  `joist_restore_check` (6 companies, 10 jobs, 281 rows, 5 of 5 files),
+  and opened job #1's restored photo, identical to the original. **Not yet
+  on a real host**: the off-host copy went to a local directory, not
+  another machine, and the nightly timer hasn't run.
 - [ ] **Step 3** — prospects **3 + 6**, one migration window (rows that
   can't land in another company; money writes that survive a double
   submit)

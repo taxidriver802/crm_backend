@@ -23,3 +23,9 @@ uploads/
 # including the old crm_dev_backup.sql that db:seed-demo reads)
 *_backup.sql
 cookies.txt
+# npm run db:backup writes sets here by default (BACKUP_DIR), and
+# npm run db:restore-check unpacks restored uploads here. Both hold
+# every company's data.
+backups/
+restore-check/
+*.dump

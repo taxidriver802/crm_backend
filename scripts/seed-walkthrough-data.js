@@ -14,11 +14,17 @@
  *
  * Flags:
  *   --dry-run         Print planned writes without committing
- *   --reset           Truncate CRM business tables first (keeps users)
+ *   --reset           Truncate CRM business tables first (keeps users).
+ *                     Refused when any other company has rows in them:
+ *                     the truncate is not scoped to one company.
  *   --force           Allow appending even if walkthrough leads already exist
  *   --confirm         Required when DATABASE_URL host is not localhost/127.0.0.1
  *   --owner-email     Target a specific active owner (default: oldest active owner)
  *   --include-team    Create/reuse demo agents and assign some work to them
+ *
+ * The seed's rows carry no company_id, so they land in the database's
+ * default company (crm_default_company_id(), Rooftop). The owner and the
+ * demo agents are therefore looked up in that company only.
  *
  * Suggested demo path:
  *   Dashboard → Leads (Nelson/Patel) → Jobs → Estimates → Invoices →
@@ -29,6 +35,7 @@ require('dotenv').config();
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
+const { assertResetTouchesOnlyCompany } = require('./lib/reset-guard');
 
 const WALKTHROUGH_LEAD_EMAILS = [
   'marcus.nelson@example.com',
@@ -126,15 +133,17 @@ async function getOwner(pool, ownerEmail) {
   if (ownerEmail) {
     const { rows } = await pool.query(
       `
-      SELECT id, email, first_name, last_name, role, status
+      SELECT id, email, first_name, last_name, role, status, company_id
       FROM users
-      WHERE lower(email) = lower($1)
+      WHERE lower(email) = lower($1) AND company_id = crm_default_company_id()
       LIMIT 1
       `,
       [ownerEmail]
     );
     if (!rows[0]) {
-      throw new Error(`No user found for --owner-email ${ownerEmail}`);
+      throw new Error(
+        `No user ${ownerEmail} in the default company. The seed writes into that company only.`
+      );
     }
     if (rows[0].role !== 'owner' || rows[0].status !== 'active') {
       throw new Error(
@@ -146,16 +155,16 @@ async function getOwner(pool, ownerEmail) {
 
   const { rows } = await pool.query(
     `
-    SELECT id, email, first_name, last_name, role, status
+    SELECT id, email, first_name, last_name, role, status, company_id
     FROM users
-    WHERE role = 'owner' AND status = 'active'
+    WHERE role = 'owner' AND status = 'active' AND company_id = crm_default_company_id()
     ORDER BY created_at ASC
     LIMIT 1
     `
   );
   if (!rows[0]) {
     throw new Error(
-      'No active owner found. Register/login once on the hosted site, then rerun this seed.'
+      'No active owner in the default company. Register/login once on the hosted site, then rerun this seed.'
     );
   }
   return rows[0];
@@ -193,7 +202,8 @@ async function ensureDemoAgents(pool, dryRun) {
     }
 
     const existing = await pool.query(
-      `SELECT id, email, first_name, last_name FROM users WHERE lower(email) = lower($1)`,
+      `SELECT id, email, first_name, last_name FROM users
+       WHERE lower(email) = lower($1) AND company_id = crm_default_company_id()`,
       [agent.email]
     );
     if (existing.rows[0]) {
@@ -1502,6 +1512,8 @@ async function main() {
       if (!options.confirm && hostname !== 'localhost' && hostname !== '127.0.0.1') {
         throw new Error('--reset on a non-local host also requires --confirm.');
       }
+      const emptied = await assertResetTouchesOnlyCompany(pool, DEMO_TABLES, owner.company_id);
+      console.log(`Reset empties ${emptied.length} tables; only this company has rows in them.`);
       await resetDemoTables(pool, options.dryRun);
     }
 
@@ -1549,7 +1561,11 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('Walkthrough seed failed:', err.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Walkthrough seed failed:', err.message);
+    process.exit(1);
+  });
+}
+
+module.exports = { DEMO_TABLES };

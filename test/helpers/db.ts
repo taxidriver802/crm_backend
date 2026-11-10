@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { pool } from '../../src/db';
+import { uploadsRoot } from '../../src/lib/uploadsDir';
 const { startingRowsSql } = require('../../scripts/lib/migrations');
 
 export async function resetDb() {
@@ -36,7 +37,12 @@ export async function resetDb() {
   // The built-in company and its estimate templates, as a new database has them.
   await pool.query(startingRowsSql());
 
-  const uploadsDir = path.join(process.cwd(), 'uploads');
+  // Only ever the per-run temporary directory from test/setupEnv.ts, never
+  // the app's own uploads.
+  const uploadsDir = uploadsRoot();
+  if (uploadsDir === path.resolve(process.cwd(), 'uploads')) {
+    throw new Error('resetDb refuses to empty the app uploads directory; set UPLOADS_DIR');
+  }
 
   if (fs.existsSync(uploadsDir)) {
     for (const name of fs.readdirSync(uploadsDir)) {

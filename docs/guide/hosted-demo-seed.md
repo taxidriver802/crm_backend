@@ -1,8 +1,10 @@
 # Hosted Demo Seed Guide
 
-> **Not on a host that serves real companies.** `--reset` truncates every
-> company's business data, not one company's. Use this only on a demo
-> database. The production runbook is [`hosting.md`](hosting.md).
+> **Not on a host that serves real companies.** The seed writes demo
+> records into the default company (Rooftop). `--reset` truncates business
+> tables for every company, so it refuses whenever another company has data
+> in them. Use this only on a demo database, and take a backup first
+> (`npm run db:backup`). The production runbook is [`hosting.md`](hosting.md).
 
 Apply the Rooftop Realty walkthrough dataset to the hosted CRM database on the Windows home server, using the same SSH + Docker pattern as the Phase 19 patch fallback.
 
@@ -30,10 +32,10 @@ File rows are **metadata only** (no photo binaries).
 | Flag | Meaning |
 |------|---------|
 | `--confirm` | **Required** when `DATABASE_URL` host is not `localhost` / `127.0.0.1` (includes Docker host `crm-db`) |
-| `--reset` | Truncates CRM business tables, **keeps users**. Wipes existing hosted CRM data. |
+| `--reset` | Truncates CRM business tables, **keeps users**. Wipes existing hosted CRM data. Refused when any company other than the default one has rows in those tables (it names them) |
 | `--force` | Append even if `@example.com` walkthrough leads already exist |
 | `--dry-run` | Print planned work; no writes |
-| `--owner-email` | Target a specific active owner |
+| `--owner-email` | Target a specific active owner of the default company |
 | `--include-team` | Create/reuse Alex + Sam demo agents |
 
 Without `--reset` / `--force`, the script refuses to run if walkthrough leads already exist.
@@ -94,15 +96,19 @@ If hostname resolution fails, use the Tailscale hostname from step 1.
 
 On the server (replace `crm-api` with the real container name if different):
 
+The seed needs its `lib/reset-guard.js` beside it:
+
 ```powershell
 cd C:\homelab\apps\crm-api
-docker cp .\seed-walkthrough-data.js crm-api:/tmp/seed-walkthrough-data.js
+docker exec crm-api mkdir -p /tmp/seed/lib
+docker cp .\seed-walkthrough-data.js crm-api:/tmp/seed/seed-walkthrough-data.js
+docker cp .\lib\reset-guard.js crm-api:/tmp/seed/lib/reset-guard.js
 ```
 
 ### 5. Dry-run first (recommended)
 
 ```powershell
-docker exec -e NODE_PATH=/app/node_modules crm-api node /tmp/seed-walkthrough-data.js --dry-run --confirm --reset --include-team
+docker exec -e NODE_PATH=/app/node_modules crm-api node /tmp/seed/seed-walkthrough-data.js --dry-run --confirm --reset --include-team
 ```
 
 Confirm the owner email printed matches the account you demo with.
@@ -110,13 +116,13 @@ Confirm the owner email printed matches the account you demo with.
 ### 6. Apply for real
 
 ```powershell
-docker exec -e NODE_PATH=/app/node_modules -e APP_BASE_URL=https://YOUR_PUBLIC_CRM_HOST crm-api node /tmp/seed-walkthrough-data.js --confirm --reset --include-team
+docker exec -e NODE_PATH=/app/node_modules -e APP_BASE_URL=https://YOUR_PUBLIC_CRM_HOST crm-api node /tmp/seed/seed-walkthrough-data.js --confirm --reset --include-team
 ```
 
 Optional:
 
 ```powershell
-docker exec -e NODE_PATH=/app/node_modules -e APP_BASE_URL=https://YOUR_PUBLIC_CRM_HOST crm-api node /tmp/seed-walkthrough-data.js --confirm --reset --include-team --owner-email you@example.com
+docker exec -e NODE_PATH=/app/node_modules -e APP_BASE_URL=https://YOUR_PUBLIC_CRM_HOST crm-api node /tmp/seed/seed-walkthrough-data.js --confirm --reset --include-team --owner-email you@example.com
 ```
 
 ### 7. Save the printed public links
@@ -167,7 +173,8 @@ Localhost does not require `--confirm`.
 |---------|-----|
 | `Refusing to write to non-local database host` | Add `--confirm` |
 | `Walkthrough leads already exist` | Use `--reset` (wipe) or `--force` (append) |
-| `No active owner found` | Register/login once on the hosted site first |
+| `No active owner in the default company` | Register/login once on the hosted site first. The seed only writes into the default company (Rooftop) |
+| `Refusing --reset: … other company has data` | The database serves more than one company. Seed without `--reset`, or use a demo database |
 | `Cannot find module 'pg'` / `bcryptjs` | Ensure `NODE_PATH=/app/node_modules` and you are exec'ing the **API** container, not `crm-db` |
 | Wrong owner targeted | Pass `--owner-email` |
 | Portal/estimate URLs look wrong | Set `APP_BASE_URL` on the `docker exec` |

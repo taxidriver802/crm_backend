@@ -1,12 +1,9 @@
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { uploadsRoot } from './uploadsDir';
 
-const uploadRoot = path.join(process.cwd(), 'uploads');
-
-if (!fs.existsSync(uploadRoot)) {
-  fs.mkdirSync(uploadRoot);
-}
+fs.mkdirSync(uploadsRoot(), { recursive: true });
 
 const storage = multer.diskStorage({
   destination: (req, _file, cb) => {
@@ -15,7 +12,7 @@ const storage = multer.diskStorage({
       cb(new Error('Missing company context'), '');
       return;
     }
-    const dir = path.join(uploadRoot, companyId);
+    const dir = path.join(uploadsRoot(), companyId);
     fs.mkdirSync(dir, { recursive: true });
     cb(null, dir);
   },

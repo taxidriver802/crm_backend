@@ -4,6 +4,7 @@ import path from 'path';
 import * as activityService from '../services/jobActivity.service';
 import { createNotification } from '../lib/notifications';
 import { applyTenantScope, tenantScope } from '../lib/tenant';
+import { uploadsRoot } from '../lib/uploadsDir';
 
 export class FileNotFoundError extends Error {
   constructor(message = 'File not found') {
@@ -135,9 +136,9 @@ async function ensureJobBelongsToUser(
 }
 
 export function absoluteUploadPath(storageKey: string) {
-  const uploadsRoot = path.resolve(process.cwd(), 'uploads');
-  const resolved = path.resolve(uploadsRoot, storageKey);
-  const relative = path.relative(uploadsRoot, resolved);
+  const root = uploadsRoot();
+  const resolved = path.resolve(root, storageKey);
+  const relative = path.relative(root, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new FileNotFoundError();
   }

@@ -12,6 +12,8 @@
     "test:debug": "cross-env NODE_ENV=test jest --runInBand --detectOpenHandles",
     "help:articles": "ts-node --transpile-only scripts/help-articles.ts",
     "db:migrate": "node scripts/migrate.js",
+    "db:backup": "node scripts/backup.js",
+    "db:restore-check": "node scripts/restore-check.js",
     "db:seed-demo": "node scripts/seed-demo-data.js",
     "db:seed-walkthrough": "node scripts/seed-walkthrough-data.js"
   },

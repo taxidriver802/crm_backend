@@ -8,6 +8,11 @@ beforeEach(() => {
 });
 
 afterAll(async () => {
+  // The per-run uploads directory from test/setupEnv.ts.
+  const fs = require('fs');
+  const { uploadsRoot } = require('../src/lib/uploadsDir');
+  fs.rmSync(uploadsRoot(), { recursive: true, force: true });
+
   const { pool } = require('../src/db');
   const pgPool = pool as any;
 

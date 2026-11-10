@@ -2,6 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import request from 'supertest';
+import { uploadsRoot } from '../src/lib/uploadsDir';
 import { app } from '../src/app';
 import { pool } from '../src/db';
 import { ensureSchema } from './helpers/setup';
@@ -172,7 +173,7 @@ describe('Health', () => {
 });
 
 describe('Company logos', () => {
-  const uploads = path.join(process.cwd(), 'uploads');
+  const uploads = uploadsRoot();
 
   beforeAll(async () => {
     await ensureSchema();

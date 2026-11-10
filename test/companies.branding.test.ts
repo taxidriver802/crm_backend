@@ -2,6 +2,7 @@
 import fs from 'fs';
 import path from 'path';
 import request from 'supertest';
+import { uploadsRoot } from '../src/lib/uploadsDir';
 import { app } from '../src/app';
 import { ensureSchema } from './helpers/setup';
 import { resetDb } from './helpers/db';
@@ -81,7 +82,7 @@ describe('Phase 21 company branding', () => {
     expect(register.status).toBe(201);
     const cookie = register.headers['set-cookie']?.[0] ?? '';
 
-    const tmp = path.join(process.cwd(), 'uploads', 'logo-test.png');
+    const tmp = path.join(uploadsRoot(), 'logo-test.png');
     fs.mkdirSync(path.dirname(tmp), { recursive: true });
     fs.writeFileSync(tmp, Buffer.from('89504e470d0a1a0a', 'hex'));
 

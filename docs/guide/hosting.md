@@ -5,8 +5,9 @@ backend, the frontend, and a TLS reverse proxy. This is the production start
 path from `docs/EXPERIMENT_SAAS.md` (step 1: prospects 1 and 2).
 
 > **Status.** Written with the code it describes, and checked locally:
-> boot refusals, rate limits, headers and the build commands. It has not
-> yet been walked end to end on a real host. The home-server Docker setup in
+> boot refusals, rate limits, headers, the build commands, and a backup
+> restored from its off-machine copy (step 2). It has not yet been walked
+> end to end on a real host. The home-server Docker setup in
 > `hosted-demo-seed.md` is disabled for now.
 
 ## Shape
@@ -37,11 +38,18 @@ browser ──HTTPS──▶ TLS proxy (Caddy, nginx, …)  :443
   header a client writes itself cannot reset them.
 - **One backend process.** Rate-limit counters live in memory and the two
   reminder sweeps run in-process, so run exactly one backend process.
+- **Data outside the code.** Uploads (job photos, documents, logos) live in
+  `UPLOADS_DIR`, for example `/var/lib/joist/uploads`, not inside the
+  checkout, so a redeploy can't touch them. The database and that directory
+  are the two things a backup must hold.
 
 ## What you need
 
 - Node.js 20.9 or newer (Next 16).
-- PostgreSQL 16 or newer.
+- PostgreSQL 16 or newer, and its client tools (`pg_dump`, `pg_restore`,
+  `psql`) on the app host at the server's major version or newer.
+- `tar` and `rsync`, plus somewhere off this machine to keep backups: a
+  second machine reachable over ssh, or mounted storage.
 - A DNS name for the host, and a TLS proxy that can get a certificate for it.
 - Checkouts of `crm_backend` and `crm_frontend` side by side.
 
@@ -61,6 +69,9 @@ When the database is on another machine, add `?sslmode=require` to
 ## 2. Backend
 
 ```bash
+# data directories, outside the checkout, readable only by the app user
+sudo install -d -o joist -g joist -m 700 /var/lib/joist/uploads /var/backups/joist
+
 cd crm_backend
 npm ci
 cp .env.production.example .env      # then fill in every value
@@ -78,6 +89,8 @@ Required in `.env`:
 - **`APP_BASE_URL`** and **`FRONTEND_URL`**: both are the
   `https://<your host>` address people use.
 - **`TRUST_PROXY`**: `loopback`.
+- **`UPLOADS_DIR`**: `/var/lib/joist/uploads`, owned by the `joist` user.
+- **`BACKUP_DIR`** and **`BACKUP_REMOTE`**: see Backups below.
 
 The backend refuses to start under `NODE_ENV=production`, and lists every
 reason, when:
@@ -158,12 +171,109 @@ location / {
 - Invite a teammate. The copied link starts with `APP_BASE_URL`, whatever
   address the inviter's browser used.
 
+## 6. Backups
+
+A backup **set** is three files with one UTC timestamp, written by
+`npm run db:backup`:
+
+- `joist-<stamp>.dump`: `pg_dump`, custom format;
+- `joist-<stamp>-uploads.tar.gz`: everything in `UPLOADS_DIR`;
+- `joist-<stamp>.json`: the manifest, written last. It holds both files'
+  checksums and every table's row count, taken inside the same database
+  snapshot as the dump.
+
+The files are mode `0600` and hold every company's data, password hashes
+included. Treat the backup directory and the off-host copy like the
+database.
+
+**Configure** (in `crm_backend/.env`):
+
+- `BACKUP_DIR=/var/backups/joist`
+- `BACKUP_REMOTE=backup@backup-host:/srv/joist-backups`: an rsync
+  destination over ssh (give the `joist` user an ssh key that the backup host
+  accepts) or a mounted path such as `/mnt/offsite/joist`. Without it, a
+  production backup writes the set and then exits 2, because a copy on the
+  same disk doesn't survive losing the disk.
+- `BACKUP_KEEP_DAYS=14`, `BACKUP_KEEP_MIN=3`: local sets older than 14 days
+  are removed, but the newest 3 always stay. The off-host copy is never
+  pruned by Joist; set retention on the backup host.
+
+**Schedule** nightly with a systemd timer
+(`/etc/systemd/system/joist-backup.service` and `.timer`):
+
+```ini
+# joist-backup.service
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/joist/crm_backend
+ExecStart=/usr/bin/npm run db:backup
+User=joist
+
+# joist-backup.timer
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+`systemctl enable --now joist-backup.timer`. Exit codes: `0` done, `1`
+failed (no half-written set is left), `2` written but not copied off the
+host. Alert on anything but `0`: `systemctl list-timers` and
+`journalctl -u joist-backup` show the last run, and an `OnFailure=` unit
+can mail you.
+
+**Prove a backup restores** at least once a month, and after any change to
+the host:
+
+```bash
+cd /srv/joist/crm_backend
+# from the off-host copy, fetched back to this machine:
+rsync -a backup@backup-host:/srv/joist-backups/ /tmp/joist-sets/
+npm run db:restore-check -- --from /tmp/joist-sets
+```
+
+It checks the files against their checksums, replaces the scratch database
+`joist_restore_check`, restores into it, unpacks the uploads into
+`restore-check/joist_restore_check/uploads`, then compares every table's
+row count with the manifest and checks that every file row and company
+logo has its file. It prints one restored job photo to open. Open it. Then
+run it again with `--drop`, or drop the scratch copy yourself.
+
+It never writes to the live database or the live uploads directory: the
+target must be named `*_restore_check`, and must not be the live database
+or the one the backup came from. Creating a database needs a role allowed
+to, so set `RESTORE_ADMIN_URL` (on the `postgres` database) when the app's
+role has no `CREATEDB`, for example `postgresql://postgres@/postgres?host=/var/run/postgresql`
+when run as the `postgres` user.
+
+**Recover for real** (the database or the disk is lost):
+
+1. Stop the frontend and the backend.
+2. `npm run db:restore-check -- --from <the sets> --owner joist`, with
+   `--set <stamp>` for a set other than the newest. Wait for `OK`.
+   `--owner` makes the app role own the restored database and every table
+   in it, so it can be swapped in as it is.
+3. Swap it in, as the admin role:
+   ```sql
+   ALTER DATABASE joist RENAME TO joist_broken_20261110;  -- if it still exists
+   ALTER DATABASE joist_restore_check RENAME TO joist;
+   ALTER DATABASE joist SET timezone TO 'America/Chicago';
+   ```
+4. Move `restore-check/joist_restore_check/uploads` to `UPLOADS_DIR`
+   (keep the old directory aside), and give it to the `joist` user.
+5. `npm run db:migrate`, then start the backend and the frontend, and
+   check `/api/health`.
+
+Everything written after that set's timestamp is lost. This is a
+whole-database restore: one company can't be restored on its own yet
+(EXPERIMENT_SAAS.md prospect 10).
+
 ## Upgrading
 
-1. Back up first. Until backups are automated (EXPERIMENT_SAAS.md step 2),
-   take them by hand:
-   - the database: `pg_dump -Fc joist > joist-$(date +%F).dump`
-   - the files: an archive of `crm_backend/uploads/`
+1. Back up first: `npm run db:backup`, and check it reports the off-host
+   copy.
 2. In each repo: `git pull`, `npm ci`, `npm run build`.
 3. Backend: `npm run db:migrate`.
 4. Restart the backend, then the frontend.
@@ -191,7 +301,10 @@ this change may still be an SVG; the public logo route serves it with
 ## Do not, on a shared host
 
 - **Don't set `QB_*` or `ABC_*`.** The boot refuses them.
-- **Don't run `db:seed-walkthrough --reset`.** It truncates every company's
-  data, not one company's. Step 2 fixes this.
+- **Don't run `db:seed-walkthrough` on a host with customers.** It writes
+  demo records into the default company. Its `--reset` truncates tables for
+  every company, so it refuses whenever another company has data in them.
+- **Don't restore into the live database by hand.** Restore into
+  `joist_restore_check` with `db:restore-check`, then swap it in (above).
 - **Don't run more than one backend process.** See "One backend process"
   above.
