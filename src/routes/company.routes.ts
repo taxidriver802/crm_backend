@@ -8,7 +8,7 @@ import { upload } from '../lib/upload';
 import { requestScope } from '../lib/tenant';
 import { updateCompanySchema } from '../validators/company.schemas';
 import { publicCompany } from '../lib/companySlug';
-import { absoluteUploadPath } from '../services/files.service';
+import { removeUploadedLogo } from '../lib/companyLogo';
 
 export const companyRouter = Router();
 
@@ -68,12 +68,7 @@ companyRouter.patch(
     let logo_storage_key = current.logo_storage_key;
 
     if (parsed.data.clear_logo && current.logo_storage_key) {
-      try {
-        const filePath = absoluteUploadPath(current.logo_storage_key);
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-      } catch {
-        // ignore missing files
-      }
+      removeUploadedLogo(current.logo_storage_key);
       logo_storage_key = null;
     }
 
@@ -122,12 +117,7 @@ companyRouter.post(
     const storageKey = `${companyId}/${req.file.filename}`;
 
     if (current.logo_storage_key && current.logo_storage_key !== storageKey) {
-      try {
-        const filePath = absoluteUploadPath(current.logo_storage_key);
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-      } catch {
-        // ignore
-      }
+      removeUploadedLogo(current.logo_storage_key);
     }
 
     const result = await pool.query(

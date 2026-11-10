@@ -108,7 +108,7 @@ describe('Phase 20 auth / company register', () => {
       slug: 'rooftop',
       palette_id: 'rooftop',
       mark_id: 'product',
-      logo_url: null,
+      logo_url: '/public/companies/rooftop/logo',
     });
     expect(found.body.company.id).toBeUndefined();
 

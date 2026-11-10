@@ -3,7 +3,7 @@ import fs from 'fs';
 import { pool } from '../db';
 import { asyncHandler } from '../utils/asyncHandler';
 import { COMPANY_SLUG_RE, publicCompanyBranding } from '../lib/companySlug';
-import { absoluteUploadPath } from '../services/files.service';
+import { companyLogoPath } from '../lib/companyLogo';
 
 export const publicCompaniesRouter = Router();
 
@@ -30,7 +30,7 @@ publicCompaniesRouter.get(
     }
 
     try {
-      const filePath = absoluteUploadPath(row.logo_storage_key);
+      const filePath = companyLogoPath(row.logo_storage_key);
       if (!fs.existsSync(filePath)) {
         return res.status(404).json({ ok: false, error: 'Not found' });
       }

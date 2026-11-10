@@ -2696,7 +2696,7 @@ ALTER TABLE ONLY public.users
 -- Data for Name: companies; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.companies (id, name, slug, palette_id, mark_id, logo_storage_key, created_at, updated_at, workspace_defaults) VALUES ('c0000000-0000-4000-8000-000000000001', 'Rooftop Realty', 'rooftop', 'rooftop', 'product', NULL, '2026-11-09 13:00:27.126434-06', '2026-11-09 13:00:27.126434-06', '{}');
+INSERT INTO public.companies (id, name, slug, palette_id, mark_id, logo_storage_key, created_at, updated_at, workspace_defaults) VALUES ('c0000000-0000-4000-8000-000000000001', 'Rooftop Realty', 'rooftop', 'rooftop', 'product', 'builtin/rooftop-realty.png', '2026-11-09 13:00:27.126434-06', '2026-11-09 13:00:27.126434-06', '{}');
 
 --
 -- Data for Name: estimate_templates; Type: TABLE DATA; Schema: public; Owner: -
