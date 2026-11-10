@@ -235,7 +235,7 @@ export async function getDashboardData(
         FROM invoices i
         INNER JOIN jobs j ON j.id = i.job_id
         WHERE ${creatorAliased('i')}
-          AND i.status IN ('Sent', 'Overdue')
+          AND i.status IN ('Sent', 'Partial', 'Overdue')
           AND i.due_date IS NOT NULL
           AND i.due_date <= NOW() + (${ph(1)}::int * INTERVAL '1 day')
         ORDER BY i.due_date ASC

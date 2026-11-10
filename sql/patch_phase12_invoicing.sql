@@ -73,7 +73,8 @@ ALTER TABLE notifications ADD CONSTRAINT notifications_type_check CHECK (
     'INVOICE_PAID',
     'LEAD_CREATED',
     'LEAD_ASSIGNED',
-    'JOB_ASSIGNED'
+    'JOB_ASSIGNED',
+    'PAYMENT_RECORDED'
   )
 );
 

@@ -15,7 +15,8 @@ export type NotificationType =
   | 'INVOICE_PAID'
   | 'LEAD_CREATED'
   | 'LEAD_ASSIGNED'
-  | 'JOB_ASSIGNED';
+  | 'JOB_ASSIGNED'
+  | 'PAYMENT_RECORDED';
 
 export type NotificationEntityType =
   | 'task'

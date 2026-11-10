@@ -16,6 +16,12 @@ import {
   applyTenantScope,
   tenantScope,
 } from '../lib/tenant';
+import {
+  assertCanLeaveApproval,
+  clearContractPointer,
+  onEstimateApproved,
+  prepareContractDelete,
+} from './contract.service';
 
 type ScopeOpts = { includeAll?: boolean; companyId?: string };
 
@@ -51,6 +57,26 @@ export class EstimateNotDraftError extends Error {
   constructor(message = 'Templates can only be applied to draft estimates') {
     super(message);
     this.name = 'EstimateNotDraftError';
+  }
+}
+
+export class EstimateLockedError extends Error {
+  status = 409;
+
+  constructor(
+    message = 'This estimate is approved. Add a change order to revise the price.'
+  ) {
+    super(message);
+    this.name = 'EstimateLockedError';
+  }
+}
+
+export class EstimatePriceError extends Error {
+  status = 400;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'EstimatePriceError';
   }
 }
 
@@ -91,6 +117,8 @@ const ESTIMATE_SELECT = `
     e.discount_total,
     e.grand_total,
     e.notes,
+    e.kind,
+    e.contract_estimate_id,
     e.share_expires_at,
     e.client_responded_at,
     e.client_response_note,
@@ -100,6 +128,7 @@ const ESTIMATE_SELECT = `
     e.company_id,
 
     j.title AS job_title,
+    j.contract_estimate_id AS job_contract_estimate_id,
     j.status AS job_status,
     j.address AS job_address,
     j.lead_id AS job_lead_id,
@@ -133,6 +162,11 @@ function normalizeEstimate(row: any, lineItems: any[] = []) {
     discount_total: Number(row.discount_total ?? 0),
     grand_total: Number(row.grand_total ?? 0),
     notes: row.notes,
+    kind: row.kind || 'proposal',
+    contract_estimate_id: row.contract_estimate_id ?? null,
+    is_contract:
+      row.job_contract_estimate_id != null &&
+      Number(row.job_contract_estimate_id) === Number(row.id),
     share_expires_at: row.share_expires_at ?? null,
     client_responded_at: row.client_responded_at ?? null,
     client_response_note: row.client_response_note ?? null,
@@ -240,6 +274,27 @@ async function getEstimateLineItemsRaw(estimateId: number) {
   return result.rows;
 }
 
+async function loadEstimatePricing(estimateId: number, companyId: string) {
+  const result = await pool.query(
+    `SELECT status, kind FROM estimates WHERE id = $1 AND company_id = $2`,
+    [estimateId, companyId]
+  );
+  if (result.rowCount === 0) throw new EstimateNotFoundError();
+  return result.rows[0] as { status: string; kind: string };
+}
+
+function assertPriceEditable(row: { status: string }) {
+  if (row.status === 'Approved') throw new EstimateLockedError();
+}
+
+function assertUnitPriceAllowed(kind: string, unitPrice: number) {
+  if (kind !== 'change_order' && unitPrice < 0) {
+    throw new EstimatePriceError(
+      'Proposal prices cannot be negative. Add a change order to credit the job.'
+    );
+  }
+}
+
 async function recalculateEstimateTotals(
   client: any,
   estimateId: number,
@@ -261,7 +316,7 @@ async function recalculateEstimateTotals(
 
   const estimateRes = await client.query(
     `
-      SELECT tax_total, discount_total
+      SELECT tax_total, discount_total, kind
       FROM estimates
       WHERE id = $1 AND company_id = $2
       LIMIT 1
@@ -281,6 +336,12 @@ async function recalculateEstimateTotals(
     tax_total: taxTotal,
     discount_total: discountTotal,
   });
+
+  if (estimateRes.rows[0].kind !== 'change_order' && totals.grand_total < 0) {
+    throw new EstimatePriceError(
+      'A proposal total cannot be negative. Add a change order to credit the job.'
+    );
+  }
 
   await client.query(
     `
@@ -432,6 +493,13 @@ export async function updateEstimate(
 
   const setParts: string[] = [];
   const scope = await tenantScope(userId, options);
+  const leavingApproval =
+    updates.status != null &&
+    updates.status !== 'Approved' &&
+    existing.status === 'Approved';
+  if (leavingApproval) {
+    await assertCanLeaveApproval(scope.companyId, id);
+  }
   const values: any[] = [id];
 
   for (const key of keys) {
@@ -458,6 +526,13 @@ export async function updateEstimate(
 
   if (result.rowCount === 0) {
     throw new EstimateNotFoundError();
+  }
+
+  if (leavingApproval) {
+    await clearContractPointer(scope.companyId, id);
+  }
+  if (updates.status === 'Approved' && existing.status !== 'Approved') {
+    await onEstimateApproved(scope.companyId, id);
   }
 
   const updated = await getEstimateById(userId, id, options);
@@ -523,6 +598,9 @@ export async function deleteEstimate(
 ) {
   const existing = await getEstimateById(userId, id, options);
   const scope = await tenantScope(userId, options);
+  if (existing.company_id) {
+    await prepareContractDelete(existing.company_id, existing.id);
+  }
   const params: any[] = [id];
   const where: string[] = ['id = $1'];
   applyTenantScope(where, params, scope, { companyOnly: true });
@@ -563,12 +641,15 @@ export async function addEstimateLineItem(
   input: CreateEstimateLineItemInput,
   options: ScopeOpts = {}
 ) {
-  await ensureEstimateBelongsToUser(userId, estimateId, options);
+  const scope = await ensureEstimateBelongsToUser(userId, estimateId, options);
+  const pricing = await loadEstimatePricing(estimateId, scope.companyId);
+  assertPriceEditable(pricing);
 
   const { quantity, unit_price, line_total } = calculateLineItem({
     quantity: input.quantity,
     unit_price: input.unit_price,
   });
+  assertUnitPriceAllowed(pricing.kind, unit_price);
 
   const client = await pool.connect();
 
@@ -716,7 +797,9 @@ export async function updateEstimateLineItem(
   updates: UpdateEstimateLineItemInput,
   options: ScopeOpts = {}
 ) {
-  await ensureEstimateBelongsToUser(userId, estimateId, options);
+  const scope = await ensureEstimateBelongsToUser(userId, estimateId, options);
+  const pricing = await loadEstimatePricing(estimateId, scope.companyId);
+  assertPriceEditable(pricing);
 
   const existingRes = await pool.query(
     `
@@ -744,6 +827,7 @@ export async function updateEstimateLineItem(
     quantity: nextQuantity,
     unit_price: nextUnitPrice,
   });
+  assertUnitPriceAllowed(pricing.kind, unit_price);
 
   const setParts: string[] = [];
   const values: any[] = [lineItemId, estimateId];
@@ -814,7 +898,9 @@ export async function deleteEstimateLineItem(
   lineItemId: number,
   options: ScopeOpts = {}
 ) {
-  await ensureEstimateBelongsToUser(userId, estimateId, options);
+  const scope = await ensureEstimateBelongsToUser(userId, estimateId, options);
+  const pricing = await loadEstimatePricing(estimateId, scope.companyId);
+  assertPriceEditable(pricing);
 
   const client = await pool.connect();
 
@@ -981,6 +1067,11 @@ export async function respondToEstimateShare(
   else if (decision === 'reject') status = 'Rejected';
   else status = 'Draft';
 
+  const leavingApproval = status !== 'Approved' && before.status === 'Approved';
+  if (leavingApproval && before.company_id) {
+    await assertCanLeaveApproval(before.company_id, before.id);
+  }
+
   const updateRes = await pool.query(
     `
     UPDATE estimates
@@ -996,6 +1087,13 @@ export async function respondToEstimateShare(
 
   if (updateRes.rowCount === 0) {
     throw new InvalidShareTokenError();
+  }
+
+  if (leavingApproval && before.company_id) {
+    await clearContractPointer(before.company_id, before.id);
+  }
+  if (status === 'Approved' && before.company_id) {
+    await onEstimateApproved(before.company_id, before.id);
   }
 
   const trimmedNote = note?.trim() || null;
@@ -1044,7 +1142,10 @@ export async function respondToEstimateShare(
 
 function toPdfPayload(estimate: ReturnType<typeof normalizeEstimate>) {
   return {
-    title: estimate.title,
+    title:
+      estimate.kind === 'change_order'
+        ? `Change order: ${estimate.title}`
+        : estimate.title,
     status: estimate.status,
     notes: estimate.notes,
     subtotal: estimate.subtotal,

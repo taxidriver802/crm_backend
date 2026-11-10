@@ -6,6 +6,14 @@ import * as jobsService from '../services/jobs.service';
 import * as tasksService from '../services/tasks.service';
 import * as activityService from '../services/jobActivity.service';
 import * as jobMeasurementsService from '../services/jobMeasurements.service';
+import * as contractService from '../services/contract.service';
+import * as paymentsService from '../services/payments.service';
+import * as estimatesService from '../services/estimates.service';
+import {
+  applyPaymentSchema,
+  createChangeOrderSchema,
+  recordPaymentSchema,
+} from '../validators/payments.schemas';
 import { requestScope } from '../lib/tenant';
 
 export const jobsRouter = Router();
@@ -426,6 +434,180 @@ jobsRouter.delete(
         return res.status(404).json({ ok: false, error: error.message });
       }
 
+      throw error;
+    }
+  })
+);
+
+function firstZodMessage(error: { issues?: { message: string }[] }) {
+  return error.issues?.[0]?.message || 'Invalid request';
+}
+
+function moneyErrorStatus(error: unknown) {
+  if (
+    error instanceof contractService.ContractError ||
+    error instanceof paymentsService.PaymentError
+  ) {
+    return error.status;
+  }
+  return null;
+}
+
+// GET /jobs/:id/money
+jobsRouter.get(
+  '/:id/money',
+  asyncHandler(async (req, res) => {
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
+
+    try {
+      const money = await contractService.getJobMoney(userId, id, {
+        includeAll,
+        companyId,
+      });
+      res.json({ ok: true, money });
+    } catch (error) {
+      const status = moneyErrorStatus(error);
+      if (status) {
+        return res.status(status).json({ ok: false, error: (error as Error).message });
+      }
+      throw error;
+    }
+  })
+);
+
+// POST /jobs/:id/change-orders
+jobsRouter.post(
+  '/:id/change-orders',
+  asyncHandler(async (req, res) => {
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
+
+    const parsed = createChangeOrderSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: firstZodMessage(parsed.error) });
+    }
+
+    try {
+      const estimateId = await contractService.createChangeOrder(
+        userId,
+        id,
+        parsed.data,
+        { includeAll, companyId }
+      );
+      const estimate = await estimatesService.getEstimateById(userId, estimateId, {
+        includeAll,
+        companyId,
+      });
+      res.status(201).json({ ok: true, estimate });
+    } catch (error) {
+      const status = moneyErrorStatus(error);
+      if (status) {
+        return res.status(status).json({ ok: false, error: (error as Error).message });
+      }
+      throw error;
+    }
+  })
+);
+
+// POST /jobs/:id/payments
+jobsRouter.post(
+  '/:id/payments',
+  asyncHandler(async (req, res) => {
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) {
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
+
+    const parsed = recordPaymentSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: firstZodMessage(parsed.error) });
+    }
+
+    try {
+      const payment = await paymentsService.recordPayment(userId, id, parsed.data, {
+        includeAll,
+        companyId,
+      });
+      res.status(201).json({ ok: true, payment });
+    } catch (error) {
+      const status = moneyErrorStatus(error);
+      if (status) {
+        return res.status(status).json({ ok: false, error: (error as Error).message });
+      }
+      throw error;
+    }
+  })
+);
+
+// POST /jobs/:id/payments/:paymentId/apply
+jobsRouter.post(
+  '/:id/payments/:paymentId/apply',
+  asyncHandler(async (req, res) => {
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const id = Number(req.params.id);
+    const paymentId = Number(req.params.paymentId);
+    if (!Number.isFinite(id) || !Number.isFinite(paymentId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
+
+    const parsed = applyPaymentSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: firstZodMessage(parsed.error) });
+    }
+
+    try {
+      await paymentsService.applyPayment(
+        userId,
+        id,
+        paymentId,
+        parsed.data.invoice_id,
+        { includeAll, companyId }
+      );
+      const money = await contractService.getJobMoney(userId, id, {
+        includeAll,
+        companyId,
+      });
+      res.json({ ok: true, money });
+    } catch (error) {
+      const status = moneyErrorStatus(error);
+      if (status) {
+        return res.status(status).json({ ok: false, error: (error as Error).message });
+      }
+      throw error;
+    }
+  })
+);
+
+// DELETE /jobs/:id/payments/:paymentId
+jobsRouter.delete(
+  '/:id/payments/:paymentId',
+  asyncHandler(async (req, res) => {
+    const { userId, companyId, includeAll } = requestScope(req, true);
+    const id = Number(req.params.id);
+    const paymentId = Number(req.params.paymentId);
+    if (!Number.isFinite(id) || !Number.isFinite(paymentId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid id' });
+    }
+
+    try {
+      await paymentsService.deletePayment(userId, id, paymentId, {
+        includeAll,
+        companyId,
+      });
+      res.json({ ok: true, deletedId: paymentId });
+    } catch (error) {
+      const status = moneyErrorStatus(error);
+      if (status) {
+        return res.status(status).json({ ok: false, error: (error as Error).message });
+      }
       throw error;
     }
   })

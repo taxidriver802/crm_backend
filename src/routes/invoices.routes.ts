@@ -39,10 +39,24 @@ function parseInvoiceStatus(
   value: unknown
 ): invoicesService.InvoiceStatus | undefined {
   const s = parseString(value);
-  if (s === 'Draft' || s === 'Sent' || s === 'Paid' || s === 'Overdue') {
+  if (
+    s === 'Draft' ||
+    s === 'Sent' ||
+    s === 'Partial' ||
+    s === 'Paid' ||
+    s === 'Overdue'
+  ) {
     return s;
   }
   return undefined;
+}
+
+function parseWritableInvoiceStatus(
+  value: unknown
+): invoicesService.InvoiceStatus | undefined {
+  const status = parseInvoiceStatus(value);
+  if (status === 'Partial') return undefined;
+  return status;
 }
 
 invoicesRouter.use(requireAuth);
@@ -56,7 +70,8 @@ invoicesRouter.get(
     const due = parseString(req.query.due);
 
     let query = `SELECT i.*, j.title AS job_title, j.lead_id AS job_lead_id,
-       l.first_name AS lead_first_name, l.last_name AS lead_last_name
+       l.first_name AS lead_first_name, l.last_name AS lead_last_name,
+       COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = i.id), 0) AS amount_paid
      FROM invoices i
      INNER JOIN jobs j ON j.id = i.job_id
      LEFT JOIN leads l ON l.id = j.lead_id
@@ -88,6 +103,10 @@ invoicesRouter.get(
       status: row.status,
       subtotal: Number(row.subtotal ?? 0),
       grand_total: Number(row.grand_total ?? 0),
+      amount_paid: Number(row.amount_paid ?? 0),
+      balance_due: Number(
+        (Number(row.grand_total ?? 0) - Number(row.amount_paid ?? 0)).toFixed(2)
+      ),
       due_date: row.due_date,
       paid_at: row.paid_at,
       job_id: row.job_id,
@@ -170,7 +189,7 @@ invoicesRouter.post(
       return res.status(400).json({ ok: false, error: 'job_id is required' });
     }
 
-    const status = parseInvoiceStatus(req.body.status);
+    const status = parseWritableInvoiceStatus(req.body.status);
     if (req.body.status && !status) {
       return res.status(400).json({ ok: false, error: 'Invalid status' });
     }
@@ -295,7 +314,7 @@ invoicesRouter.patch(
 
     const updates: invoicesService.UpdateInvoiceInput = {};
     if (req.body.status !== undefined) {
-      const s = parseInvoiceStatus(req.body.status);
+      const s = parseWritableInvoiceStatus(req.body.status);
       if (!s)
         return res.status(400).json({ ok: false, error: 'Invalid status' });
       updates.status = s;

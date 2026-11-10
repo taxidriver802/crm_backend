@@ -14,6 +14,7 @@ export async function resetDb() {
       portal_tokens,
       intake_tokens,
       automation_rules,
+      payments,
       invoice_line_items,
       invoices,
       estimate_line_items,

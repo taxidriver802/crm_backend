@@ -30,6 +30,7 @@ export type CreateJobActivityInput = {
     | 'INVOICE_STATUS_CHANGED'
     | 'INVOICE_DELETED'
     | 'INVOICE_PAID'
+    | 'PAYMENT_RECORDED'
     | 'COMMUNICATION_LOGGED';
   title: string;
   message?: string | null;

@@ -191,6 +191,14 @@ export async function ensureSchema() {
       'utf8'
     );
     await client.query(patchPhase22PerformanceSql);
+
+    const patchPhase23Path = path.join(
+      process.cwd(),
+      'sql',
+      'patch_phase23_contract_payments.sql'
+    );
+    const patchPhase23Sql = fs.readFileSync(patchPhase23Path, 'utf8');
+    await client.query(patchPhase23Sql);
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

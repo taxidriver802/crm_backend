@@ -15,6 +15,13 @@ import {
   tenantScope,
   type TenantScope,
 } from '../lib/tenant';
+import {
+  invoiceAmountPaid,
+  listPaymentsForInvoice,
+  PaymentError,
+  settleInvoiceAsPaid,
+  syncInvoiceSettlement,
+} from './payments.service';
 
 type ScopeOpts = { includeAll?: boolean; companyId?: string };
 
@@ -56,7 +63,7 @@ export class InvoiceAlreadyExistsError extends Error {
   }
 }
 
-export type InvoiceStatus = 'Draft' | 'Sent' | 'Paid' | 'Overdue';
+export type InvoiceStatus = 'Draft' | 'Sent' | 'Partial' | 'Paid' | 'Overdue';
 
 export type CreateInvoiceInput = {
   job_id: number;
@@ -99,6 +106,9 @@ const INVOICE_SELECT = `
     i.notes,
     i.share_token_hash,
     i.share_expires_at,
+    COALESCE((
+      SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = i.id
+    ), 0) AS amount_paid,
     i.created_at,
     i.updated_at,
 
@@ -123,7 +133,9 @@ function buildLeadName(row: any) {
   return null;
 }
 
-function normalizeInvoice(row: any, lineItems: any[] = []) {
+function normalizeInvoice(row: any, lineItems: any[] = [], payments: any[] = []) {
+  const grandTotal = Number(row.grand_total ?? 0);
+  const amountPaid = Number(row.amount_paid ?? 0);
   return {
     id: row.id,
     user_id: row.user_id,
@@ -134,13 +146,16 @@ function normalizeInvoice(row: any, lineItems: any[] = []) {
     subtotal: Number(row.subtotal ?? 0),
     tax_total: Number(row.tax_total ?? 0),
     discount_total: Number(row.discount_total ?? 0),
-    grand_total: Number(row.grand_total ?? 0),
+    grand_total: grandTotal,
+    amount_paid: amountPaid,
+    balance_due: Number((grandTotal - amountPaid).toFixed(2)),
     due_date: row.due_date,
     paid_at: row.paid_at,
     notes: row.notes,
     share_expires_at: row.share_expires_at ?? null,
     created_at: row.created_at,
     updated_at: row.updated_at,
+    payments,
     job: {
       id: row.job_id,
       title: row.job_title ?? `Job #${row.job_id}`,
@@ -287,7 +302,8 @@ export async function getInvoiceById(
   );
   if (result.rowCount === 0) throw new InvoiceNotFoundError();
   const lineItems = await getInvoiceLineItemsRaw(id);
-  return normalizeInvoice(result.rows[0], lineItems);
+  const payments = await listPaymentsForInvoice(id);
+  return normalizeInvoice(result.rows[0], lineItems, payments);
 }
 
 export async function createInvoice(
@@ -295,6 +311,9 @@ export async function createInvoice(
   input: CreateInvoiceInput,
   options: ScopeOpts = {}
 ) {
+  if (input.status === 'Partial') {
+    throw new PaymentError('Partial is set when a payment is recorded.');
+  }
   await ensureJobBelongsToUser(input.job_id, userId, options);
   const invoiceNumber = await nextInvoiceNumber(userId);
 
@@ -505,6 +524,27 @@ export async function updateInvoice(
   const keys = allowedKeys.filter((k) => k in updates);
   if (keys.length === 0) throw new Error('No fields to update');
 
+  if (updates.status === 'Partial') {
+    throw new PaymentError('Partial is set when a payment is recorded.');
+  }
+  if (updates.status === 'Draft') {
+    const alreadyPaid = await invoiceAmountPaid(id);
+    if (alreadyPaid > 0) {
+      throw new PaymentError(
+        'Delete recorded payments before returning this invoice to Draft.'
+      );
+    }
+  }
+
+  const markPaid =
+    'status' in updates &&
+    updates.status === 'Paid' &&
+    existing.status !== 'Paid';
+
+  if (markPaid) {
+    await settleInvoiceAsPaid(userId, id, options);
+  }
+
   const setParts: string[] = [];
   const values: any[] = [id, scope.companyId];
 
@@ -512,11 +552,6 @@ export async function updateInvoice(
     values.push((updates as any)[key] ?? null);
     setParts.push(`${key} = $${values.length}`);
   }
-
-  const markPaid =
-    'status' in updates &&
-    updates.status === 'Paid' &&
-    existing.status !== 'Paid';
 
   if (markPaid) {
     setParts.push(`paid_at = CURRENT_TIMESTAMP`);
@@ -530,9 +565,14 @@ export async function updateInvoice(
   );
   if (result.rowCount === 0) throw new InvoiceNotFoundError();
 
+  const paidNow = await invoiceAmountPaid(id);
+  if (paidNow > 0 || 'status' in updates || 'due_date' in updates) {
+    await syncInvoiceSettlement(id, scope.companyId);
+  }
+
   const updated = await getInvoiceById(userId, id, options);
-  const statusChanged =
-    'status' in updates && updates.status !== existing.status;
+  const statusChanged = updated.status !== existing.status;
+  const becamePaid = updated.status === 'Paid' && existing.status !== 'Paid';
 
   await createJobActivity({
     userId,
@@ -553,11 +593,11 @@ export async function updateInvoice(
   });
 
   if (statusChanged) {
-    const nType = markPaid ? 'INVOICE_PAID' : 'INVOICE_STATUS_CHANGED';
+    const nType = becamePaid ? 'INVOICE_PAID' : 'INVOICE_STATUS_CHANGED';
     await createNotification({
       userId,
       type: nType,
-      title: markPaid ? 'Invoice paid' : 'Invoice status updated',
+      title: becamePaid ? 'Invoice paid' : 'Invoice status updated',
       message: `${updated.invoice_number}: ${existing.status} → ${updated.status}`,
       entityType: 'invoice',
       entityId: updated.id,
@@ -568,7 +608,7 @@ export async function updateInvoice(
       },
     });
 
-    if (markPaid) {
+    if (becamePaid) {
       trackEvent('invoice_marked_paid', {
         userId,
         entityType: 'invoice',
@@ -652,6 +692,7 @@ export async function addInvoiceLineItem(
   } finally {
     client.release();
   }
+  await syncInvoiceSettlement(invoiceId, scope.companyId);
   return getInvoiceById(userId, invoiceId, options);
 }
 
@@ -720,6 +761,7 @@ export async function updateInvoiceLineItem(
   } finally {
     client.release();
   }
+  await syncInvoiceSettlement(invoiceId, scope.companyId);
   return getInvoiceById(userId, invoiceId, options);
 }
 
@@ -731,6 +773,7 @@ export async function deleteInvoiceLineItem(
 ) {
   const scope = await ensureInvoiceBelongsToUser(userId, invoiceId, options);
   const client = await pool.connect();
+  let deletedId: number;
   try {
     await client.query('BEGIN');
     const delRes = await client.query(
@@ -740,13 +783,15 @@ export async function deleteInvoiceLineItem(
     if (delRes.rowCount === 0) throw new InvoiceLineItemNotFoundError();
     await recalculateTotals(client, invoiceId, scope);
     await client.query('COMMIT');
-    return delRes.rows[0].id;
+    deletedId = delRes.rows[0].id;
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
   } finally {
     client.release();
   }
+  await syncInvoiceSettlement(invoiceId, scope.companyId);
+  return deletedId;
 }
 
 // ─── SHARE TOKEN ───────────────────────────────────────

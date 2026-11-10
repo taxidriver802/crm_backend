@@ -7,6 +7,7 @@ import {
   FileNotFoundError,
 } from './files.service';
 import { loadPublicBrandingByCompanyId } from '../lib/companySlug';
+import { getJobMoney } from './contract.service';
 
 export class PortalTokenError extends Error {
   constructor(message = 'Invalid or expired portal link') {
@@ -76,14 +77,15 @@ export async function getPortalData(rawToken: string) {
   const job = jobRes.rows[0];
 
   const estimatesRes = await pool.query(
-    `SELECT id, title, status, grand_total, created_at, updated_at
+    `SELECT id, title, status, kind, grand_total, created_at, updated_at
      FROM estimates WHERE job_id = $1 AND company_id = $2
      ORDER BY created_at DESC`,
     [job_id, company_id]
   );
 
   const invoicesRes = await pool.query(
-    `SELECT id, invoice_number, status, grand_total, due_date, paid_at, created_at
+    `SELECT id, invoice_number, status, grand_total, due_date, paid_at, created_at,
+            COALESCE((SELECT SUM(amount) FROM payments p WHERE p.invoice_id = invoices.id), 0) AS amount_paid
      FROM invoices WHERE job_id = $1 AND company_id = $2
      ORDER BY created_at DESC`,
     [job_id, company_id]
@@ -123,6 +125,7 @@ export async function getPortalData(rawToken: string) {
           a.type = 'INVOICE_STATUS_CHANGED'
           AND COALESCE(a.metadata->>'newStatus', '') = 'Paid'
         )
+        OR a.type = 'PAYMENT_RECORDED'
         OR (
           a.type = 'FILE_UPLOADED'
           AND a.entity_type = 'file'
@@ -152,6 +155,11 @@ export async function getPortalData(rawToken: string) {
     entityId: job_id,
   });
 
+  const money = await getJobMoney(String(user_id), Number(job_id), {
+    companyId: company_id,
+    includeAll: true,
+  });
+
   return {
     job: {
       id: job.id,
@@ -168,18 +176,40 @@ export async function getPortalData(rawToken: string) {
       id: e.id,
       title: e.title,
       status: e.status,
+      kind: e.kind || 'proposal',
       grand_total: Number(e.grand_total ?? 0),
       created_at: e.created_at,
       updated_at: e.updated_at,
     })),
-    invoices: invoicesRes.rows.map((i: any) => ({
-      id: i.id,
-      invoice_number: i.invoice_number,
-      status: i.status,
-      grand_total: Number(i.grand_total ?? 0),
-      due_date: i.due_date,
-      paid_at: i.paid_at,
-      created_at: i.created_at,
+    invoices: invoicesRes.rows.map((i: any) => {
+      const grand = Number(i.grand_total ?? 0);
+      const paid = Number(i.amount_paid ?? 0);
+      return {
+        id: i.id,
+        invoice_number: i.invoice_number,
+        status: i.status,
+        grand_total: grand,
+        amount_paid: paid,
+        balance_due: Number((grand - paid).toFixed(2)),
+        due_date: i.due_date,
+        paid_at: i.paid_at,
+        created_at: i.created_at,
+      };
+    }),
+    money: {
+      has_contract: money.has_contract,
+      contract_total: money.contract_total,
+      collected: money.collected,
+      still_owed: money.still_owed,
+      contract: money.contract,
+      change_orders: money.change_orders,
+    },
+    payments: money.payments.map((payment) => ({
+      id: payment.id,
+      amount: payment.amount,
+      method: payment.method,
+      received_at: payment.received_at,
+      applied: payment.invoice_id != null,
     })),
     files: filesRes.rows.map((f: any) => ({
       id: f.id,
@@ -221,6 +251,8 @@ function mapPortalTimelineItem(row: any) {
     label = 'Client responded to estimate';
   } else if (row.type === 'INVOICE_PAID' || metadata.newStatus === 'Paid') {
     label = 'Invoice paid';
+  } else if (row.type === 'PAYMENT_RECORDED') {
+    label = row.title || 'Payment received';
   } else if (row.type === 'FILE_UPLOADED') {
     label = metadata.fileName
       ? `Photo added: ${metadata.fileName}`

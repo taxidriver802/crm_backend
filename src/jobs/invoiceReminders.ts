@@ -8,7 +8,7 @@ export async function runInvoiceReminderJob() {
   const dueSoon = await pool.query(
     `SELECT i.id, i.user_id, i.invoice_number, i.due_date, i.job_id
      FROM invoices i
-     WHERE i.status = 'Sent'
+     WHERE i.status IN ('Sent', 'Partial')
        AND i.due_date IS NOT NULL
        AND i.due_date > NOW()
        AND i.due_date <= NOW() + INTERVAL '3 days'`
@@ -32,7 +32,7 @@ export async function runInvoiceReminderJob() {
   const overdue = await pool.query(
     `UPDATE invoices
      SET status = 'Overdue', updated_at = CURRENT_TIMESTAMP
-     WHERE status = 'Sent'
+     WHERE status IN ('Sent', 'Partial')
        AND due_date IS NOT NULL
        AND due_date < NOW()
      RETURNING id, user_id, invoice_number, job_id`
