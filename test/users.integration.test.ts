@@ -50,7 +50,9 @@ describe('Users invite actions', () => {
     expect(res.body.ok).toBe(true);
     expect(res.body.invite_url).toMatch(/\/accept-invite\?token=/);
     expect(res.body.user.id).toBe(invitedId);
-    expect(res.body.user.invite_token_hash).toBeTruthy();
+    // The answer carries the link, never the stored hash or password hash.
+    expect(res.body.user).not.toHaveProperty('invite_token_hash');
+    expect(res.body.user).not.toHaveProperty('password_hash');
   });
 
   it('POST /users/invite/:id/resend returns 404 when id is not an invited user', async () => {

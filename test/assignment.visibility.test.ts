@@ -173,7 +173,7 @@ describe('Assignment visibility', () => {
       company_id: otherCompany.id,
       email: 'outsider-assign@example.com',
     });
-    const outsiderHeaders = authHeaderFor(outsider);
+    const outsiderHeaders = await authHeaderFor(outsider);
 
     const lead = await request(app).post('/leads').set(owner.headers).send({
       first_name: 'Stay',

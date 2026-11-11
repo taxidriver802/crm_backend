@@ -1081,8 +1081,54 @@ landed on.
   owner can't find or open its records. The seeds were run against a
   scratch database. **Not done here**: the copied-link staff reset stays
   with step 4.
-- [ ] **Step 4** — prospect **4**, once SMTP exists on the host (a way back
-  in, sessions that end). The copied-link staff reset can go with step 3.
+- [x] **Step 4** — prospect **4** (a way back in, sessions that end).
+  Landed on `experiment/CC_way_back_in` (backend, frontend, and a spec in
+  `crm_qa`). Built without SMTP: every link is emailed when SMTP is set
+  and handed back to copy when it isn't. Built:
+  - Migration `0003_accounts`: `user_sessions` (one row per sign-in; the
+    JWT carries its id), `password_resets` (hashed, 1 hour, works once; a
+    new link supersedes the open one) and `account_events`. It changes no
+    existing row. Tokens from before it have no session, so everyone signs
+    in once more after the upgrade.
+  - Sessions: `requireAuth` refuses a token whose session has ended. Log
+    out ends this browser. Change password ends the others and keeps this
+    one; a reset ends all of them; Preferences has "Sign out everywhere
+    else"; disabling an account ends its sessions. A row per sign-in
+    replaces the plan's `users.session_version`, so signing out ends one
+    browser, not every one.
+  - A way back in. Forgot asks for slug and email and gives the same
+    answer either way (10 an hour per address, 3 an hour per account).
+    Its link is built on `APP_BASE_URL`, never on request headers. Without
+    SMTP it records the request and tells the person to ask an owner or
+    admin. A reset page sets the password and signs that browser in.
+    Owners can reset anyone else, admins can reset agents and admins;
+    nobody resets themselves (they use Change password).
+    `npm run user:reset-link` prints a link for an owner who is locked
+    out.
+  - Invites last 7 days, on first send and on Resend. Resend emails the
+    new link or hands it back to copy, never neither, and no longer
+    returns the row's hashes. "Copy invite link" makes one without
+    emailing.
+  - Account history: sign-ins, wrong passwords for a real account,
+    password changes and resets, role and status changes, invites. Owners
+    and admins read it from the Users page. Login writes `last_login_at`,
+    and the Users page shows "Last sign-in" with the time.
+  - Mail: a reset email in the company's brand with "Powered by Joist",
+    beside the invite one.
+
+  Checked: typecheck; Jest 35 suites / 291 tests. `test/accounts.test.ts`
+  (22) runs the mail path against a fake mailer. Sign out ends one session,
+  and a token without a session gets 401. Change password ends the others
+  and stops after 10 wrong tries. Forgot answers the same for every account
+  and builds its link on `APP_BASE_URL` despite forged headers. Two uses of
+  one link at once give one success. Admins can't reset owners. An invite
+  lasts 7 days, and after Resend the new link works and the old one doesn't.
+  The tenancy matrix covers the 7 new routes. Frontend lint adds no
+  warnings. `npm run test:qa` 298 passed (106 skipped at other widths, none
+  failed), with `tests/e2e/accounts.spec.ts` driving the copied-link path
+  end to end. **Not done here**: no real SMTP, so the emailed paths ran only
+  against a fake mailer. On a host without SMTP, a locked-out owner still
+  needs the operator.
 - [ ] **Milestone** — *the first outside company goes live*
 - [ ] **Step 5** — prospect **7** (a company's account with Joist)
 - [ ] **Step 6** — prospect **9** (telling what broke)
@@ -1099,8 +1145,9 @@ Where the build order differs from the rank:
   to day.
 - **6 ships with 3.** Both are a migration plus backend tests in
   neighbouring code, so they share one migration window and one QA run.
-- **4 waits on an operator secret (SMTP), not on code.** Its copied-link
-  slice doesn't need mail, so it can go out earlier.
+- **4 was built without SMTP.** Every link is handed back to copy until
+  the host has mail, and an operator command covers an owner who is
+  locked out. Setting `SMTP_*` turns the emails on with no code change.
 - **9 is built ahead of 8.** Row-level security is large and risky, and
   structured logs are what let an operator see a scoping regression while
   8 is being built.
@@ -1157,8 +1204,9 @@ absent, and neither horizon needs them.
 
 - **Email verification on registration.** Folded into 7's registration
   setting.
-- **Server-side sessions with a device list.** 4's `session_version` gives
-  the safety without them. The device list is parked.
+- **A device list.** 4 keeps a server-side session per sign-in, and
+  "Sign out everywhere else" ends the rest. Naming each device and ending
+  one at a time is parked.
 - **The audit log.** Only the security record (account events) is in 4. A
   general audit-log product is refused.
 - **Per-company timezone for the first company.** It's an operator setting
@@ -1231,9 +1279,13 @@ reports 28 suites and 207 tests passing.
   - *Would change the rank:* nothing moves. The rule keeping QuickBooks off
     a shared host stands either way.
 - **SMTP delivery.** No pass has sent real mail. Jest covers the invite
-  markup only.
+  and reset emails' text, and the mail path (invite, Resend, reset link,
+  Forgot) with a fake mailer.
   - *Would change the rank:* if the host can't get SMTP, the owner's own
     recovery in 4 waits, and the copied-link slice carries it.
+  - *Step 4 built both.* Until the host has SMTP, a locked-out owner gets
+    a link from `npm run user:reset-link`; everyone else gets one from an
+    owner or admin.
 - **The two hashes in `crm_dev_backup.sql`.** I don't know whether they
   belong to accounts that still exist on any live database.
   - *Would change the rank:* if they do, rotate those passwords now, ahead

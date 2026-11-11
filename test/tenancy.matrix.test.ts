@@ -177,7 +177,13 @@ const EXEMPT: Record<string, string> = {
     'signs in by email and password; the company comes from the account',
   'POST /auth/accept-invite':
     'addressed by an unguessable invite token, not an id',
-  'POST /auth/logout': 'clears the caller’s cookie',
+  'POST /auth/logout': 'ends the caller’s own session and clears its cookie',
+  'POST /auth/forgot-password':
+    'takes a company slug and email, answers the same for any account, and mails only that account (accounts tests)',
+  'GET /auth/reset-password/validate':
+    'addressed by an unguessable reset token, not an id (accounts tests)',
+  'POST /auth/reset-password':
+    'addressed by an unguessable reset token, not an id (accounts tests)',
   'GET /users/invites/validate':
     'addressed by an unguessable invite token, not an id',
   'GET /help': 'help articles are product docs, the same for every company',
@@ -533,7 +539,7 @@ describe('tenancy matrix: company A against company B, every mounted route', () 
       first_name: 'Ava',
       last_name: 'Ashwood',
     });
-    const headersA = authHeaderFor(ownerA);
+    const headersA = await authHeaderFor(ownerA);
     A = {
       headers: headersA,
       ownerId: ownerA.id,
@@ -559,7 +565,7 @@ describe('tenancy matrix: company A against company B, every mounted route', () 
       first_name: 'Bo',
       last_name: 'Bright',
     });
-    const headersB = authHeaderFor(ownerB);
+    const headersB = await authHeaderFor(ownerB);
     const data = await buildCompany(headersB, 'B', B_CLIENT);
 
     // Approve B's estimate the way a client does, bill it and take a payment.
@@ -751,6 +757,16 @@ describe('tenancy matrix: company A against company B, every mounted route', () 
       ],
       'PATCH /company': [own('PATCH', '/company', { name: 'Rooftop Realty' })],
       'POST /company/logo': [own('POST', '/company/logo')],
+      'POST /auth/sessions/end-others': [
+        own('POST', '/auth/sessions/end-others'),
+      ],
+      // A's owner has no password, so this is refused: nothing changes.
+      'POST /auth/change-password': [
+        own('POST', '/auth/change-password', {
+          current_password: 'not-the-password',
+          new_password: 'another-password-1',
+        }),
+      ],
       'POST /users/invite': [
         own('POST', '/users/invite', {
           first_name: 'Al',
@@ -833,6 +849,10 @@ describe('tenancy matrix: company A against company B, every mounted route', () 
         nf('PATCH', `/users/${B.agentId}`, { role: 'admin' }),
       ],
       'DELETE /users/:id': [nf('DELETE', `/users/${B.agentId}`)],
+      'POST /users/:id/reset-link': [
+        nf('POST', `/users/${B.agentId}/reset-link`),
+      ],
+      'GET /users/:id/events': [nf('GET', `/users/${B.agentId}/events`)],
 
       // Files
       'POST /files': [refused('POST', '/files', { job_id: b.job.id })],

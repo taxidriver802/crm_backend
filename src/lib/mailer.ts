@@ -13,8 +13,17 @@ const smtpConfigured = Boolean(smtpHost && smtpUser && smtpPass && mailFrom);
 
 if (!smtpConfigured) {
   console.warn(
-    '[mailer] Missing SMTP configuration. Invite emails will fail until env vars are set.'
+    '[mailer] Missing SMTP configuration. Invite and reset emails will fail until env vars are set.'
   );
+}
+
+/**
+ * Whether this host can send mail at all (SMTP_HOST, SMTP_USER, SMTP_PASS
+ * and MAIL_FROM set). Without it, every link falls back to one an owner or
+ * admin copies, and Forgot says so.
+ */
+export function isMailConfigured() {
+  return smtpConfigured;
 }
 
 export const transporter = nodemailer.createTransport({

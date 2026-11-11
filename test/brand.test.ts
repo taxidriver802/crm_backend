@@ -78,7 +78,7 @@ describe('Joist brand: Rooftop Realty keeps its own logo', () => {
 
     // createTestUser joins the built-in company (Rooftop Realty) by default.
     const user = await createTestUser({ role: 'owner' });
-    const headers = authHeaderFor(user);
+    const headers = await authHeaderFor(user);
 
     const tmp = path.join(uploadsRoot(), 'brand-replace.png');
     fs.mkdirSync(path.dirname(tmp), { recursive: true });

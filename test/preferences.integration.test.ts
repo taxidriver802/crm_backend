@@ -205,8 +205,8 @@ describe('preferences — API', () => {
     const company = await createTestCompany({ slug: 'prefs-co' });
     const owner = await createTestUser({ role: 'owner', company_id: company.id });
     const agent = await createTestUser({ role: 'agent', company_id: company.id });
-    const ownerHeaders = authHeaderFor(owner);
-    const agentHeaders = authHeaderFor(agent);
+    const ownerHeaders = await authHeaderFor(owner);
+    const agentHeaders = await authHeaderFor(agent);
 
     const forbidden = await request(app)
       .patch('/company/workspace-defaults')

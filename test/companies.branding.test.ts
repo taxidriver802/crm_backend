@@ -101,7 +101,7 @@ describe('Phase 21 company branding', () => {
       role: 'owner',
       company_id: other.id,
     });
-    const otherHeaders = authHeaderFor(otherUser);
+    const otherHeaders = await authHeaderFor(otherUser);
     const blocked = await request(app)
       .get('/public/companies/logo-co/logo')
       .set(otherHeaders);

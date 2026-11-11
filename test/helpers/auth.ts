@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { pool } from '../../src/db';
 
@@ -54,10 +55,22 @@ export async function createTestUser(
   return rows[0];
 }
 
-export function authHeaderFor(
+/**
+ * Signs a test request in: a real user_sessions row, and a token naming it,
+ * as a sign-in would make (requireAuth refuses a token without a live
+ * session).
+ */
+export async function authHeaderFor(
   user: Pick<TestUser, 'id' | 'email' | 'role' | 'company_id'>
 ) {
   const secret = ensureJwtSecret();
+  const sid = crypto.randomUUID();
+
+  await pool.query(
+    `INSERT INTO user_sessions (id, user_id, company_id, expires_at)
+     VALUES ($1, $2, $3, now() + interval '7 days')`,
+    [sid, user.id, user.company_id]
+  );
 
   const token = jwt.sign(
     {
@@ -65,6 +78,7 @@ export function authHeaderFor(
       email: user.email,
       role: user.role,
       companyId: user.company_id,
+      sid,
     },
     secret
   );
@@ -80,7 +94,7 @@ export async function createAuthedUser(
   const user = await createTestUser({ role });
   return {
     user,
-    headers: authHeaderFor(user),
+    headers: await authHeaderFor(user),
   };
 }
 

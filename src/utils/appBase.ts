@@ -27,3 +27,16 @@ export function getAppBaseUrl(req: any): string {
 
   return configured || 'http://localhost:3000';
 }
+
+/**
+ * The configured address only, never one taken from request headers: for
+ * links mailed on a request nobody signed in to make (Forgot), where a
+ * forged Host, Origin or X-App-Base-Url would otherwise choose the link.
+ */
+export function configuredAppBaseUrl(): string {
+  const configured =
+    process.env.APP_BASE_URL?.trim() ||
+    process.env.FRONTEND_URL?.trim() ||
+    'http://localhost:3000';
+  return configured.replace(/\/+$/, '');
+}

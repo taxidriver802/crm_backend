@@ -54,14 +54,30 @@ Roles: `owner`, `admin`, `agent`.
   frontend's `/register` screen calls it; sign-in is per company (slug +
   email + password).
 - Later users are invited (`POST /users/invite`) and activate at `/accept-invite`.
+  An invite link lasts 7 days, on first send and on Resend.
+- Each sign-in is a session (`user_sessions`); the JWT carries its id
+  (`sid`) and `requireAuth` refuses a token whose session has ended. Log out
+  ends this browser's session. Changing the password (`/auth/change-password`)
+  ends the person's other sessions; a reset ends all of them;
+  `/auth/sessions/end-others` is "Sign out everywhere else"; disabling an
+  account ends its sessions.
+- A way back in: `/forgot-password` asks for the company slug and email and
+  answers the same either way. With SMTP it emails a link; without it, an
+  owner or admin makes one from the Users page (`POST /users/:id/reset-link`;
+  admins can't reset owners, nobody resets themselves) and the operator can
+  print one (`npm run user:reset-link`). A reset link lasts 1 hour, works once,
+  and replaces any older open link.
+- Account history (`account_events`): sign-ins, wrong passwords for a real
+  account, password changes and resets, role and status changes, invites.
+  Owners and admins read it per person (`GET /users/:id/events`).
 - `requireAuth` sits on almost every router. Owner/admin gates use
   `requireOwnerOrAdmin` or `requireRole`.
 - Cookie: `access_token`, httpOnly, `SameSite=Lax`, and `Secure` when
   `NODE_ENV=production`. `AUTH_COOKIE_CROSS_SITE=true` (Secure +
   `SameSite=None`) is for a development setup where the UI and API are on
   different sites; production refuses it.
-- Sign-in, registration, invites and the client's token pages are rate
-  limited (`src/lib/rateLimit.ts`; the table is in
+- Sign-in, registration, invites, forgot/reset/change password and the
+  client's token pages are rate limited (`src/lib/rateLimit.ts`; the table is in
   [`docs/guide/hosting.md`](docs/guide/hosting.md)).
 
 `view=all` on list/dashboard endpoints is honored for owner/admin only.
@@ -207,8 +223,10 @@ loads `.env.test` when `NODE_ENV=test`.
 - `HOST` — interface to listen on; production uses `127.0.0.1`
 - `NODE_ENV` — `production` turns on the boot checks and the `Secure` cookie
 - `FRONTEND_URL` — CORS origin; default `http://localhost:3000`
-- `APP_BASE_URL` — invite links. In production it is the only source (https
-  required); in development the inviter's browser origin is used
+- `APP_BASE_URL` — invite and reset links. In production it is the only
+  source (https required); in development the inviter's browser origin is
+  used. Forgot-password links always use `APP_BASE_URL` (else
+  `FRONTEND_URL`), never request headers
 - `CORS_ORIGINS` — extra comma-separated origins (a LAN address or tunnel in
   development)
 - `TRUST_PROXY` — which hop may supply `X-Forwarded-For`; default `loopback`
@@ -229,9 +247,10 @@ loads `.env.test` when `NODE_ENV=test`.
 - `RESTORE_ADMIN_URL` — a role that may create and drop databases, on the
   `postgres` database; default: `DATABASE_URL`'s server and role
 
-**SMTP (invites)** — nodemailer. Invite send fails until these are set.
-(`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM` are the ones that gate
-“configured.”)
+**SMTP (invites and password resets)** — nodemailer. Without it, invite and
+reset links are handed back to the owner or admin to copy, and Forgot
+password tells the person to ask one. (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`,
+`MAIL_FROM` are the ones that gate “configured.”)
 
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`
 - `MAIL_FROM`, `SMTP_TIMEOUT_MS`
@@ -260,6 +279,7 @@ production boot refuses `QB_*` and `ABC_*`.
 | `npm run test:watch` / `test:debug` | Watch / open-handle detection |
 | `npm run db:migrate` | Bring `DATABASE_URL` up to date (baseline, then `sql/migrations/`) |
 | `npm run db:backup` | Back up the database and uploads as one set; copy it off the host; prune old sets |
+| `npm run user:reset-link -- --company <slug> --email <email>` | Print a one-hour password reset link for an active person (operator way back in) |
 | `npm run db:restore-check` | Restore a set into `joist_restore_check` and check it (`--drop` removes it after) |
 | `npm run db:seed-walkthrough` | Narrative demo dataset |
 | `npm run db:seed-demo` | Older backup-based seed |
@@ -271,7 +291,7 @@ No OpenAPI/Swagger or Postman collection. Routers are the spec. Mounted in
 
 | Prefix | Purpose |
 | --- | --- |
-| `/auth` | Register, login, logout, `me`, accept invite |
+| `/auth` | Register, login, logout, `me`, accept invite, forgot/reset/change password, sign out everywhere else |
 | `/leads` | Lead CRUD + summary |
 | `/jobs` | Job CRUD, tasks, measurements, health |
 | `/tasks` | Task/appointment CRUD + summary |
@@ -285,7 +305,7 @@ No OpenAPI/Swagger or Postman collection. Routers are the spec. Mounted in
 | `/search` | Workspace search (command palette) |
 | `/saved-views` | Per-user list presets |
 | `/notifications` | In-app notification feed |
-| `/users` | Invite, roles, disable (owner/admin) |
+| `/users` | Invite, roles, disable, reset links, account history (owner/admin) |
 | `/reports` | Operational KPIs |
 | `/product-metrics` | Product analytics (owner/admin) |
 | `/automation` | Rules + templates + evaluate |

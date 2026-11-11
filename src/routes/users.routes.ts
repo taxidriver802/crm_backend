@@ -7,12 +7,19 @@ import { requireAuth } from '../middleware/auth';
 import { inviteUserSchema } from '../validators/users.schemas';
 
 import requireOwnerOrAdmin from '../middleware/utils';
-import { buildInviteEmail } from '../lib/invite-email';
-import { loadPublicBrandingByCompanyId } from '../lib/companySlug';
-import { sendMail } from '../lib/mailer';
 import { getAppBaseUrl } from '../utils/appBase';
 import { requestScope } from '../lib/tenant';
 import { LIMITS, limitByIp } from '../lib/rateLimit';
+import { isMailConfigured } from '../lib/mailer';
+import { listAccountEvents, recordAccountEvent } from '../lib/accountEvents';
+import { createPasswordReset, resetUrl } from '../lib/passwordResets';
+import { endAllSessions } from '../lib/sessions';
+import {
+  inviteExpiry,
+  personName,
+  sendInviteEmail,
+  sendResetEmail,
+} from '../services/accounts.service';
 
 export const usersRouter = Router();
 
@@ -88,7 +95,7 @@ usersRouter.post(
     const inviteToken = crypto.randomBytes(32).toString('hex');
     const inviteTokenHash = sha256(inviteToken);
 
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const expiresAt = inviteExpiry();
     const appBaseUrl = getAppBaseUrl(req);
     const inviteUrl = `${appBaseUrl}/accept-invite?token=${inviteToken}`;
 
@@ -171,44 +178,32 @@ usersRouter.post(
     let emailError: string | null = null;
 
     try {
-      const inviterName =
-        [inviter.first_name, inviter.last_name]
-          .filter(Boolean)
-          .join(' ')
-          .trim() || inviter.email;
-
-      const branding = await loadPublicBrandingByCompanyId(companyId);
-      const companyName = branding?.name || 'CRM';
-      const logoUrl = branding?.logo_url
-        ? `${appBaseUrl.replace(/\/$/, '')}/api${branding.logo_url}`
-        : null;
-
-      const message = buildInviteEmail({
-        firstName: user.first_name,
-        inviterName,
-        inviteUrl,
-        companyName,
-        companySlug: branding?.slug,
-        role: user.role,
-        expiresHours: 24,
-        paletteId: branding?.palette_id,
-        markId: branding?.mark_id,
-        logoUrl,
-      });
-
-      await sendMail({
+      await sendInviteEmail({
         to: user.email,
-        subject: message.subject,
-        html: message.html,
-        text: message.text,
-        fromName: companyName,
+        firstName: user.first_name,
+        role: user.role,
+        inviterName: personName(inviter),
+        inviteUrl,
+        companyId,
+        appBaseUrl,
       });
-
       emailSent = true;
     } catch (err) {
-      console.error('[users/invite] failed to send invite email:', err);
-      emailError = 'Invite created, but email could not be sent';
+      if (isMailConfigured()) {
+        console.error('[users/invite] failed to send invite email:', err);
+      }
+      emailError = isMailConfigured()
+        ? 'Invite created, but email could not be sent'
+        : 'This Joist can’t send email yet';
     }
+
+    await recordAccountEvent({
+      companyId,
+      userId: user.id,
+      actorId: inviterId,
+      event: 'invite_sent',
+      detail: { emailed: emailSent },
+    });
 
     return res.status(201).json({
       ok: true,
@@ -284,12 +279,14 @@ usersRouter.get(
 );
 
 // POST /users/invite/:id/resend
+// A new link replaces the old one, so Resend always hands one over: by
+// email when this host can send it, otherwise as a link to copy.
 usersRouter.post(
   '/invite/:id/resend',
   requireAuth,
   requireOwnerOrAdmin,
   asyncHandler(async (req, res) => {
-    const { companyId } = requestScope(req);
+    const { userId: actorId, companyId } = requestScope(req);
     const rawId = Array.isArray(req.params.id)
       ? req.params.id[0]
       : req.params.id;
@@ -297,39 +294,9 @@ usersRouter.post(
       return res.status(400).json({ ok: false, error: 'Invalid user id' });
     }
 
-    const userResult = await pool.query(
-      `
-      SELECT *
-      FROM users
-      WHERE id = $1::uuid
-        AND company_id = $2
-        AND status = 'invited'
-      `,
-      [rawId, companyId]
-    );
-
-    const user = userResult.rows[0];
-
-    if (!user) {
-      return res.status(404).json({ ok: false, error: 'User not found' });
-    }
-
-    const userId = user.id;
-
-    // invalidate old invite
-    await pool.query(
-      `
-      UPDATE users
-      SET invite_superseded_at = NOW()
-      WHERE id = $1
-      `,
-      [userId]
-    );
-
     const inviteToken = crypto.randomBytes(32).toString('hex');
     const inviteTokenHash = sha256(inviteToken);
-
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const expiresAt = inviteExpiry();
 
     const updateResult = await pool.query(
       `
@@ -341,25 +308,71 @@ usersRouter.post(
         invite_superseded_at = NULL,
         invite_revoked_at = NULL,
         updated_at = NOW()
-      WHERE id = $3
-      RETURNING *
+      WHERE id = $3::uuid
+        AND company_id = $4
+        AND status = 'invited'
+      RETURNING id, first_name, last_name, email, role, status, invited_at, invite_expires_at
       `,
-      [inviteTokenHash, expiresAt, userId]
+      [inviteTokenHash, expiresAt, rawId, companyId]
     );
 
-    const updatedUser = updateResult.rows[0];
+    const user = updateResult.rows[0];
+    if (!user) {
+      return res.status(404).json({ ok: false, error: 'User not found' });
+    }
 
-    const inviteUrl = `${getAppBaseUrl(req)}/accept-invite?token=${inviteToken}`;
+    const appBaseUrl = getAppBaseUrl(req);
+    const inviteUrl = `${appBaseUrl}/accept-invite?token=${inviteToken}`;
 
-    /* await sendMail({
-      to: updatedUser.email,
-      subject: 'You’ve been invited',
-      html: `<a href="${inviteUrl}">Accept Invite</a>`,
-    }); */
+    const actor = (
+      await pool.query(
+        `SELECT first_name, last_name, email FROM users WHERE id = $1`,
+        [actorId]
+      )
+    ).rows[0];
+
+    // "Copy invite link" makes a new link without emailing it.
+    const sendEmail = req.body?.send_email !== false;
+    let emailSent = false;
+    let emailError: string | null = null;
+    if (sendEmail) {
+      try {
+        await sendInviteEmail({
+          to: user.email,
+          firstName: user.first_name,
+          role: user.role,
+          inviterName: actor ? personName(actor) : 'Your team',
+          inviteUrl,
+          companyId,
+          appBaseUrl,
+        });
+        emailSent = true;
+      } catch (err) {
+        if (isMailConfigured()) {
+          console.error(
+            '[users/invite/resend] failed to send invite email:',
+            err
+          );
+        }
+        emailError = isMailConfigured()
+          ? 'The new link was made, but the email could not be sent'
+          : 'This Joist can’t send email yet';
+      }
+    }
+
+    await recordAccountEvent({
+      companyId,
+      userId: user.id,
+      actorId,
+      event: 'invite_resent',
+      detail: { emailed: emailSent },
+    });
 
     return res.json({
       ok: true,
-      user: updatedUser,
+      user,
+      email_sent: emailSent,
+      email_error: emailError,
       invite_url: inviteUrl,
     });
   })
@@ -401,6 +414,13 @@ usersRouter.post(
         .status(404)
         .json({ ok: false, error: 'Invite not found or already processed' });
     }
+
+    await recordAccountEvent({
+      companyId,
+      userId: rawId,
+      actorId: requestScope(req).userId,
+      event: 'invite_revoked',
+    });
 
     return res.json({ ok: true });
   })
@@ -601,9 +621,32 @@ usersRouter.patch(
       [role ?? null, status ?? null, targetId]
     );
 
+    const updated = result.rows[0];
+    if (role && role !== existingUser.role) {
+      await recordAccountEvent({
+        companyId,
+        userId: targetId,
+        actorId,
+        event: 'role_changed',
+        detail: { from: existingUser.role, to: role },
+      });
+    }
+    if (status && status !== existingUser.status) {
+      // A disabled account's sessions end now: enabling it again later
+      // must not bring an old cookie back to life.
+      if (status === 'disabled') await endAllSessions(targetId, 'disabled');
+      await recordAccountEvent({
+        companyId,
+        userId: targetId,
+        actorId,
+        event: 'status_changed',
+        detail: { from: existingUser.status, to: status },
+      });
+    }
+
     res.json({
       ok: true,
-      user: result.rows[0],
+      user: updated,
     });
   })
 );
@@ -696,6 +739,139 @@ usersRouter.delete(
     res.json({
       ok: true,
       message: 'User deleted successfully',
+    });
+  })
+);
+
+// POST /users/:id/reset-link
+// An owner or admin sends someone a link to set a new password: emailed
+// when this host can send mail, otherwise handed back to copy. Owners can
+// do this for anyone in the company, admins for agents and admins. Nobody
+// does it for themselves (Change password in Preferences is for that).
+// The person stays signed in until the new password is set; then every
+// session they had ends.
+usersRouter.post(
+  '/:id/reset-link',
+  requireAuth,
+  requireOwnerOrAdmin,
+  asyncHandler(async (req, res) => {
+    const { userId: actorId, companyId } = requestScope(req);
+    const actorRole = req.user!.role;
+    const targetId = String(req.params.id);
+    if (!isValidUuid(targetId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid user id' });
+    }
+
+    const { rows } = await pool.query(
+      `SELECT id, email, first_name, last_name, role, status
+       FROM users WHERE id = $1 AND company_id = $2`,
+      [targetId, companyId]
+    );
+    const target = rows[0];
+    if (!target) {
+      return res.status(404).json({ ok: false, error: 'User not found' });
+    }
+    if (target.id === actorId) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          'To change your own password, use Change password in Preferences.',
+      });
+    }
+    if (target.role === 'owner' && actorRole !== 'owner') {
+      return res.status(403).json({
+        ok: false,
+        error: 'Only an owner can reset an owner’s password.',
+      });
+    }
+    if (target.status !== 'active') {
+      return res.status(400).json({
+        ok: false,
+        error:
+          target.status === 'invited'
+            ? 'They haven’t set a password yet. Resend their invite instead.'
+            : 'Turn this account back on before sending a reset link.',
+      });
+    }
+
+    const { token, expiresAt } = await createPasswordReset(pool, {
+      userId: target.id,
+      companyId,
+      via: 'staff',
+      requestedBy: actorId,
+    });
+    const appBaseUrl = getAppBaseUrl(req);
+    const url = resetUrl(appBaseUrl, token);
+
+    let emailSent = false;
+    let emailError: string | null = null;
+    if (isMailConfigured()) {
+      const actor = (
+        await pool.query(
+          `SELECT first_name, last_name, email FROM users WHERE id = $1`,
+          [actorId]
+        )
+      ).rows[0];
+      try {
+        await sendResetEmail({
+          to: target.email,
+          firstName: target.first_name,
+          resetUrl: url,
+          via: 'staff',
+          senderName: actor ? personName(actor) : null,
+          companyId,
+          appBaseUrl,
+        });
+        emailSent = true;
+      } catch (err) {
+        console.error('[users/reset-link] failed to send reset email:', err);
+        emailError = 'The link was made, but the email could not be sent';
+      }
+    } else {
+      emailError = 'This Joist can’t send email yet';
+    }
+
+    await recordAccountEvent({
+      companyId,
+      userId: target.id,
+      actorId,
+      event: 'reset_link_issued',
+      detail: { emailed: emailSent },
+    });
+
+    // Once it has been emailed, the link is the person's alone.
+    return res.status(201).json({
+      ok: true,
+      email_sent: emailSent,
+      email_error: emailError,
+      expires_at: expiresAt,
+      ...(emailSent ? {} : { reset_url: url }),
+    });
+  })
+);
+
+// GET /users/:id/events
+// The person's newest account events, for the Users page.
+usersRouter.get(
+  '/:id/events',
+  requireAuth,
+  requireOwnerOrAdmin,
+  asyncHandler(async (req, res) => {
+    const { companyId } = requestScope(req);
+    const targetId = String(req.params.id);
+    if (!isValidUuid(targetId)) {
+      return res.status(400).json({ ok: false, error: 'Invalid user id' });
+    }
+    const found = await pool.query(
+      `SELECT 1 FROM users WHERE id = $1 AND company_id = $2`,
+      [targetId, companyId]
+    );
+    if (!found.rowCount) {
+      return res.status(404).json({ ok: false, error: 'User not found' });
+    }
+    res.json({
+      ok: true,
+      events: await listAccountEvents(companyId, targetId),
     });
   })
 );

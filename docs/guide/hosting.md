@@ -104,8 +104,22 @@ reason, when:
   per company;
 - `AUTH_COOKIE_CROSS_SITE=true` or `TRUST_PROXY=true` is set.
 
-Mail is optional. Without `SMTP_*`, an invite still creates a link the
-inviter copies.
+Mail is optional. With `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`,
+`SMTP_USER`, `SMTP_PASS` and `MAIL_FROM` set, invites, Resend, reset links
+and Forgot password send email. Without them:
+
+- an invite, a Resend or a reset link made on the Users page is handed back
+  to the owner or admin to copy and send;
+- Forgot password tells the person this Joist can't send email yet and to
+  ask an owner or admin for a link;
+- an owner who is locked out gets a link from the operator, on the host:
+
+```bash
+npm run user:reset-link -- --company <slug> --email <email>
+```
+
+It prints a link that lasts an hour and works once, built on
+`APP_BASE_URL`. The account history records that the operator made it.
 
 Run it under a process manager with the timezone set. For example, with
 systemd (`/etc/systemd/system/joist-api.service`):
@@ -172,6 +186,8 @@ location / {
   `access_token` cookie is `Secure`, `HttpOnly` and `SameSite=Lax`.
 - Invite a teammate. The copied link starts with `APP_BASE_URL`, whatever
   address the inviter's browser used.
+- Sign out, then replay the old cookie: `curl -s -H 'Cookie:
+  access_token=<old value>' https://<host>/api/auth/me` returns 401.
 
 ## 6. Backups
 
@@ -287,6 +303,10 @@ already has two, it stops before changing anything and names them: void
 the extra one in the app, then run `npm run db:migrate` again. It also
 removes the built-in Rooftop Realty row if no user or record belongs to it.
 
+Migration `0003_accounts` adds sessions, reset links and account history.
+Sign-ins from before it have no session, so everyone signs in once more
+after the upgrade. It changes no existing row.
+
 ## Limits on the public surface
 
 All limits are counted per client address unless noted. A 429 carries
@@ -299,6 +319,10 @@ All limits are counted per client address unless noted. A 429 carries
 | Register a company | 10 per hour |
 | Accept an invite | 20 per 15 min |
 | Check an invite link | 60 per 15 min |
+| Forgot password | 10 per hour per address, and 3 per hour per company + email |
+| Check a reset link | 60 per 15 min |
+| Set a password from a reset link | 20 per 15 min |
+| Change password, per person | 10 wrong current passwords per 15 min |
 | Client pages: estimate, invoice, portal, intake (reads) | 300 per 15 min |
 | Client answers on a shared estimate | 30 per 15 min |
 | Intake form submissions | 5 per 15 min per address, and 30 per hour per intake link |

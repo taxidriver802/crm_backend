@@ -33,6 +33,13 @@ export const LIMITS = {
   publicAnswer: { name: 'public-answer-ip', max: 30, windowMs: 15 * MINUTE },
   intakeIp: { name: 'intake-ip', max: 5, windowMs: 15 * MINUTE },
   intakeLink: { name: 'intake-link', max: 30, windowMs: 60 * MINUTE },
+  forgotIp: { name: 'forgot-ip', max: 10, windowMs: 60 * MINUTE },
+  forgotAccount: { name: 'forgot-account', max: 3, windowMs: 60 * MINUTE },
+  resetValidate: { name: 'reset-validate-ip', max: 60, windowMs: 15 * MINUTE },
+  resetPassword: { name: 'reset-password-ip', max: 20, windowMs: 15 * MINUTE },
+  // Wrong current passwords, per signed-in person: a stolen session can't
+  // be used to guess the password behind it.
+  changePassword: { name: 'change-password-user', max: 10, windowMs: 15 * MINUTE },
 } satisfies Record<string, Limit>;
 
 const hits = new Map<string, number[]>();

@@ -266,7 +266,7 @@ describe('Rate limits on the public surface', () => {
       const other = await createTestCompany({ name: 'Other Roofing', slug: 'other-roofing' });
       const otherOwner = await createTestUser({ role: 'owner', company_id: other.id });
       const otherToken = (
-        await request(app).post('/intake/generate').set(authHeaderFor(otherOwner))
+        await request(app).post('/intake/generate').set(await authHeaderFor(otherOwner))
       ).body.token;
       expect((await submit(otherToken, '100.64.1.2', 31)).status).toBe(201);
     });

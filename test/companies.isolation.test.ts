@@ -26,7 +26,7 @@ async function authedOwner(overrides: {
     last_name: overrides.last_name,
     email: overrides.email,
   });
-  return { user, headers: authHeaderFor(user) };
+  return { user, headers: await authHeaderFor(user) };
 }
 
 async function createLead(

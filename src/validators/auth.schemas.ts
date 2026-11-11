@@ -31,3 +31,30 @@ export const acceptInviteSchema = z.object({
   token: z.string().min(1),
   password: z.string().min(8),
 });
+
+const companySlugField = z.preprocess((value) => {
+  if (value == null) return value;
+  if (typeof value !== "string") return value;
+  return value.trim().toLowerCase();
+}, z.string().min(1).max(60).regex(COMPANY_SLUG_RE));
+
+/** bcrypt reads at most 72 bytes; longer passwords are refused, not cut. */
+const newPassword = z
+  .string()
+  .min(8, "Use at least 8 characters.")
+  .refine((value) => Buffer.byteLength(value, "utf8") <= 72, "Use at most 72 characters.");
+
+export const forgotPasswordSchema = z.object({
+  company_slug: companySlugField,
+  email: z.string().email(),
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().min(1).max(200),
+  password: newPassword,
+});
+
+export const changePasswordSchema = z.object({
+  current_password: z.string().min(1),
+  new_password: newPassword,
+});

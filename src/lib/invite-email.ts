@@ -3,7 +3,7 @@ import { resolveEmailTheme } from './print-theme';
 import { companyMonogram } from './monogram';
 import { POWERED_BY } from './brand';
 
-function escapeHtml(value: string) {
+export function escapeHtml(value: string) {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -34,7 +34,7 @@ const MARK_PATHS: Record<string, string> = {
     '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6"/><path d="M9 17h4"/>',
 };
 
-function safeHttpUrl(url?: string | null) {
+export function safeHttpUrl(url?: string | null) {
   if (!url) return null;
   try {
     const parsed = new URL(url);
@@ -45,7 +45,7 @@ function safeHttpUrl(url?: string | null) {
   }
 }
 
-function companyIconHtml({
+export function companyIconHtml({
   companyName,
   markId,
   logoUrl,
@@ -89,6 +89,12 @@ function companyIconHtml({
       </td>
     </tr>
   </table>`;
+}
+
+/** "1 hour", "24 hours", "7 days": how long a link lasts, in words. */
+export function lifetimeLabel(hours: number) {
+  if (hours >= 48 && hours % 24 === 0) return `${hours / 24} days`;
+  return hours === 1 ? '1 hour' : `${hours} hours`;
 }
 
 export function buildInviteEmail({
@@ -135,7 +141,7 @@ export function buildInviteEmail({
     `Set up your account here:`,
     inviteUrl,
     ``,
-    `This invite link expires in ${expiresHours} hours and can only be used once.`,
+    `This invite link expires in ${lifetimeLabel(expiresHours)} and can only be used once.`,
     ``,
     `—`,
     POWERED_BY,
@@ -221,7 +227,7 @@ export function buildInviteEmail({
         </p>
 
         <p style="font-size: 13px; color: ${t.muted}; margin-top: 24px;">
-          This invite link expires in ${expiresHours} hours and can only be used once.
+          This invite link expires in ${lifetimeLabel(expiresHours)} and can only be used once.
         </p>
       </div>
     </div>

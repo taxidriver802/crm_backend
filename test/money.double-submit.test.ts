@@ -29,7 +29,7 @@ async function owner(companyId?: string) {
     role: 'owner',
     ...(companyId ? { company_id: companyId } : {}),
   });
-  return { user, headers: authHeaderFor(user) as Headers };
+  return { user, headers: (await authHeaderFor(user)) as Headers };
 }
 
 async function jobFor(headers: Headers, status?: string) {
@@ -353,12 +353,12 @@ describe('money writes', () => {
       });
       expect(registered.status).toBe(201);
       const northside = {
-        headers: authHeaderFor({
+        headers: (await authHeaderFor({
           id: registered.body.user.id,
           email: registered.body.user.email,
           role: 'owner',
           company_id: registered.body.company.id,
-        }) as Headers,
+        })) as Headers,
       };
       const northJob = await jobFor(northside.headers);
       expect(await invoiceNumber(northside.headers, northJob.id)).toBe(
