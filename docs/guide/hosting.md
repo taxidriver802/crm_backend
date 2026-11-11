@@ -296,6 +296,9 @@ whole-database restore: one company can't be restored on its own yet
 3. Backend: `npm run db:migrate`.
 4. Restart the backend, then the frontend.
 
+A backend started before step 3 refuses to start and names the missing
+migrations, so step 3 can't be skipped by accident.
+
 Migration `0002_company_scoping` gives each company its own invoice
 numbers (each carries on from its own highest `INV-` number) and allows one
 live deposit and one live final invoice per estimate. If an estimate

@@ -18,6 +18,7 @@ import {
 } from './helpers/auth';
 import { buildResetEmail } from '../src/lib/reset-email';
 import { buildInviteEmail } from '../src/lib/invite-email';
+import * as sessions from '../src/lib/sessions';
 const { issueResetLink } = require('../scripts/reset-link');
 
 type Sent = { to: string; subject: string; text: string; html: string };
@@ -717,6 +718,112 @@ describe('accounts: sessions, resets and history', () => {
       await expect(
         issueResetLink(pool, { company: 'nowhere', email: owner.email })
       ).rejects.toThrow(/No one with the email/);
+    });
+  });
+
+  describe('a failed session write leaves nothing half done', () => {
+    // As when the database is a migration behind and user_sessions is missing.
+    const failNextSession = () =>
+      jest
+        .spyOn(sessions, 'createSession')
+        .mockRejectedValueOnce(
+          new Error('relation "user_sessions" does not exist')
+        );
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('sign-up keeps no company, so the same slug works on the next try', async () => {
+      const body = {
+        first_name: 'Pat',
+        last_name: 'Owner',
+        email: 'pat.owner@example.com',
+        password: 'pats-password',
+        company_name: 'Half Made Roofing',
+        slug: 'half-made',
+      };
+      const failing = failNextSession();
+      const first = await api().post('/auth/register').send(body);
+      expect(first.status).toBe(500);
+      expect(failing).toHaveBeenCalledTimes(1);
+      expect(String(first.headers['set-cookie'] ?? '')).not.toMatch(
+        /access_token=/
+      );
+      const left = await pool.query(
+        `SELECT 1 FROM companies WHERE slug = 'half-made'
+         UNION ALL SELECT 1 FROM users WHERE email = 'pat.owner@example.com'`
+      );
+      expect(left.rows).toHaveLength(0);
+
+      const again = await api().post('/auth/register').send(body);
+      expect(again.status).toBe(201);
+      expect(again.body.company.slug).toBe('half-made');
+      expect(await me(cookieFrom(again))).toBe(200);
+    });
+
+    it('an invite link stays usable, and two tabs using it at once let one in', async () => {
+      const owner = await personWithPassword('owner');
+      const invite = await api()
+        .post('/users/invite')
+        .set('Cookie', await signIn(owner.email))
+        .send({
+          first_name: 'Sam',
+          last_name: 'New',
+          email: 'sam.new@example.com',
+          role: 'agent',
+        });
+      expect(invite.status).toBe(201);
+      const token = tokenFrom(invite.body.invite_url);
+      const accept = () =>
+        api()
+          .post('/auth/accept-invite')
+          .send({ token, password: 'sams-password' });
+
+      failNextSession();
+      expect((await accept()).status).toBe(500);
+      const { rows } = await pool.query(
+        `SELECT status FROM users WHERE id = $1`,
+        [invite.body.user.id]
+      );
+      expect(rows[0].status).toBe('invited');
+      const check = await api().get('/users/invites/validate').query({ token });
+      expect(check.body.ok).toBe(true);
+
+      const both = await Promise.all([accept(), accept()]);
+      expect(both.map((r) => r.status).sort()).toEqual([200, 400]);
+      expect((await events(invite.body.user.id)).map((e) => e.event)).toEqual([
+        'invite_sent',
+        'invite_accepted',
+      ]);
+    });
+
+    it('a reset link stays unused and the old password and sessions carry on', async () => {
+      const agent = await personWithPassword();
+      const laptop = await signIn(agent.email);
+      const owner = await personWithPassword('owner');
+      const link = await api()
+        .post(`/users/${agent.id}/reset-link`)
+        .set('Cookie', await signIn(owner.email));
+      const token = tokenFrom(link.body.reset_url);
+      const reset = () =>
+        api()
+          .post('/auth/reset-password')
+          .send({ token, password: 'brand-new-password' });
+
+      failNextSession();
+      expect((await reset()).status).toBe(500);
+      const check = await api()
+        .get('/auth/reset-password/validate')
+        .query({ token });
+      expect(check.body.status).toBe('valid');
+      expect(await me(laptop)).toBe(200);
+      await signIn(agent.email);
+
+      const done = await reset();
+      expect(done.status).toBe(200);
+      expect(await me(laptop)).toBe(401);
+      expect(await me(cookieFrom(done))).toBe(200);
     });
   });
 

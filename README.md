@@ -137,6 +137,12 @@ runner (`scripts/lib/migrations.js`), so adding a migration needs no list
 updated anywhere. A migration that has run must never be edited: the runner
 refuses a changed checksum.
 
+The backend checks the database at startup (`src/lib/schemaCheck.ts`). A
+database that is behind, or whose applied migration was edited, is named
+with the missing files: development warns and starts, production refuses to
+start. A database migrated by a newer branch only gets a warning. Run
+`npm run db:migrate` after switching to a branch that adds a migration.
+
 ## Run locally
 
 **Postgres** (from this directory):

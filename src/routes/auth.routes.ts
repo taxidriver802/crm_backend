@@ -32,9 +32,11 @@ import {
   tooManyRequests,
 } from '../lib/rateLimit';
 import {
+  createSession,
   endAllSessions,
   endOtherSessions,
   requestToken,
+  setSessionCookie,
   startSession,
   verifyToken,
 } from '../lib/sessions';
@@ -133,10 +135,13 @@ authRouter.post(
         [first_name, last_name, normalEmail, password_hash, company.id]
       );
 
-      await client.query('COMMIT');
-
       const user = result.rows[0];
-      await startSession(res, user);
+      // In the transaction: if the session can't be written, no company is
+      // left behind without a way in.
+      const session = await createSession(user, client);
+
+      await client.query('COMMIT');
+      setSessionCookie(res, session.token);
 
       res.status(201).json({
         ok: true,
@@ -324,22 +329,6 @@ authRouter.post(
 
     const password_hash = await bcrypt.hash(password, 10);
 
-    await pool.query(
-      `
-      UPDATE users
-      SET
-        password_hash = $1,
-        status = 'active',
-        invite_token_hash = NULL,
-        invite_expires_at = NULL,
-        password_set_at = CURRENT_TIMESTAMP,
-        updated_at = CURRENT_TIMESTAMP,
-        last_login_at = CURRENT_TIMESTAMP
-      WHERE id = $2
-      `,
-      [password_hash, user.id]
-    );
-
     const authUser = {
       id: user.id,
       email: user.email,
@@ -349,12 +338,55 @@ authRouter.post(
       status: 'active' as const,
     };
 
-    await recordAccountEvent({
-      companyId: user.company_id,
-      userId: user.id,
-      event: 'invite_accepted',
-    });
-    await startSession(res, { ...authUser, company_id: user.company_id });
+    // The password, the event and the session land together, so a failure
+    // leaves the invite link usable instead of spent.
+    const client = await pool.connect();
+    let session;
+    try {
+      await client.query('BEGIN');
+      const accepted = await client.query(
+        `
+        UPDATE users
+        SET
+          password_hash = $1,
+          status = 'active',
+          invite_token_hash = NULL,
+          invite_expires_at = NULL,
+          password_set_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP,
+          last_login_at = CURRENT_TIMESTAMP
+        WHERE id = $2 AND status = 'invited' AND invite_token_hash = $3
+        `,
+        [password_hash, user.id, inviteTokenHash]
+      );
+      if (accepted.rowCount === 0) {
+        // Someone used this link a moment ago.
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          ok: false,
+          error: 'Invite is no longer valid',
+        });
+      }
+      await recordAccountEvent(
+        {
+          companyId: user.company_id,
+          userId: user.id,
+          event: 'invite_accepted',
+        },
+        client
+      );
+      session = await createSession(
+        { ...authUser, company_id: user.company_id },
+        client
+      );
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+    setSessionCookie(res, session.token);
 
     res.status(200).json({
       ok: true,
@@ -660,6 +692,8 @@ authRouter.post(
 
     const client = await pool.connect();
     let reset;
+    let person;
+    let session;
     try {
       await client.query('BEGIN');
       const found = await lookupReset(parsed.data.token, client, { lock: true });
@@ -698,6 +732,15 @@ authRouter.post(
         },
         client
       );
+      const { rows } = await client.query(
+        `SELECT id, email, first_name, last_name, role, status, company_id
+         FROM users WHERE id = $1`,
+        [reset.user_id]
+      );
+      person = rows[0];
+      // Ended above, started here: this browser's session commits with the
+      // new password, so a failure leaves the link unused.
+      session = await createSession(person, client);
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {});
@@ -708,17 +751,11 @@ authRouter.post(
 
     // Earlier wrong guesses don't keep the person out after a reset.
     clear(LIMITS.loginAccount, accountKey(reset.company_slug, reset.email));
-
-    const { rows } = await pool.query(
-      `SELECT id, email, first_name, last_name, role, status, company_id
-       FROM users WHERE id = $1`,
-      [reset.user_id]
-    );
-    await startSession(res, rows[0]);
+    setSessionCookie(res, session.token);
 
     res.json({
       ok: true,
-      user: publicUser(rows[0]),
+      user: publicUser(person),
       company: await loadCompany(reset.company_id),
     });
   })

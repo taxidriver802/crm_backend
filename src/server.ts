@@ -3,7 +3,8 @@ import dotenv from "dotenv";
 dotenv.config({ path: process.env.NODE_ENV === "test" ? ".env.test" : ".env" });
 
 import { env } from "./config/env";
-import { assertProductionConfig } from "./config/production";
+import { assertProductionConfig, isProduction } from "./config/production";
+import { checkSchemaAtStartup } from "./lib/schemaCheck";
 import { app } from "./app";
 
 try {
@@ -21,8 +22,13 @@ const onListen = () => {
   console.log(`API running on http://${host ?? "localhost"}:${env.port}`);
 };
 
-if (host) {
-  app.listen(env.port, host, onListen);
-} else {
-  app.listen(env.port, onListen);
-}
+// A database that is a migration behind is named here, not one failed
+// request at a time; production won't start on it.
+checkSchemaAtStartup({ production: isProduction() }).then((ok) => {
+  if (!ok) process.exit(1);
+  if (host) {
+    app.listen(env.port, host, onListen);
+  } else {
+    app.listen(env.port, onListen);
+  }
+});

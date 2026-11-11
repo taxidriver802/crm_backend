@@ -186,4 +186,41 @@ async function migrate(client, { sqlDir = SQL_DIR, log = () => {} } = {}) {
   return applied;
 }
 
-module.exports = { migrate, listMigrations, startingRowsSql, ARCHIVED_PATCHES, SQL_DIR };
+/**
+ * How the database `client` is connected to compares with sql/, without
+ * changing anything (the backend reads it at startup):
+ *   pending  migrations not applied yet ('baseline' first when the
+ *            database has no schema_migrations at all)
+ *   edited   applied migrations whose file has changed since
+ *   unknown  applied migrations with no file here (a newer branch ran them)
+ */
+async function schemaStatus(client, { sqlDir = SQL_DIR } = {}) {
+  const database = (await client.query('SELECT current_database() AS name')).rows[0].name;
+  const files = listMigrations(sqlDir);
+  if (!(await exists(client, 'public.schema_migrations'))) {
+    return { database, pending: [BASELINE, ...files], edited: [], unknown: [] };
+  }
+  const done = new Map(
+    (await client.query('SELECT name, checksum FROM public.schema_migrations')).rows.map((r) => [
+      r.name,
+      r.checksum,
+    ])
+  );
+  const pending = [];
+  const edited = [];
+  for (const name of files) {
+    if (!done.has(name)) pending.push(name);
+    else if (done.get(name) !== checksum(read(sqlDir, 'migrations', name))) edited.push(name);
+  }
+  const unknown = [...done.keys()].filter((name) => name !== BASELINE && !files.includes(name)).sort();
+  return { database, pending, edited, unknown };
+}
+
+module.exports = {
+  migrate,
+  schemaStatus,
+  listMigrations,
+  startingRowsSql,
+  ARCHIVED_PATCHES,
+  SQL_DIR,
+};

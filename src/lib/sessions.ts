@@ -42,12 +42,15 @@ function secret(): Secret {
   return value;
 }
 
-/** Starts a session for this person and sets its token as the auth cookie. */
-export async function startSession(
-  res: Response,
+/**
+ * Writes a session row for this person and signs its token. Pass the
+ * route's transaction client so the row commits, or rolls back, with the
+ * rest of the sign-up, invite or reset; then set the cookie after COMMIT.
+ */
+export async function createSession(
   user: SessionUser,
   db: Queryable = pool
-): Promise<string> {
+): Promise<{ sid: string; token: string }> {
   const sid = crypto.randomUUID();
   const options: SignOptions = {
     expiresIn: (process.env.JWT_EXPIRES_IN ?? '7d') as SignOptions['expiresIn'],
@@ -76,7 +79,22 @@ export async function startSession(
        AND (expires_at < now() - interval '30 days' OR ended_at < now() - interval '30 days')`,
     [user.id]
   );
+  return { sid, token };
+}
+
+/** Sets a session's token as the auth cookie. */
+export function setSessionCookie(res: Response, token: string): void {
   res.cookie('access_token', token, authCookieOptions());
+}
+
+/** Starts a session for this person and sets its token as the auth cookie. */
+export async function startSession(
+  res: Response,
+  user: SessionUser,
+  db: Queryable = pool
+): Promise<string> {
+  const { sid, token } = await createSession(user, db);
+  setSessionCookie(res, token);
   return sid;
 }
 

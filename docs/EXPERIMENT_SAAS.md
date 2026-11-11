@@ -1115,20 +1115,30 @@ landed on.
     and the Users page shows "Last sign-in" with the time.
   - Mail: a reset email in the company's brand with "Powered by Joist",
     beside the invite one.
+  - Startup schema check: a database a migration behind is named when the
+    backend starts (development warns, production refuses), instead of
+    failing one request at a time. Found when the dev database, two
+    migrations behind, failed sign-up with a 500 and kept the company.
 
-  Checked: typecheck; Jest 35 suites / 291 tests. `test/accounts.test.ts`
-  (22) runs the mail path against a fake mailer. Sign out ends one session,
+  Checked: typecheck; Jest 36 suites / 301 tests. `test/accounts.test.ts`
+  (25) runs the mail path against a fake mailer. Sign out ends one session,
   and a token without a session gets 401. Change password ends the others
   and stops after 10 wrong tries. Forgot answers the same for every account
   and builds its link on `APP_BASE_URL` despite forged headers. Two uses of
-  one link at once give one success. Admins can't reset owners. An invite
-  lasts 7 days, and after Resend the new link works and the old one doesn't.
-  The tenancy matrix covers the 7 new routes. Frontend lint adds no
-  warnings. `npm run test:qa` 298 passed (106 skipped at other widths, none
-  failed), with `tests/e2e/accounts.spec.ts` driving the copied-link path
-  end to end. **Not done here**: no real SMTP, so the emailed paths ran only
-  against a fake mailer. On a host without SMTP, a locked-out owner still
-  needs the operator.
+  one link at once give one success. Admins can't reset owners. Sign-up,
+  accepting an invite and a reset write the session in the same transaction
+  as the rest, so a failed session write leaves no company behind and no
+  link spent. An invite lasts 7 days, and after Resend the new link works
+  and the old one doesn't. The tenancy matrix covers the 7 new routes.
+  `test/schema-check.test.ts` (7) points the startup check at a copy of
+  `sql/` with a migration added, edited or removed; a real start against a
+  scratch database one migration behind warned in development and exited 1
+  in production. Frontend lint adds no warnings. `npm run test:qa` 298
+  passed (106 skipped at other widths, none failed), with
+  `tests/e2e/accounts.spec.ts` driving the copied-link path end to end.
+  **Not done here**: no real SMTP, so the emailed paths ran only against a
+  fake mailer. On a host without SMTP, a locked-out owner still needs the
+  operator.
 - [ ] **Milestone** — *the first outside company goes live*
 - [ ] **Step 5** — prospect **7** (a company's account with Joist)
 - [ ] **Step 6** — prospect **9** (telling what broke)
