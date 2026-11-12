@@ -1,5 +1,9 @@
 # Hosted Demo Seed Guide
 
+> **On a host with other companies, use
+> [`demo-company-seed.md`](demo-company-seed.md) instead.** It fills a
+> `demo` company with a year of records and can rerun safely.
+
 > **Not on a host that serves real companies.** The seed writes demo
 > records into one company: the one named with `--company <slug>`, or the
 > only one. There is no default company, so a new database needs a company

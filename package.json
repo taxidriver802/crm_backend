@@ -15,6 +15,7 @@
     "db:backup": "node scripts/backup.js",
     "db:restore-check": "node scripts/restore-check.js",
     "db:seed-demo": "node scripts/seed-demo-data.js",
+    "db:seed-demo-company": "node scripts/seed-demo-company.js",
     "db:seed-walkthrough": "node scripts/seed-walkthrough-data.js",
     "user:reset-link": "node scripts/reset-link.js"
   },

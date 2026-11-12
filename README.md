@@ -188,6 +188,11 @@ database: "ok" }`, or 503 when the database cannot be reached.
 `crm_frontend`, register one at http://localhost:3000/register, then sign in
 at `/login`.
 
+**Demo company** (safe next to other companies): register a company with
+slug `demo`, then `npm run db:seed-demo-company` fills it with a year of
+records and replaces them on each run. It touches no other company — see
+[`docs/guide/demo-company-seed.md`](docs/guide/demo-company-seed.md).
+
 **Demo data** (optional): `npm run db:seed-walkthrough` — see
 [`docs/guide/hosted-demo-seed.md`](docs/guide/hosted-demo-seed.md). It
 writes into one company: the only one, or the one named with
@@ -287,6 +292,7 @@ production boot refuses `QB_*` and `ABC_*`.
 | `npm run db:backup` | Back up the database and uploads as one set; copy it off the host; prune old sets |
 | `npm run user:reset-link -- --company <slug> --email <email>` | Print a one-hour password reset link for an active person (operator way back in) |
 | `npm run db:restore-check` | Restore a set into `joist_restore_check` and check it (`--drop` removes it after) |
+| `npm run db:seed-demo-company` | Fill the `demo` company with a year of records (`--dry-run`, `--confirm` off localhost) |
 | `npm run db:seed-walkthrough` | Narrative demo dataset |
 | `npm run db:seed-demo` | Older backup-based seed |
 

@@ -340,7 +340,10 @@ this change may still be an SVG; the public logo route serves it with
 - **Don't run `db:seed-walkthrough` on a host with customers.** It writes
   demo records into the company you name with `--company <slug>` (with one
   company, that one). Its `--reset` truncates tables for every company, so
-  it refuses whenever another company has data in them.
+  it refuses whenever another company has data in them. For a demo next to
+  real companies, use `db:seed-demo-company`
+  ([`demo-company-seed.md`](demo-company-seed.md)): it only touches the
+  `demo` company and checks that nobody else's rows changed before it commits.
 - **Don't restore into the live database by hand.** Restore into
   `joist_restore_check` with `db:restore-check`, then swap it in (above).
 - **Don't run more than one backend process.** See "One backend process"
