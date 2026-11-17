@@ -74,8 +74,11 @@ const DEMO_TABLES = [
   'notes',
   'saved_views',
   'tasks',
+  'job_contacts',
+  'contact_methods',
   'jobs',
   'leads',
+  'contacts',
 ];
 
 function parseArgs(argv) {

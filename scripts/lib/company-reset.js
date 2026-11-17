@@ -33,8 +33,12 @@ const COMPANY_RECORD_TABLES = [
   'supplier_orders',
   'supplier_accounts',
   'supplier_connections',
+  'job_contacts',
+  'contact_methods',
   'jobs',
   'leads',
+  // After leads and jobs: a contact that still has them can't be deleted.
+  'contacts',
   'company_invoice_counters',
 ];
 
