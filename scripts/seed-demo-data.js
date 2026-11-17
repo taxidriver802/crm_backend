@@ -35,6 +35,7 @@ const { Pool } = require('pg');
 const { v5: uuidv5 } = require('uuid');
 const { parsePgCopyBlocks } = require('./lib/parse-pg-copy');
 const { companyScoped } = require('./lib/company-scope');
+const { linkLeadContacts } = require('./lib/contacts-backfill');
 
 const DEMO_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
 const BACKUP_PATH = path.join(__dirname, '..', 'crm_dev_backup.sql');
@@ -504,6 +505,9 @@ async function main() {
       userIdMap,
       options.dryRun
     );
+    const contactsMade = options.dryRun
+      ? 0
+      : (await linkLeadContacts(rawPool, company.id)).contacts;
     const tasksInserted = await insertTasks(
       pool,
       data.tasks || [],
@@ -533,6 +537,7 @@ async function main() {
           users: usersInserted,
           leads: leadsInserted,
           jobs: jobsInserted,
+          contacts: contactsMade,
           tasks: tasksInserted,
           files: filesInserted,
           notifications: notificationsInserted,

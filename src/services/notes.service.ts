@@ -1,8 +1,9 @@
 import { pool } from '../db';
 import { createJobActivity } from './jobActivity.service';
 import { applyTenantScope, tenantScope } from '../lib/tenant';
+import { contactNameSql } from '../lib/contacts';
 
-export type NoteEntityType = 'lead' | 'job';
+export type NoteEntityType = 'lead' | 'job' | 'contact';
 export type NoteType = 'call' | 'text' | 'email' | 'in_person' | 'note';
 export type NoteDirection = 'inbound' | 'outbound' | 'internal';
 
@@ -101,12 +102,31 @@ async function loadEntityForUser(
   options: { includeAll?: boolean; companyId?: string } = {}
 ) {
   const scope = await tenantScope(userId, options);
+  if (entityType === 'contact') {
+    // Contacts are visible company-wide, so anyone in the company may read
+    // and add notes on one. Notes on its leads and jobs stay scoped.
+    const result = await pool.query(
+      `SELECT c.id, ${contactNameSql('c')} AS name
+       FROM contacts c
+       WHERE c.id = $1 AND c.company_id = $2`,
+      [entityId, scope.companyId]
+    );
+    if (result.rowCount === 0) {
+      throw new NoteEntityNotFoundError('Contact not found');
+    }
+    return { name: String(result.rows[0].name), companyId: scope.companyId };
+  }
+
   if (entityType === 'lead') {
     const params: any[] = [entityId];
-    const where: string[] = ['id = $1'];
-    applyTenantScope(where, params, scope, { assignedWork: true });
+    const where: string[] = ['l.id = $1'];
+    applyTenantScope(where, params, scope, { alias: 'l', assignedWork: true });
     const result = await pool.query(
-      `SELECT id, first_name, last_name FROM leads WHERE ${where.join(' AND ')}`,
+      `SELECT l.id, l.first_name, l.last_name,
+              CASE WHEN c.id IS NOT NULL THEN ${contactNameSql('c')} END AS contact_name
+       FROM leads l
+       LEFT JOIN contacts c ON c.id = l.contact_id AND c.company_id = l.company_id
+       WHERE ${where.join(' AND ')}`,
       params
     );
     if (result.rowCount === 0) {
@@ -114,8 +134,10 @@ async function loadEntityForUser(
     }
     const row = result.rows[0];
     const name =
-      `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim() || `Lead #${row.id}`;
-    return { name };
+      row.contact_name ||
+      `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim() ||
+      `Lead #${row.id}`;
+    return { name, companyId: scope.companyId };
   }
 
   const params: any[] = [entityId];
@@ -129,7 +151,7 @@ async function loadEntityForUser(
     throw new NoteEntityNotFoundError('Job not found');
   }
   const row = result.rows[0];
-  return { name: row.title || `Job #${row.id}` };
+  return { name: row.title || `Job #${row.id}`, companyId: scope.companyId };
 }
 
 async function fetchNoteById(id: number) {
@@ -153,15 +175,15 @@ export async function listNotes(
   entityId: number,
   options: { includeAll?: boolean; companyId?: string } = {}
 ) {
-  await loadEntityForUser(userId, entityType, entityId, options);
+  const entity = await loadEntityForUser(userId, entityType, entityId, options);
 
   const result = await pool.query(
     `
     ${NOTE_SELECT}
-    WHERE n.entity_type = $1 AND n.entity_id = $2
+    WHERE n.entity_type = $1 AND n.entity_id = $2 AND n.company_id = $3
     ORDER BY n.created_at DESC, n.id DESC
     `,
-    [entityType, entityId]
+    [entityType, entityId, entity.companyId]
   );
 
   return result.rows.map(mapNote);
@@ -224,9 +246,10 @@ export async function createNote(
           description,
           due_date,
           status,
-          company_id
+          company_id,
+          contact_id
         )
-        SELECT $1, $2, $3, $4, $5, $6, $7, $8, u.company_id
+        SELECT $1, $2, $3, $4, $5, $6, $7, $8, u.company_id, $9
         FROM users u
         WHERE u.id = $1
         RETURNING id, title, due_date, status
@@ -240,6 +263,7 @@ export async function createNote(
           input.body.slice(0, 200),
           followUpDue.toISOString(),
           'Pending',
+          input.entity_type === 'contact' ? input.entity_id : null,
         ]
       );
       const createdTask = taskResult.rows[0];

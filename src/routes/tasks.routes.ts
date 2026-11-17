@@ -75,6 +75,10 @@ tasksRouter.get(
         : undefined;
     const jobId =
       typeof req.query.jobId === 'string' ? Number(req.query.jobId) : undefined;
+    const contactId =
+      typeof req.query.contactId === 'string'
+        ? Number(req.query.contactId)
+        : undefined;
 
     const linkedTo =
       typeof req.query.linkedTo === 'string' ? req.query.linkedTo : undefined;
@@ -97,6 +101,7 @@ tasksRouter.get(
       status,
       leadId,
       jobId,
+      contactId,
       dueBefore,
       dateFrom,
       dateTo,

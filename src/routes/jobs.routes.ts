@@ -36,7 +36,7 @@ jobsRouter.get(
   })
 );
 
-// GET /jobs?status=New&phase=production&q=roof&leadId=2&limit=50&offset=0
+// GET /jobs?status=New&phase=production&q=roof&leadId=2&contactId=5&limit=50&offset=0
 jobsRouter.get(
   '/',
   asyncHandler(async (req, res) => {
@@ -64,6 +64,13 @@ jobsRouter.get(
       leadIdRaw != null && Number.isFinite(Number(leadIdRaw))
         ? Number(leadIdRaw)
         : undefined;
+    // The contact page's "View all": this contact's jobs.
+    const contactIdRaw =
+      typeof req.query.contactId === 'string' ? req.query.contactId : undefined;
+    const contactId =
+      contactIdRaw != null && Number.isFinite(Number(contactIdRaw))
+        ? Number(contactIdRaw)
+        : undefined;
     const limit = Math.min(Number(req.query.limit || 50), 200);
     const offset = Number(req.query.offset || 0);
 
@@ -73,6 +80,7 @@ jobsRouter.get(
       assignedTo,
       q,
       leadId,
+      contactId,
       includeAll,
       companyId,
       limit,

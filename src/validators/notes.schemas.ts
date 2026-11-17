@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const entityTypeSchema = z.enum(['lead', 'job']);
+const entityTypeSchema = z.enum(['lead', 'job', 'contact']);
 
 export const NOTE_TYPES = ['call', 'text', 'email', 'in_person', 'note'] as const;
 export const NOTE_DIRECTIONS = ['inbound', 'outbound', 'internal'] as const;

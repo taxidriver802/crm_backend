@@ -38,6 +38,7 @@ const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
 const { companyScoped } = require('./lib/company-scope');
 const { buildDemoPlan, TEAM, DAY } = require('./lib/demo-plan');
+const { linkLeadContacts } = require('./lib/contacts-backfill');
 const {
   assertResetTables,
   clearCompanyRecords,
@@ -558,6 +559,7 @@ async function main() {
       owner: owner.id,
       ...team.ids,
     });
+    counts.contacts = (await linkLeadContacts(client, company.id)).contacts;
 
     const after = await otherCompaniesFingerprint(client, company.id);
     assertFingerprintUnchanged(before, after);

@@ -395,6 +395,9 @@ const LIST_URLS: Record<string, string[]> = {
   'GET /company': ['/company'],
   'GET /leads/summary': ['/leads/summary', '/leads/summary?view=all'],
   'GET /leads': ['/leads', '/leads?view=all', `/leads?search=${B_CLIENT}`],
+  'GET /contacts': ['/contacts', '/contacts?tab=customers', `/contacts?q=${B_CLIENT}`],
+  // Both companies' jobs are at 9 Birch Lane: A finds only its own contact.
+  'GET /contacts/matches': ['/contacts/matches?address=9%20Birch%20Lane'],
   'GET /tasks/summary': ['/tasks/summary', '/tasks/summary?view=all'],
   'GET /tasks': ['/tasks', '/tasks?view=all'],
   'GET /dashboard': ['/dashboard', '/dashboard?view=all'],
@@ -818,6 +821,22 @@ describe('tenancy matrix: company A against company B, every mounted route', () 
           status: 'New',
           assigned_to: B.agentId,
         }),
+        refused('POST', '/leads', { contact_id: b.lead.contact.id, status: 'New' }),
+      ],
+
+      // Contacts
+      'GET /contacts/:id': [nf('GET', `/contacts/${b.lead.contact.id}`)],
+      'GET /contacts/:id/history': [
+        nf('GET', `/contacts/${b.lead.contact.id}/history`),
+      ],
+      'PATCH /contacts/:id': [
+        nf('PATCH', `/contacts/${b.lead.contact.id}`, { last_name: 'mine now' }),
+        refused('PATCH', `/contacts/${a.lead.contact.id}`, {
+          assigned_to: B.agentId,
+        }),
+      ],
+      'POST /contacts': [
+        refused('POST', '/contacts', { first_name: 'X', assigned_to: B.agentId }),
       ],
 
       // Tasks
@@ -831,6 +850,7 @@ describe('tenancy matrix: company A against company B, every mounted route', () 
       'POST /tasks': [
         refused('POST', '/tasks', { title: 'X', job_id: b.job.id }),
         refused('POST', '/tasks', { title: 'X', lead_id: b.lead.id }),
+        refused('POST', '/tasks', { title: 'X', contact_id: b.lead.contact.id }),
         refused('POST', '/tasks', {
           title: 'X',
           job_id: a.job.id,
@@ -1006,11 +1026,17 @@ describe('tenancy matrix: company A against company B, every mounted route', () 
       'GET /notes': [
         empty(`/notes?entity_type=job&entity_id=${b.job.id}`),
         empty(`/notes?entity_type=lead&entity_id=${b.lead.id}`),
+        empty(`/notes?entity_type=contact&entity_id=${b.lead.contact.id}`),
       ],
       'POST /notes': [
         refused('POST', '/notes', {
           entity_type: 'job',
           entity_id: b.job.id,
+          body: 'x',
+        }),
+        refused('POST', '/notes', {
+          entity_type: 'contact',
+          entity_id: b.lead.contact.id,
           body: 'x',
         }),
       ],

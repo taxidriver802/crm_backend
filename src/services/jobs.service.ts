@@ -22,8 +22,10 @@ import {
   type JobPhase,
   type JobStatus,
 } from '../lib/jobLifecycle';
+import { contactNameSql, groupOf } from '../lib/contacts';
 import { notifyAssigneeChange } from '../lib/notifications';
 import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
+import { ensureLeadContact } from './contacts.service';
 import * as activityService from '../services/jobActivity.service';
 import { evaluateRules } from './automation.service';
 import {
@@ -75,6 +77,7 @@ export type GetJobsFilters = {
   assignedTo?: string;
   q?: string;
   leadId?: number;
+  contactId?: number;
   includeAll?: boolean;
   companyId?: string;
   limit?: number;
@@ -115,6 +118,7 @@ async function ensureLeadBelongsToUser(
 
 function normalizeJob(row: any) {
   const leadName =
+    row.lead_name ||
     `${row.lead_first_name || ''} ${row.lead_last_name || ''}`.trim();
   const money = buildJobMoney(row);
   const nextStep = computeNextStep({
@@ -177,6 +181,20 @@ function normalizeJob(row: any) {
             last_name: row.lead_last_name ?? null,
           }
         : null,
+    // The client: who is billed and who gets the portal link.
+    contact_id: row.contact_id ?? null,
+    contact:
+      row.contact_id != null
+        ? {
+            id: row.contact_id,
+            name: row.contact_name,
+            kind: row.contact_kind,
+            group: groupOf(row.contact_kind),
+            phone: row.contact_phone ?? null,
+            email: row.contact_email ?? null,
+            address: row.contact_address ?? null,
+          }
+        : null,
   };
 }
 
@@ -185,8 +203,14 @@ export type NormalizedJob = ReturnType<typeof normalizeJob>;
 const JOB_SELECT = `
   SELECT
     j.*,
-    l.first_name AS lead_first_name,
-    l.last_name AS lead_last_name,
+    COALESCE(lc.first_name, l.first_name) AS lead_first_name,
+    COALESCE(lc.last_name, l.last_name) AS lead_last_name,
+    CASE WHEN lc.id IS NOT NULL THEN ${contactNameSql('lc')} END AS lead_name,
+    ${contactNameSql('jc')} AS contact_name,
+    jc.kind AS contact_kind,
+    jc.phone AS contact_phone,
+    jc.email AS contact_email,
+    jc.address AS contact_address,
     au.first_name AS assigned_first_name,
     au.last_name AS assigned_last_name,
     au.email AS assigned_email,
@@ -201,6 +225,8 @@ const JOB_SELECT = `
     ${JOB_MONEY_COLUMNS_SQL}
   FROM jobs j
   LEFT JOIN leads l ON l.id = j.lead_id
+  LEFT JOIN contacts lc ON lc.id = l.contact_id AND lc.company_id = l.company_id
+  LEFT JOIN contacts jc ON jc.id = j.contact_id AND jc.company_id = j.company_id
   LEFT JOIN users au ON au.id = j.assigned_to
   LEFT JOIN LATERAL (
     SELECT COUNT(*)::int AS overdue_task_count
@@ -345,6 +371,11 @@ export async function getJobs(userId: string, filters: GetJobsFilters = {}) {
   if (Number.isFinite(filters.leadId)) {
     params.push(filters.leadId);
     where.push(`j.lead_id = $${params.length}`);
+  }
+
+  if (Number.isFinite(filters.contactId)) {
+    params.push(filters.contactId);
+    where.push(`j.contact_id = $${params.length}`);
   }
 
   params.push(filters.limit ?? 50);
@@ -614,39 +645,63 @@ export async function createJob(
   // A job entered after the sale (work already agreed) keeps honest milestones.
   const milestoneSql = initialMilestoneColumns(initialStatus);
 
-  const result = await pool.query(
-    `
-    INSERT INTO jobs (
-      user_id,
-      assigned_to,
-      lead_id,
-      title,
-      description,
-      status,
-      address,
-      company_id${milestoneSql.map((column) => `,\n      ${column}`).join('')}
-    )
-    SELECT $1, $2, $3, $4, $5, $6, $7, u.company_id${milestoneSql
-      .map(() => ', CURRENT_TIMESTAMP')
-      .join('')}
-    FROM users u
-    WHERE u.id = $1
-    RETURNING *;
-    `,
-    [
-      userId,
-      input.assigned_to ?? null,
-      input.lead_id,
-      input.title,
-      input.description ?? null,
-      initialStatus,
-      input.address ?? null,
-    ]
-  );
+  // The client is the lead's contact (new work always starts as a lead), and
+  // the site address is the contact's home address unless one is typed.
+  const client = await pool.connect();
+  let job: any;
+  try {
+    await client.query('BEGIN');
+    const contactId = await ensureLeadContact(client, scope.companyId, input.lead_id);
+    const contactAddress =
+      contactId != null
+        ? ((await client.query(`SELECT address FROM contacts WHERE id = $1`, [contactId]))
+            .rows[0]?.address ?? null)
+        : null;
+    const typedAddress =
+      input.address != null && input.address.trim() !== '' ? input.address : null;
 
-  const job = result.rows[0];
-  if (!job) {
-    throw new JobNotFoundError();
+    const result = await client.query(
+      `
+      INSERT INTO jobs (
+        user_id,
+        assigned_to,
+        lead_id,
+        title,
+        description,
+        status,
+        address,
+        contact_id,
+        company_id${milestoneSql.map((column) => `,\n        ${column}`).join('')}
+      )
+      SELECT $1, $2, $3, $4, $5, $6, $7, $8, u.company_id${milestoneSql
+        .map(() => ', CURRENT_TIMESTAMP')
+        .join('')}
+      FROM users u
+      WHERE u.id = $1 AND u.company_id = $9
+      RETURNING *;
+      `,
+      [
+        userId,
+        input.assigned_to ?? null,
+        input.lead_id,
+        input.title,
+        input.description ?? null,
+        initialStatus,
+        typedAddress ?? contactAddress,
+        contactId,
+        scope.companyId,
+      ]
+    );
+    job = result.rows[0];
+    if (!job) {
+      throw new JobNotFoundError();
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 
   await activityService.createJobActivity({

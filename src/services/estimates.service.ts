@@ -17,6 +17,7 @@ import {
   tenantScope,
 } from '../lib/tenant';
 import { advanceJobFromEstimate } from './jobs.service';
+import { contactNameSql } from '../lib/contacts';
 
 type ScopeOpts = { includeAll?: boolean; companyId?: string };
 
@@ -139,15 +140,19 @@ const ESTIMATE_SELECT = `
     j.address AS job_address,
     j.lead_id AS job_lead_id,
 
-    l.first_name AS lead_first_name,
-    l.last_name AS lead_last_name
+    COALESCE(jc.first_name, l.first_name) AS lead_first_name,
+    COALESCE(jc.last_name, l.last_name) AS lead_last_name,
+    CASE WHEN jc.id IS NOT NULL THEN ${contactNameSql('jc')} END AS client_name
   FROM estimates e
   INNER JOIN jobs j ON j.id = e.job_id
   LEFT JOIN leads l ON l.id = j.lead_id
+  LEFT JOIN contacts jc ON jc.id = j.contact_id AND jc.company_id = j.company_id
   LEFT JOIN estimates parent ON parent.id = e.change_order_of
 `;
 
+/** The client's name: the job's contact, else the lead it came from. */
 function buildLeadName(row: any) {
+  if (row.client_name) return String(row.client_name);
   const first = String(row.lead_first_name || '').trim();
   const last = String(row.lead_last_name || '').trim();
   const full = `${first} ${last}`.trim();

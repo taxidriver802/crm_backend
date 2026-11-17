@@ -41,6 +41,7 @@ const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
 const { assertResetTouchesOnlyCompany } = require('./lib/reset-guard');
 const { companyScoped, pickCompany } = require('./lib/company-scope');
+const { linkLeadContacts } = require('./lib/contacts-backfill');
 
 const WALKTHROUGH_LEAD_EMAILS = [
   'marcus.nelson@example.com',
@@ -1544,6 +1545,9 @@ async function main() {
       options.dryRun,
       options
     );
+    if (!options.dryRun) {
+      counts.contacts = (await linkLeadContacts(pool, company.id)).contacts;
+    }
 
     console.log('');
     console.log(

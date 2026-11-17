@@ -8,6 +8,7 @@ import {
 } from './files.service';
 import { loadPublicBrandingByCompanyId } from '../lib/companySlug';
 import { customerStage } from '../lib/jobLifecycle';
+import { contactNameSql } from '../lib/contacts';
 import { getJobMoney } from './jobs.service';
 import { renderInvoicePdfForPortal } from './invoices.service';
 
@@ -67,11 +68,17 @@ export async function getPortalData(rawToken: string) {
   const { job_id, user_id, company_id } = tokenRes.rows[0];
 
   const jobRes = await pool.query(
+    // The homeowner sees the job's contact (the household's name, email and
+    // phone), else the lead it came from.
     `SELECT j.id, j.title, j.description, j.status, j.address, j.created_at,
-            l.first_name AS lead_first_name, l.last_name AS lead_last_name,
-            l.email AS lead_email, l.phone AS lead_phone
+            COALESCE(jc.first_name, l.first_name) AS lead_first_name,
+            COALESCE(jc.last_name, l.last_name) AS lead_last_name,
+            CASE WHEN jc.id IS NOT NULL THEN ${contactNameSql('jc')} END AS client_name,
+            CASE WHEN jc.id IS NOT NULL THEN jc.email ELSE l.email END AS lead_email,
+            CASE WHEN jc.id IS NOT NULL THEN jc.phone ELSE l.phone END AS lead_phone
      FROM jobs j
      LEFT JOIN leads l ON l.id = j.lead_id
+     LEFT JOIN contacts jc ON jc.id = j.contact_id AND jc.company_id = j.company_id
      WHERE j.id = $1 AND j.company_id = $2`,
     [job_id, company_id]
   );
@@ -165,10 +172,9 @@ export async function getPortalData(rawToken: string) {
     [job_id]
   );
 
-  const leadName = [job.lead_first_name, job.lead_last_name]
-    .filter(Boolean)
-    .join(' ')
-    .trim();
+  const leadName =
+    job.client_name ||
+    [job.lead_first_name, job.lead_last_name].filter(Boolean).join(' ').trim();
 
   trackEvent('portal_viewed', {
     userId: user_id,

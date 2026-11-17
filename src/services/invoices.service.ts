@@ -10,6 +10,7 @@ import {
 } from './estimateCalculations';
 import { trackEvent } from './productEvents.service';
 import { lockJobRow, reconcileJobAfterPayment } from './jobs.service';
+import { contactNameSql } from '../lib/contacts';
 import {
   applyOwnOrAssignedJob,
   applyTenantScope,
@@ -202,9 +203,10 @@ const INVOICE_SELECT = `
     j.assigned_to AS job_assigned_to,
     j.user_id AS job_user_id,
 
-    l.first_name AS lead_first_name,
-    l.last_name AS lead_last_name,
-    l.email AS lead_email,
+    COALESCE(jc.first_name, l.first_name) AS lead_first_name,
+    COALESCE(jc.last_name, l.last_name) AS lead_last_name,
+    CASE WHEN jc.id IS NOT NULL THEN jc.email ELSE l.email END AS lead_email,
+    CASE WHEN jc.id IS NOT NULL THEN ${contactNameSql('jc')} END AS client_name,
 
     -- A deposit that a live final invoice already subtracts (prior_billed_total).
     (
@@ -221,10 +223,13 @@ const INVOICE_SELECT = `
   FROM invoices i
   INNER JOIN jobs j ON j.id = i.job_id
   LEFT JOIN leads l ON l.id = j.lead_id
+  LEFT JOIN contacts jc ON jc.id = j.contact_id AND jc.company_id = j.company_id
   LEFT JOIN estimates e ON e.id = i.estimate_id
 `;
 
+/** The client's name: the job's contact, else the lead it came from. */
 function buildLeadName(row: any) {
+  if (row.client_name) return String(row.client_name);
   const first = String(row.lead_first_name || '').trim();
   const last = String(row.lead_last_name || '').trim();
   const full = `${first} ${last}`.trim();

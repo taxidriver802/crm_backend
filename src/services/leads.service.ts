@@ -1,7 +1,14 @@
 import { pool } from '../db';
 import { daysInStatus } from '../lib/aging';
 import { notifyAssigneeChange } from '../lib/notifications';
+import { contactNameSql, groupOf } from '../lib/contacts';
 import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
+import {
+  ensureLeadContact,
+  insertContact,
+  requireLiveContact,
+  updateContactFields,
+} from './contacts.service';
 import { trackEvent } from './productEvents.service';
 import {
   recordAssignmentChange,
@@ -42,8 +49,12 @@ export type GetLeadsFilters = {
 
 export type CreateLeadInput = {
   assigned_to?: string | null;
-  first_name: string;
-  last_name: string;
+  /** An existing contact this inquiry is from. Without it, one is made. */
+  contact_id?: number | null;
+  /** The contact's home address, when a new contact is made. */
+  address?: string | null;
+  first_name?: string;
+  last_name?: string;
   email?: string | null;
   phone?: string | null;
   source?: string | null;
@@ -56,21 +67,87 @@ export type CreateLeadInput = {
   urgency?: string | null;
 };
 
-export type UpdateLeadInput = Partial<CreateLeadInput>;
+export type UpdateLeadInput = Partial<Omit<CreateLeadInput, 'contact_id' | 'address'>>;
+
+/**
+ * The person's fields. A lead keeps its own copy as the "as submitted"
+ * record of what came in; the screens and the API show the contact's, and an
+ * edit changes the contact (plan section 3.3).
+ */
+const PERSON_FIELDS = [
+  'first_name',
+  'last_name',
+  'email',
+  'phone',
+  'preferred_contact_method',
+] as const;
 
 const LEAD_SELECT = `
   SELECT
     t.*,
     au.first_name AS assigned_first_name,
     au.last_name AS assigned_last_name,
-    au.email AS assigned_email
+    au.email AS assigned_email,
+    c.first_name AS contact_first_name,
+    c.last_name AS contact_last_name,
+    c.email AS contact_email,
+    c.phone AS contact_phone,
+    c.preferred_contact_method AS contact_preferred_contact_method,
+    c.kind AS contact_kind,
+    c.address AS contact_address,
+    ${contactNameSql('c')} AS contact_name
   FROM leads t
   LEFT JOIN users au ON au.id = t.assigned_to
+  LEFT JOIN contacts c ON c.id = t.contact_id AND c.company_id = t.company_id
 `;
 
 function normalizeLead(row: any) {
+  const {
+    contact_first_name,
+    contact_last_name,
+    contact_email,
+    contact_phone,
+    contact_preferred_contact_method,
+    contact_kind,
+    contact_address,
+    contact_name,
+    ...lead
+  } = row;
+  const hasContact = lead.contact_id != null;
+  // A contact with no first or last name (a household or company name only)
+  // still gives the older screens something to show.
+  const contactFirst =
+    contact_first_name ?? (contact_last_name ? '' : (contact_name ?? ''));
   return {
-    ...row,
+    ...lead,
+    first_name: hasContact ? contactFirst : lead.first_name,
+    last_name: hasContact ? (contact_last_name ?? '') : lead.last_name,
+    email: hasContact ? (contact_email ?? null) : lead.email,
+    phone: hasContact ? (contact_phone ?? null) : lead.phone,
+    preferred_contact_method: hasContact
+      ? (contact_preferred_contact_method ?? null)
+      : lead.preferred_contact_method,
+    name:
+      (hasContact ? contact_name : null) ??
+      (`${lead.first_name ?? ''} ${lead.last_name ?? ''}`.trim() || `Lead #${lead.id}`),
+    submitted: {
+      first_name: lead.first_name,
+      last_name: lead.last_name,
+      email: lead.email ?? null,
+      phone: lead.phone ?? null,
+      preferred_contact_method: lead.preferred_contact_method ?? null,
+    },
+    contact: hasContact
+      ? {
+          id: lead.contact_id,
+          name: contact_name,
+          kind: contact_kind,
+          group: groupOf(contact_kind),
+          phone: contact_phone ?? null,
+          email: contact_email ?? null,
+          address: contact_address ?? null,
+        }
+      : null,
     status_changed_at: row.status_changed_at ?? null,
     days_in_status: daysInStatus(row.status_changed_at),
     assigned_user:
@@ -159,7 +236,8 @@ export async function getLeads(userId: string, filters: GetLeadsFilters) {
     params.push(`%${filters.q}%`);
     const p = `$${params.length}`;
     where.push(
-      `(t.first_name ILIKE ${p} OR t.last_name ILIKE ${p} OR t.email ILIKE ${p} OR t.phone ILIKE ${p})`
+      `(${contactNameSql('c')} ILIKE ${p} OR c.email ILIKE ${p} OR c.phone ILIKE ${p}
+        OR t.first_name ILIKE ${p} OR t.last_name ILIKE ${p} OR t.email ILIKE ${p} OR t.phone ILIKE ${p})`
     );
   }
 
@@ -219,38 +297,88 @@ export async function createLead(
   const scope = await tenantScope(userId, actor);
   await validateAssignee(input.assigned_to, userId, actor.role, scope.companyId);
 
-  const result = await pool.query(
-    `
-    INSERT INTO leads (
-      user_id, assigned_to, first_name, last_name, email, phone, source, status,
-      budget_min, budget_max, notes, service_type, preferred_contact_method, urgency,
-      company_id
-    )
-    SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, u.company_id
-    FROM users u
-    WHERE u.id = $1
-    RETURNING *;
-    `,
-    [
-      userId,
-      input.assigned_to ?? null,
-      input.first_name,
-      input.last_name,
-      input.email ?? null,
-      input.phone ?? null,
-      input.source ?? null,
-      input.status ?? 'New',
-      input.budget_min ?? null,
-      input.budget_max ?? null,
-      input.notes ?? null,
-      input.service_type ?? null,
-      input.preferred_contact_method ?? null,
-      input.urgency ?? null,
-    ]
-  );
+  // One inquiry from a contact: the one named, or a new one made from what
+  // was typed. The lead keeps what was typed as its "as submitted" record.
+  const client = await pool.connect();
+  let result;
+  try {
+    await client.query('BEGIN');
+    let contactId: number;
+    let submitted: {
+      first_name: string;
+      last_name: string;
+      email: string | null;
+      phone: string | null;
+      preferred_contact_method: string | null;
+    };
+    if (input.contact_id != null) {
+      const contact = await requireLiveContact(client, scope.companyId, input.contact_id);
+      contactId = contact.id;
+      submitted = {
+        first_name: input.first_name ?? contact.first_name ?? '',
+        last_name: input.last_name ?? contact.last_name ?? '',
+        email: input.email ?? contact.email,
+        phone: input.phone ?? contact.phone,
+        preferred_contact_method:
+          input.preferred_contact_method ?? contact.preferred_contact_method,
+      };
+    } else {
+      submitted = {
+        first_name: input.first_name ?? '',
+        last_name: input.last_name ?? '',
+        email: input.email ?? null,
+        phone: input.phone ?? null,
+        preferred_contact_method: input.preferred_contact_method ?? null,
+      };
+      contactId = await insertContact(client, scope.companyId, userId, {
+        ...submitted,
+        address: input.address ?? null,
+        source: input.source ?? null,
+        assigned_to: input.assigned_to ?? null,
+      });
+    }
 
-  if (result.rowCount === 0) {
-    throw new LeadNotFoundError();
+    result = await client.query(
+      `
+      INSERT INTO leads (
+        user_id, assigned_to, first_name, last_name, email, phone, source, status,
+        budget_min, budget_max, notes, service_type, preferred_contact_method, urgency,
+        company_id, contact_id
+      )
+      SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, u.company_id, $16
+      FROM users u
+      WHERE u.id = $1 AND u.company_id = $15
+      RETURNING *;
+      `,
+      [
+        userId,
+        input.assigned_to ?? null,
+        submitted.first_name,
+        submitted.last_name,
+        submitted.email,
+        submitted.phone,
+        input.source ?? null,
+        input.status ?? 'New',
+        input.budget_min ?? null,
+        input.budget_max ?? null,
+        input.notes ?? null,
+        input.service_type ?? null,
+        submitted.preferred_contact_method,
+        input.urgency ?? null,
+        scope.companyId,
+        contactId,
+      ]
+    );
+
+    if (result.rowCount === 0) {
+      throw new LeadNotFoundError();
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 
   const lead = await getLeadById(userId, result.rows[0].id, {
@@ -268,13 +396,12 @@ export async function createLead(
     assignedAt: lead.created_at,
   });
 
-  const leadName = `${lead.first_name} ${lead.last_name}`.trim();
   await notifyAssigneeChange({
     actorUserId: userId,
     assignedTo: lead.assigned_to,
     type: 'LEAD_ASSIGNED',
     title: 'New lead assigned',
-    message: `${leadName} was assigned to you`,
+    message: `${lead.name} was assigned to you`,
     entityType: 'lead',
     entityId: lead.id,
   });
@@ -309,6 +436,15 @@ export async function updateLead(
     throw new Error('No fields to update');
   }
 
+  // The person's fields change the contact (and so every lead and job of
+  // that contact); the lead's "as submitted" copy stays as it came in.
+  const personKeys = keys.filter((key) =>
+    (PERSON_FIELDS as readonly string[]).includes(key)
+  );
+  const leadKeys = keys.filter(
+    (key) => !(PERSON_FIELDS as readonly string[]).includes(key)
+  );
+
   const statusChanged =
     'status' in updates &&
     updates.status != null &&
@@ -317,7 +453,7 @@ export async function updateLead(
   const setParts: string[] = [];
   const values: any[] = [id];
 
-  for (const key of keys) {
+  for (const key of leadKeys) {
     values.push(updates[key] ?? null);
     setParts.push(`${key} = $${values.length}`);
   }
@@ -338,10 +474,29 @@ export async function updateLead(
     RETURNING id;
   `;
 
-  const result = await pool.query(sql, values);
-
-  if (result.rowCount === 0) {
-    throw new LeadNotFoundError();
+  const client = await pool.connect();
+  let result;
+  try {
+    await client.query('BEGIN');
+    result = await client.query(sql, values);
+    if (result.rowCount === 0) {
+      throw new LeadNotFoundError();
+    }
+    if (personKeys.length > 0) {
+      const contactId = await ensureLeadContact(client, scope.companyId, id);
+      const personUpdates = Object.fromEntries(
+        personKeys.map((key) => [key, updates[key] ?? null])
+      );
+      if (contactId != null) {
+        await updateContactFields(client, scope.companyId, contactId, personUpdates);
+      }
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
 
   const updated = await getLeadById(userId, result.rows[0].id, {
@@ -374,14 +529,13 @@ export async function updateLead(
     });
   }
 
-  const leadName = `${updated.first_name} ${updated.last_name}`.trim();
   await notifyAssigneeChange({
     actorUserId: userId,
     assignedTo: updated.assigned_to,
     previousAssignedTo: existingLead.assigned_to ?? null,
     type: 'LEAD_ASSIGNED',
     title: 'New lead assigned',
-    message: `${leadName} was assigned to you`,
+    message: `${updated.name} was assigned to you`,
     entityType: 'lead',
     entityId: updated.id,
   });

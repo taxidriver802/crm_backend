@@ -6,6 +6,7 @@ const taskFieldsSchema = z.object({
   assigned_to: z.string().uuid().optional().nullable(),
   lead_id: z.number().int().optional().nullable(),
   job_id: z.number().int().optional().nullable(),
+  contact_id: z.number().int().optional().nullable(),
   title: z.string().min(1),
   description: z.string().optional().nullable(),
   due_date: z.string().min(1).optional().nullable(),
@@ -56,10 +57,13 @@ function refineTaskTiming(
 
 export const createTaskSchema = taskFieldsSchema
   .superRefine((data, ctx) => refineTaskTiming(data, ctx, 'create'))
-  .refine((data) => data.lead_id != null || data.job_id != null, {
-    message: 'A task must belong to a lead or a job',
-    path: ['lead_id'],
-  });
+  .refine(
+    (data) => data.lead_id != null || data.job_id != null || data.contact_id != null,
+    {
+      message: 'A task must belong to a lead, a job or a contact',
+      path: ['lead_id'],
+    }
+  );
 
 export const updateTaskSchema = taskFieldsSchema
   .partial()

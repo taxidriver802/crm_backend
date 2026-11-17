@@ -1,6 +1,7 @@
 import { pool } from '../db';
 import { buildStartHere, type ActionItem } from '../lib/startHere';
 import { tenantScope } from '../lib/tenant';
+import { contactNameSql } from '../lib/contacts';
 import {
   JOB_MONEY_COLUMNS_SQL,
   JOB_MONEY_LATERAL_SQL,
@@ -39,16 +40,20 @@ function isoOrNull(value: unknown): string | null {
 }
 
 function leadName(row: {
+  contact_name?: string | null;
   first_name?: string | null;
   last_name?: string | null;
   id?: number;
 }) {
+  if (row.contact_name) return row.contact_name;
   const name = `${row.first_name || ''} ${row.last_name || ''}`.trim();
   return name || (row.id != null ? `Lead #${row.id}` : 'Lead');
 }
 
 function taskSubtitle(task: any): string | null {
   if (task?.job?.title) return task.job.title;
+  if (task?.contact?.name) return task.contact.name;
+  if (task?.lead?.name) return task.lead.name;
   if (task?.lead_first_name || task?.lead_last_name) {
     return `${task.lead_first_name || ''} ${task.lead_last_name || ''}`.trim() || null;
   }
@@ -185,10 +190,12 @@ export async function getDashboardData(
           l.id,
           l.first_name,
           l.last_name,
+          CASE WHEN c.id IS NOT NULL THEN ${contactNameSql('c')} END AS contact_name,
           l.status,
           l.status_changed_at,
           COALESCE(ln.last_note_at, l.status_changed_at) AS last_comm_at
         FROM leads l
+        LEFT JOIN contacts c ON c.id = l.contact_id AND c.company_id = l.company_id
         LEFT JOIN (
           SELECT entity_id, MAX(created_at) AS last_note_at
           FROM notes

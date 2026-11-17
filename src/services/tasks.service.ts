@@ -1,7 +1,9 @@
 import { pool } from '../db';
 import { createNotification, notifyAssigneeChange } from '../lib/notifications';
 import { applyTenantScope, tenantPredicate, tenantScope } from '../lib/tenant';
+import { contactNameSql } from '../lib/contacts';
 import * as activityService from '../services/jobActivity.service';
+import { requireLiveContact } from './contacts.service';
 
 export class TaskNotFoundError extends Error {
   constructor(message = 'Task not found') {
@@ -126,6 +128,7 @@ export type GetTasksFilters = {
   assignedTo?: string;
   leadId?: number;
   jobId?: number;
+  contactId?: number;
   dueBefore?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -144,6 +147,8 @@ export type CreateTaskInput = {
   assigned_to?: string | null;
   lead_id?: number | null;
   job_id?: number | null;
+  /** A task on the contact itself: anyone in the company may add one. */
+  contact_id?: number | null;
   title: string;
   description?: string | null;
   due_date?: string | null;
@@ -172,11 +177,16 @@ const TASK_SELECT = `
     t.created_at,
     t.updated_at,
 
-    l.first_name AS lead_first_name,
-    l.last_name AS lead_last_name,
+    t.contact_id,
+    COALESCE(lc.first_name, l.first_name) AS lead_first_name,
+    COALESCE(lc.last_name, l.last_name) AS lead_last_name,
+    CASE WHEN lc.id IS NOT NULL THEN ${contactNameSql('lc')} END AS lead_name,
+    CASE WHEN tc.id IS NOT NULL THEN ${contactNameSql('tc')} END AS contact_name,
+    tc.kind AS contact_kind,
     jl.id AS job_lead_id,
-    jl.first_name AS job_lead_first_name,
-    jl.last_name AS job_lead_last_name,
+    COALESCE(jlc.first_name, jl.first_name) AS job_lead_first_name,
+    COALESCE(jlc.last_name, jl.last_name) AS job_lead_last_name,
+    CASE WHEN jlc.id IS NOT NULL THEN ${contactNameSql('jlc')} END AS job_lead_name,
     au.first_name AS assigned_first_name,
     au.last_name AS assigned_last_name,
     au.email AS assigned_email,
@@ -186,12 +196,16 @@ const TASK_SELECT = `
     j.address AS job_address
   FROM tasks t
   LEFT JOIN leads l ON l.id = t.lead_id
+LEFT JOIN contacts lc ON lc.id = l.contact_id AND lc.company_id = l.company_id
+LEFT JOIN contacts tc ON tc.id = t.contact_id AND tc.company_id = t.company_id
 LEFT JOIN jobs j ON j.id = t.job_id
 LEFT JOIN leads jl ON jl.id = j.lead_id
+LEFT JOIN contacts jlc ON jlc.id = jl.contact_id AND jlc.company_id = jl.company_id
 LEFT JOIN users au ON au.id = t.assigned_to
 `;
 
 function buildLeadName(row: any) {
+  if (row.lead_name) return String(row.lead_name);
   const first = String(row.lead_first_name || '').trim();
   const last = String(row.lead_last_name || '').trim();
   const full = `${first} ${last}`.trim();
@@ -206,6 +220,10 @@ function getTaskContextLabel(task: any) {
     if (task.job.address) return task.job.address;
     if (task.job.title) return task.job.title;
     return `Job #${task.job.id}`;
+  }
+
+  if (task.contact?.name) {
+    return task.contact.name;
   }
 
   if (task.lead?.name) {
@@ -268,6 +286,8 @@ function buildTaskNotificationMetadata(task: any) {
     dueDate: task.due_date ?? null,
     leadId: task.lead?.id ?? task.lead_id ?? null,
     leadName: task.lead?.name ?? null,
+    contactId: task.contact?.id ?? task.contact_id ?? null,
+    contactName: task.contact?.name ?? null,
     jobId: task.job?.id ?? task.job_id ?? null,
     jobTitle: task.job?.title ?? null,
     jobAddress: task.job?.address ?? null,
@@ -320,11 +340,23 @@ function normalizeTask(row: any) {
           }
         : null,
 
+    contact_id: row.contact_id ?? null,
+    contact:
+      row.contact_id != null
+        ? {
+            id: row.contact_id,
+            name: row.contact_name ?? `Contact #${row.contact_id}`,
+            kind: row.contact_kind ?? null,
+          }
+        : null,
+
     job_lead:
       row.job_lead_id != null
         ? {
             id: row.job_lead_id,
-            name: `${row.job_lead_first_name || ''} ${row.job_lead_last_name || ''}`.trim(),
+            name:
+              row.job_lead_name ||
+              `${row.job_lead_first_name || ''} ${row.job_lead_last_name || ''}`.trim(),
             first_name: row.job_lead_first_name ?? null,
             last_name: row.job_lead_last_name ?? null,
           }
@@ -461,6 +493,10 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
     where.push(`t.lead_id IS NOT NULL`);
   }
 
+  if (filters.linkedTo === 'contact') {
+    where.push(`t.contact_id IS NOT NULL`);
+  }
+
   if (filters.assignedTo === 'unassigned') {
     where.push(`t.assigned_to IS NULL`);
   } else if (filters.assignedTo) {
@@ -476,6 +512,11 @@ export async function getTasks(userId: string, filters: GetTasksFilters) {
   if (Number.isFinite(filters.jobId)) {
     params.push(filters.jobId);
     where.push(`t.job_id = $${params.length}`);
+  }
+
+  if (Number.isFinite(filters.contactId)) {
+    params.push(filters.contactId);
+    where.push(`t.contact_id = $${params.length}`);
   }
 
   if (!filters.duePreset && filters.dueBefore) {
@@ -558,14 +599,22 @@ export async function createTask(
     await ensureJobBelongsToUser(input.job_id, userId, scope);
   }
 
-  await validateAssignee(input.assigned_to, userId, actor.role, scope.companyId);
-
-  if (!input.lead_id && !input.job_id) {
-    throw new TaskOwnershipError('Task must be attached to a lead or a job');
+  // Contacts are visible company-wide, so anyone may put a task on one.
+  if (input.contact_id != null) {
+    await requireLiveContact(pool, scope.companyId, input.contact_id);
   }
 
-  if (input.lead_id && input.job_id) {
-    throw new TaskOwnershipError('Task cannot belong to both a lead and a job');
+  await validateAssignee(input.assigned_to, userId, actor.role, scope.companyId);
+
+  const owners = [input.lead_id, input.job_id, input.contact_id].filter(
+    (value) => value != null
+  ).length;
+  if (owners === 0) {
+    throw new TaskOwnershipError('Task must be attached to a lead, a job or a contact');
+  }
+
+  if (owners > 1) {
+    throw new TaskOwnershipError('Task can belong to only one lead, job or contact');
   }
 
   let dueDateValue: string | null = null;
@@ -610,11 +659,13 @@ export async function createTask(
       location,
       status,
       completed_at,
-      company_id
+      company_id,
+      contact_id
     )
     SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
       CASE WHEN $11 = 'Completed' THEN CURRENT_TIMESTAMP ELSE NULL END,
-      u.company_id
+      u.company_id,
+      $12
     FROM users u
     WHERE u.id = $1
     RETURNING *;
@@ -631,6 +682,7 @@ export async function createTask(
       endAtValue,
       input.location ?? null,
       input.status ?? 'Pending',
+      input.contact_id ?? null,
     ]
   );
 
@@ -758,6 +810,10 @@ export async function updateTask(
     if (!sameJob && !sameLead) {
       throw new TaskOwnershipError('Task ownership cannot be changed after creation');
     }
+  }
+
+  if ('contact_id' in updates && (updates.contact_id ?? null) !== (existingTask.contact_id ?? null)) {
+    throw new TaskOwnershipError('Task ownership cannot be changed after creation');
   }
 
   const setParts: string[] = [];
