@@ -41,6 +41,7 @@ import {
   verifyToken,
 } from '../lib/sessions';
 import { recordAccountEvent } from '../lib/accountEvents';
+import { recordLoginEvent } from '../lib/loginEvents';
 import {
   createPasswordReset,
   lookupReset,
@@ -86,6 +87,27 @@ async function loadCompany(companyId: string) {
 /** The key sign-in failures are counted under: company slug and email. */
 function accountKey(companySlug: string, email: string) {
   return `${companySlug}|${email.toLocaleLowerCase()}`;
+}
+
+/**
+ * Account history written outside a transaction. The sign-in or sign-out has
+ * already happened, so a failed insert is logged, not turned into a 500.
+ */
+async function recordAccountEventSafely(
+  event: Parameters<typeof recordAccountEvent>[0]
+) {
+  try {
+    await recordAccountEvent(event);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'account_event_write_failed',
+        account_event: event.event,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    );
+  }
 }
 
 // POST /auth/register
@@ -142,6 +164,15 @@ authRouter.post(
 
       await client.query('COMMIT');
       setSessionCookie(res, session.token);
+      recordLoginEvent(req, {
+        event: 'login_success',
+        method: 'register',
+        companyId: company.id,
+        userId: user.id,
+        companySlug: company.slug,
+        email: normalEmail,
+        sessionId: session.sid,
+      });
 
       res.status(201).json({
         ok: true,
@@ -182,15 +213,37 @@ authRouter.post(
     // the right password included, so guessing cannot continue behind it.
     const key = accountKey(company_slug, normalEmail);
     const ip = clientIp(req);
+    // Every outcome goes to the login history. The reason is for the
+    // operator only: the reply is the same 401 whatever it was.
+    const attempt = { companySlug: company_slug, email: normalEmail };
     const byAccount = check(LIMITS.loginAccount, key);
     if (!byAccount.allowed) {
+      recordLoginEvent(req, {
+        ...attempt,
+        event: 'login_failed',
+        reason: 'rate_limited_account',
+      });
       return tooManyRequests(res, byAccount, LIMITS.loginAccount);
     }
     const byIp = check(LIMITS.loginIp, ip);
     if (!byIp.allowed) {
+      recordLoginEvent(req, {
+        ...attempt,
+        event: 'login_failed',
+        reason: 'rate_limited_ip',
+      });
       return tooManyRequests(res, byIp, LIMITS.loginIp);
     }
-    const invalidCredentials = () => {
+    const invalidCredentials = (
+      reason: 'unknown_company' | 'unknown_email' | 'inactive' | 'no_password' | 'bad_password',
+      found: { companyId?: string; userId?: string } = {}
+    ) => {
+      recordLoginEvent(req, {
+        ...attempt,
+        ...found,
+        event: 'login_failed',
+        reason,
+      });
       record(LIMITS.loginAccount, key);
       record(LIMITS.loginIp, ip);
       return res.status(401).json({ ok: false, error: 'Invalid credentials' });
@@ -207,48 +260,63 @@ authRouter.post(
     );
 
     if (!companyResult.rowCount) {
-      return invalidCredentials();
+      return invalidCredentials('unknown_company');
     }
 
     const companyRow = companyResult.rows[0];
 
+    // Any status, so the history can tell a disabled or invited account from
+    // an unknown email. Only an active account may sign in (checked below).
+    // Emails are unique per company (idx_users_company_lower_email).
     const result = await pool.query(
       `SELECT id, email, password_hash, first_name, last_name, role, status, company_id
        FROM users
-       WHERE company_id = $1 AND LOWER(email) = LOWER($2) AND status = 'active'
+       WHERE company_id = $1 AND LOWER(email) = LOWER($2)
        LIMIT 1`,
       [companyRow.id, normalEmail]
     );
 
     if (!result.rowCount) {
-      return invalidCredentials();
+      return invalidCredentials('unknown_email', { companyId: companyRow.id });
     }
 
     const user = result.rows[0];
+    const found = { companyId: user.company_id, userId: user.id };
+
+    if (user.status !== 'active') {
+      return invalidCredentials('inactive', found);
+    }
 
     if (!user.password_hash) {
-      return invalidCredentials();
+      return invalidCredentials('no_password', found);
     }
 
     const matches = await bcrypt.compare(password, user.password_hash);
 
     if (!matches) {
       // Only a real person in this company has a history to write to.
-      await recordAccountEvent({
+      await recordAccountEventSafely({
         companyId: user.company_id,
         userId: user.id,
         event: 'sign_in_failed',
       });
-      return invalidCredentials();
+      return invalidCredentials('bad_password', found);
     }
 
     clear(LIMITS.loginAccount, key);
 
-    await startSession(res, user);
+    const sessionId = await startSession(res, user);
+    recordLoginEvent(req, {
+      ...attempt,
+      ...found,
+      event: 'login_success',
+      method: 'password',
+      sessionId,
+    });
     await pool.query(`UPDATE users SET last_login_at = now() WHERE id = $1`, [
       user.id,
     ]);
-    await recordAccountEvent({
+    await recordAccountEventSafely({
       companyId: user.company_id,
       userId: user.id,
       event: 'signed_in',
@@ -387,6 +455,14 @@ authRouter.post(
       client.release();
     }
     setSessionCookie(res, session.token);
+    recordLoginEvent(req, {
+      event: 'login_success',
+      method: 'invite',
+      companyId: user.company_id,
+      userId: user.id,
+      email: user.email,
+      sessionId: session.sid,
+    });
 
     res.status(200).json({
       ok: true,
@@ -462,7 +538,13 @@ authRouter.post(
         [payload.sid]
       );
       if (ended.rowCount) {
-        await recordAccountEvent({
+        recordLoginEvent(req, {
+          event: 'logout',
+          companyId: ended.rows[0].company_id,
+          userId: ended.rows[0].user_id,
+          sessionId: payload.sid,
+        });
+        await recordAccountEventSafely({
           companyId: ended.rows[0].company_id,
           userId: ended.rows[0].user_id,
           event: 'signed_out',
@@ -483,6 +565,12 @@ authRouter.post(
   asyncHandler(async (req, res) => {
     const { userId, companyId, sessionId } = req.user!;
     const ended = await endOtherSessions(userId, sessionId, 'signed_out_elsewhere');
+    recordLoginEvent(req, {
+      event: 'logout_elsewhere',
+      companyId,
+      userId,
+      sessionId,
+    });
     await recordAccountEvent({
       companyId,
       userId,
@@ -561,6 +649,12 @@ authRouter.post(
       client.release();
     }
     clear(LIMITS.changePassword, userId);
+    recordLoginEvent(req, {
+      event: 'password_changed',
+      companyId,
+      userId,
+      sessionId,
+    });
 
     res.json({ ok: true, other_sessions_ended: ended });
   })
@@ -601,6 +695,15 @@ authRouter.post(
         [company_slug, email]
       );
       const user = rows[0];
+      // After the reply, so neither it nor its timing says whether the
+      // account exists.
+      recordLoginEvent(req, {
+        event: 'password_reset_requested',
+        companySlug: company_slug,
+        email,
+        companyId: user?.company_id ?? null,
+        userId: user?.id ?? null,
+      });
       if (!user) return;
 
       if (!mail) {
@@ -752,6 +855,19 @@ authRouter.post(
     // Earlier wrong guesses don't keep the person out after a reset.
     clear(LIMITS.loginAccount, accountKey(reset.company_slug, reset.email));
     setSessionCookie(res, session.token);
+    const resetEntry = {
+      companyId: reset.company_id,
+      userId: reset.user_id,
+      companySlug: reset.company_slug,
+      email: reset.email,
+    };
+    recordLoginEvent(req, { ...resetEntry, event: 'password_reset' });
+    recordLoginEvent(req, {
+      ...resetEntry,
+      event: 'login_success',
+      method: 'reset',
+      sessionId: session.sid,
+    });
 
     res.json({
       ok: true,

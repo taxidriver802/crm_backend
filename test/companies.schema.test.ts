@@ -67,9 +67,13 @@ describe('companies schema', () => {
        ORDER BY table_name`
     );
     expect(rows.length).toBeGreaterThanOrEqual(23);
-    // The one company_id that may be empty: a supplier's webhook is stored
-    // before it is matched to a company (nothing writes this table yet).
-    const mayBeEmpty = new Set(['supplier_webhook_events']);
+    // The company_ids that may be empty:
+    // - a supplier's webhook is stored before it is matched to a company
+    //   (nothing writes this table yet);
+    // - login history is the operator's host-wide log: a sign-in attempt
+    //   with an unknown company slug has no company. No company-scoped
+    //   route reads it.
+    const mayBeEmpty = new Set(['supplier_webhook_events', 'login_events']);
     for (const row of rows) {
       expect({
         table: row.table_name,
