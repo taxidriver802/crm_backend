@@ -10,6 +10,7 @@ Contents include:
 - `context.md` — next directions (e.g. team management)
 - `guide/using-the-crm.md` — the user guide; the in-app Help panel serves its sections (see `EXPERIMENT_HELP.md`)
 - `guide/hosting.md` — the production runbook: one host, TLS proxy, boot checks, rate limits
+- `guide/login-history.md` — the operator's login log (`login_events`): what it keeps, the client address check, retention, a read-only role for alerting
 - `guide/` — testing walkthroughs and dev guides
 - `EXPERIMENT.md` — decision log for `experiment/CC_expansion` (job lifecycle past the sale + payments ledger, phase 23)
 - `archive/` — older roadmaps

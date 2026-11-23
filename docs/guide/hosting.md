@@ -34,8 +34,15 @@ browser ──HTTPS──▶ TLS proxy (Caddy, nginx, …)  :443
 - **Client addresses.** The backend trusts `X-Forwarded-For` only from
   loopback (`TRUST_PROXY=loopback`, the default). The TLS proxy must set or
   append the client's address. Next's rewrite passes that header through
-  unchanged and adds none of its own. Rate limits key on the result, so a
-  header a client writes itself cannot reset them.
+  unchanged and adds none of its own. Rate limits and the login history key
+  on the result, so a header a client writes itself cannot reset them or
+  hide behind it. Behind a **Cloudflare Tunnel** (browser → Cloudflare →
+  `cloudflared` on loopback → frontend) the edge appends the visitor's
+  address to `X-Forwarded-For` and `cloudflared` passes it on, so the same
+  default holds. Check it after deploying (see `login-history.md`): if
+  sign-ins record `127.0.0.1` or `::1`, the backend logs
+  `client_ip_loopback` once, and every visitor shares one address for rate
+  limits too.
 - **One backend process.** Rate-limit counters live in memory and the two
   reminder sweeps run in-process, so run exactly one backend process.
 - **Data outside the code.** Uploads (job photos, documents, logos) live in
@@ -93,6 +100,10 @@ Required in `.env`:
 - **`TRUST_PROXY`**: `loopback`.
 - **`UPLOADS_DIR`**: `/var/lib/joist/uploads`, owned by the `joist` user.
 - **`BACKUP_DIR`** and **`BACKUP_REMOTE`**: see Backups below.
+
+Optional: **`LOGIN_EVENTS_KEEP_DAYS`**, how long the login history keeps
+its rows (default `180`). The backend prunes it daily; no timer is needed.
+See [`login-history.md`](login-history.md).
 
 The backend refuses to start under `NODE_ENV=production`, and lists every
 reason, when:
@@ -309,6 +320,13 @@ removes the built-in Rooftop Realty row if no user or record belongs to it.
 Migration `0003_accounts` adds sessions, reset links and account history.
 Sign-ins from before it have no session, so everyone signs in once more
 after the upgrade. It changes no existing row.
+
+Migration `0005_login_events` adds the login history: sign-ins, failed
+attempts, sign-outs and password events, with the client address and
+device (see [`login-history.md`](login-history.md)). It changes no existing
+row. It is numbered 0005 because 0004 belongs to the contacts work, which
+lands separately; the runner applies whichever is missing. After deploying
+it, run the address check in `login-history.md`.
 
 ## Limits on the public surface
 
