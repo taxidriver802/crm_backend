@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
 const optionalContact = z
-  .union([z.string().trim().max(200), z.null(), z.undefined()])
+  .union([z.string().trim().max(200), z.null()])
+  .optional()
   .transform((value) => {
     if (value == null) return null;
     const trimmed = String(value).trim();
@@ -17,7 +18,8 @@ export const publicIntakeSubmitSchema = z
     service_type: optionalContact,
     preferred_contact_method: optionalContact,
     message: z
-      .union([z.string().trim().max(2000), z.null(), z.undefined()])
+      .union([z.string().trim().max(2000), z.null()])
+      .optional()
       .transform((value) => {
         if (value == null) return null;
         const trimmed = String(value).trim();

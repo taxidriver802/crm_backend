@@ -18,6 +18,7 @@ import { filesRouter } from './routes/files.routes';
 import { notificationRouter } from './routes/notification.routes';
 import { runTaskNotificationJob } from './jobs/taskNotifications';
 import { runInvoiceReminderJob } from './jobs/invoiceReminders';
+import { runLoginEventsPruneJob } from './jobs/pruneLoginEvents';
 import { jobsRouter } from './routes/jobs.routes';
 import { estimatesRouter } from './routes/estimates.routes';
 import { estimateTemplatesRouter } from './routes/estimateTemplates.routes';
@@ -170,6 +171,13 @@ if (process.env.NODE_ENV !== 'test') {
     },
     1000 * 60 * 15
   );
+
+  // Login history retention: a minute after boot, then daily.
+  const pruneLoginEvents = () => {
+    runLoginEventsPruneJob().catch(console.error);
+  };
+  setTimeout(pruneLoginEvents, 1000 * 60).unref();
+  setInterval(pruneLoginEvents, 1000 * 60 * 60 * 24).unref();
 }
 
 const HEALTH_DB_TIMEOUT_MS = 2000;

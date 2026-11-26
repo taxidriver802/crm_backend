@@ -7,6 +7,13 @@ beforeEach(() => {
   resetRateLimits();
 });
 
+// Login history is written without waiting. Let each test's writes land
+// before the next test empties the tables or the pool closes.
+afterEach(async () => {
+  const { settleLoginEvents } = require('../src/lib/loginEvents');
+  await settleLoginEvents();
+});
+
 afterAll(async () => {
   // The per-run uploads directory from test/setupEnv.ts.
   const fs = require('fs');
