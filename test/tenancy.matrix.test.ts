@@ -179,6 +179,12 @@ const EXEMPT: Record<string, string> = {
     'ends the operator’s own session; no company token is accepted (operator.auth tests)',
   'GET /operator/auth/me':
     'the signed-in operator, not a company; company tokens refused (operator.auth tests)',
+  'GET /operator/overview':
+    'the operator’s view across companies, counts only; company tokens refused (operator.companies tests)',
+  'GET /operator/companies':
+    'the operator’s list of every company, counts only; company tokens refused (operator.companies tests)',
+  'GET /operator/companies/:id':
+    'one company’s account, counts only; company tokens refused (operator.companies tests)',
   'POST /auth/login':
     'signs in by email and password; the company comes from the account',
   'POST /auth/accept-invite':

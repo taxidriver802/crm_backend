@@ -14,12 +14,13 @@ import {
 import { check, clientIp, LIMITS, record, tooManyRequests } from '../lib/rateLimit';
 import { operatorGate, requireOperator } from '../middleware/operator';
 import { asyncHandler } from '../utils/asyncHandler';
+import * as operatorService from '../services/operator.service';
 
 /**
  * The operator surface (PLAN_operator.md §5–6). Mounted at /operator; the
  * browser reaches it as /api/operator on the operator hostname only.
- * Every route sits behind operatorGate. This step has sign-in only; the
- * company list and actions come next.
+ * Every route sits behind operatorGate. Step 3 is read-only: the overview,
+ * the company list and one company. Actions come in step 4.
  */
 export const operatorRouter = Router();
 
@@ -124,3 +125,42 @@ operatorRouter.get(
 
 // Everything below needs a signed-in operator.
 operatorRouter.use(requireOperator);
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// GET /operator/overview
+operatorRouter.get(
+  '/overview',
+  asyncHandler(async (_req, res) => {
+    res.json({ ok: true, ...(await operatorService.overview()) });
+  })
+);
+
+const listQuery = z.object({
+  status: z.enum(operatorService.COMPANY_STATUSES).optional(),
+  q: z.string().max(100).optional(),
+});
+
+// GET /operator/companies?status=&q=
+operatorRouter.get(
+  '/companies',
+  asyncHandler(async (req, res) => {
+    const parsed = listQuery.safeParse(req.query);
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: 'Unknown status or search' });
+    }
+    res.json({ ok: true, companies: await operatorService.listCompanies(parsed.data) });
+  })
+);
+
+// GET /operator/companies/:id
+operatorRouter.get(
+  '/companies/:id',
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id);
+    if (!UUID.test(id)) return res.status(404).json({ ok: false, error: 'Company not found' });
+    const company = await operatorService.getCompany(id);
+    if (!company) return res.status(404).json({ ok: false, error: 'Company not found' });
+    res.json({ ok: true, company });
+  })
+);
