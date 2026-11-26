@@ -33,6 +33,10 @@ export async function resetDb() {
       supplier_accounts,
       supplier_connections,
       login_events,
+      operator_events,
+      company_tombstones,
+      operator_sessions,
+      operators,
       users,
       companies
     RESTART IDENTITY CASCADE;

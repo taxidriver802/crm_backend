@@ -72,6 +72,28 @@ export function productionConfigProblems(env: Env = process.env): string[] {
     );
   }
 
+  // The operator surface (PLAN_operator.md §5) is off until
+  // OPERATOR_JWT_SECRET is set. Once it is on, it must have its own strong
+  // secret and sit behind Cloudflare Access.
+  const operatorSecret = (env.OPERATOR_JWT_SECRET ?? '').trim();
+  if (operatorSecret) {
+    if (Buffer.byteLength(operatorSecret, 'utf8') < MIN_JWT_SECRET_BYTES) {
+      problems.push(
+        `OPERATOR_JWT_SECRET must be at least ${MIN_JWT_SECRET_BYTES} bytes (for example: openssl rand -hex 32).`
+      );
+    }
+    if (operatorSecret === secret.trim()) {
+      problems.push('OPERATOR_JWT_SECRET must differ from JWT_SECRET.');
+    }
+    const team = (env.OPERATOR_CF_ACCESS_TEAM_DOMAIN ?? '').trim();
+    const aud = (env.OPERATOR_CF_ACCESS_AUD ?? '').trim();
+    if (!team || !aud) {
+      problems.push(
+        'The operator surface needs Cloudflare Access: set OPERATOR_CF_ACCESS_TEAM_DOMAIN and OPERATOR_CF_ACCESS_AUD, or unset OPERATOR_JWT_SECRET.'
+      );
+    }
+  }
+
   if ((env.TRUST_PROXY ?? '').trim().toLowerCase() === 'true') {
     problems.push(
       'TRUST_PROXY=true trusts any X-Forwarded-For a client sends. Use loopback, a hop count, or the proxy addresses.'

@@ -42,6 +42,7 @@ import { automationRouter } from './routes/automation.routes';
 import { portalRouter, publicPortalRouter } from './routes/portal.routes';
 import { intakeRouter, publicIntakeRouter } from './routes/intake.routes';
 import { productMetricsRouter } from './routes/productMetrics.routes';
+import { operatorRouter } from './routes/operator.routes';
 import { requireAuth } from './middleware/auth';
 import { asyncHandler } from './utils/asyncHandler';
 import * as filesService from './services/files.service';
@@ -124,6 +125,9 @@ app.use('/public/portal', limitPublic, publicPortalRouter);
 app.use('/intake', intakeRouter);
 app.use('/public/intake', limitPublic, publicIntakeRouter);
 app.use('/product-metrics', productMetricsRouter);
+// The operator surface: off without OPERATOR_JWT_SECRET, and behind
+// Cloudflare Access in production (src/middleware/operator.ts).
+app.use('/operator', operatorRouter);
 
 app.get(
   '/uploads/{*storageKey}',

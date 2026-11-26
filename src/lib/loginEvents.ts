@@ -30,7 +30,9 @@ export type LoginFailReason =
   | 'no_password'
   | 'bad_password'
   | 'rate_limited_account'
-  | 'rate_limited_ip';
+  | 'rate_limited_ip'
+  /** An operator request without a valid Cloudflare Access assertion. */
+  | 'access_denied';
 
 export type LoginMethod = 'password' | 'register' | 'invite' | 'reset';
 
@@ -43,6 +45,8 @@ export type LoginEvent = {
   companySlug?: string | null;
   email?: string | null;
   sessionId?: string | null;
+  /** Who was signing in: a company's person (default) or the operator (0006). */
+  scope?: 'company' | 'operator';
 };
 
 const MAX_SLUG = 100;
@@ -130,6 +134,7 @@ export function recordLoginEvent(req: Request, entry: LoginEvent): void {
       entry.sessionId ?? null,
       ip,
       normalizeUserAgent(req.get('user-agent')),
+      entry.scope ?? 'company',
     ];
   } catch (error) {
     logWriteFailure(error);
@@ -142,8 +147,8 @@ export function recordLoginEvent(req: Request, entry: LoginEvent): void {
       .query(
         `INSERT INTO login_events
            (event, reason, method, company_id, user_id, company_slug,
-            email_attempted, session_id, ip, user_agent)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            email_attempted, session_id, ip, user_agent, scope)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         params
       )
       .then(() => undefined, logWriteFailure);

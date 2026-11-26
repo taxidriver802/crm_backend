@@ -73,7 +73,10 @@ describe('companies schema', () => {
     // - login history is the operator's host-wide log: a sign-in attempt
     //   with an unknown company slug has no company. No company-scoped
     //   route reads it.
-    const mayBeEmpty = new Set(['supplier_webhook_events', 'login_events']);
+    // - operator_events records the operator's actions; it outlives a
+    //   deleted company on purpose (no foreign key), and an operator's own
+    //   events name no company. No company-scoped route reads it.
+    const mayBeEmpty = new Set(['supplier_webhook_events', 'login_events', 'operator_events']);
     for (const row of rows) {
       expect({
         table: row.table_name,

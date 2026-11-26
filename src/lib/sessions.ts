@@ -108,7 +108,12 @@ export function requestToken(req: Request): string | undefined {
 /** The token's claims when its signature and expiry hold; null otherwise. */
 export function verifyToken(token: string): TokenPayload | null {
   try {
-    return jwt.verify(token, secret()) as TokenPayload;
+    const payload = jwt.verify(token, secret()) as TokenPayload & { aud?: unknown };
+    // Company tokens never carry an audience. One that does (an operator
+    // token, src/lib/operatorSessions.ts) is not a company sign-in, even if
+    // the two secrets were ever set the same.
+    if (payload.aud !== undefined) return null;
+    return payload;
   } catch {
     return null;
   }

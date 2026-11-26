@@ -173,6 +173,12 @@ function mountedRouteKeys(): string[] {
 
 const EXEMPT: Record<string, string> = {
   'POST /auth/register': 'creates a new company; takes no id',
+  'POST /operator/auth/login':
+    'the operator’s own sign-in: no company token is accepted on /operator (operator.auth tests)',
+  'POST /operator/auth/logout':
+    'ends the operator’s own session; no company token is accepted (operator.auth tests)',
+  'GET /operator/auth/me':
+    'the signed-in operator, not a company; company tokens refused (operator.auth tests)',
   'POST /auth/login':
     'signs in by email and password; the company comes from the account',
   'POST /auth/accept-invite':

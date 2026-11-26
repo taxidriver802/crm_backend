@@ -17,7 +17,8 @@
     "db:seed-demo": "node scripts/seed-demo-data.js",
     "db:seed-demo-company": "node scripts/seed-demo-company.js",
     "db:seed-walkthrough": "node scripts/seed-walkthrough-data.js",
-    "user:reset-link": "node scripts/reset-link.js"
+    "user:reset-link": "node scripts/reset-link.js",
+    "operator:create": "node scripts/operator-create.js"
   },
   "keywords": [],
   "author": "",

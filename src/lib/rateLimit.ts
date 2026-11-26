@@ -40,6 +40,10 @@ export const LIMITS = {
   // Wrong current passwords, per signed-in person: a stolen session can't
   // be used to guess the password behind it.
   changePassword: { name: 'change-password-user', max: 10, windowMs: 15 * MINUTE },
+  // The operator's sign-in (PLAN_operator.md §5): failures only, and tighter
+  // than a company's, since there is one account behind it.
+  operatorLoginAccount: { name: 'operator-login-account', max: 5, windowMs: 15 * MINUTE },
+  operatorLoginIp: { name: 'operator-login-ip', max: 5, windowMs: 15 * MINUTE },
 } satisfies Record<string, Limit>;
 
 const hits = new Map<string, number[]>();
