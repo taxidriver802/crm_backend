@@ -15,6 +15,7 @@ import { check, clientIp, LIMITS, record, tooManyRequests } from '../lib/rateLim
 import { operatorGate, requireOperator } from '../middleware/operator';
 import { asyncHandler } from '../utils/asyncHandler';
 import * as operatorService from '../services/operator.service';
+import * as account from '../services/companyAccount.service';
 
 /**
  * The operator surface (PLAN_operator.md §5–6). Mounted at /operator; the
@@ -163,4 +164,93 @@ operatorRouter.get(
     if (!company) return res.status(404).json({ ok: false, error: 'Company not found' });
     res.json({ ok: true, company });
   })
+);
+
+// ─── Changing a company's account (PLAN_operator.md §6) ────────────────────
+// Every change goes through src/services/companyAccount.service.ts, which
+// checks the move, sets its timer and records it in operator_events.
+
+function companyId(req: { params: Record<string, unknown> }) {
+  const id = String(req.params.id);
+  if (!UUID.test(id)) throw new account.AccountChangeError('Company not found', 404);
+  return id;
+}
+
+function actor(req: { operator?: { operatorId: string } }): account.Actor {
+  return { operatorId: req.operator?.operatorId ?? null };
+}
+
+/** Runs a change, answers with the company as it now is. */
+function change(run: (req: any) => Promise<unknown>) {
+  return asyncHandler(async (req, res) => {
+    try {
+      await run(req);
+    } catch (error) {
+      if (error instanceof account.AccountChangeError) {
+        return res.status(error.status).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+    const company = await operatorService.getCompany(String(req.params.id));
+    res.json({ ok: true, company });
+  });
+}
+
+const body = (req: any) => (req.body && typeof req.body === 'object' ? req.body : {});
+
+// POST /operator/companies/:id/approve  { trial_days? }
+operatorRouter.post(
+  '/companies/:id/approve',
+  change((req) => account.approveCompany(companyId(req), actor(req), body(req).trial_days))
+);
+
+// POST /operator/companies/:id/deny  { reason }
+operatorRouter.post(
+  '/companies/:id/deny',
+  change((req) => account.denyCompany(companyId(req), actor(req), body(req).reason))
+);
+
+// POST /operator/companies/:id/status  { to, reason? }
+operatorRouter.post(
+  '/companies/:id/status',
+  change((req) =>
+    account.setCompanyStatus(companyId(req), { to: body(req).to, reason: body(req).reason }, actor(req))
+  )
+);
+
+// POST /operator/companies/:id/restore  { to: 'suspended' | 'active', reason? }
+operatorRouter.post(
+  '/companies/:id/restore',
+  change(async (req) => {
+    const id = companyId(req);
+    const current = await operatorService.getCompany(id);
+    if (current?.status !== 'pending_deletion') {
+      throw new account.AccountChangeError('Only a company pending deletion can be restored.');
+    }
+    return account.restoreCompany(id, actor(req), body(req).to, body(req).reason);
+  })
+);
+
+// POST /operator/companies/:id/extend  { days, reason? }
+operatorRouter.post(
+  '/companies/:id/extend',
+  change((req) => account.extendTimer(companyId(req), actor(req), body(req).days, body(req).reason))
+);
+
+// POST /operator/companies/:id/hold  { reason }
+operatorRouter.post(
+  '/companies/:id/hold',
+  change((req) => account.holdCompany(companyId(req), actor(req), body(req).reason))
+);
+
+// POST /operator/companies/:id/release  { reason? }
+operatorRouter.post(
+  '/companies/:id/release',
+  change((req) => account.releaseCompany(companyId(req), actor(req), body(req).reason))
+);
+
+// PATCH /operator/companies/:id  { name?, slug?, confirm_slug?, plan?, billing_email?, operator_notes? }
+operatorRouter.patch(
+  '/companies/:id',
+  change((req) => account.editCompany(companyId(req), actor(req), body(req)))
 );

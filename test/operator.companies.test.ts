@@ -181,7 +181,11 @@ describe('counts, never content', () => {
     'notifications', 'saved_views', 'portal_tokens', 'intake_tokens',
     'automation_rules', 'assignment_events', 'supplier_orders', 'supplier_accounts',
   ];
-  const FILES = ['src/services/operator.service.ts', 'src/routes/operator.routes.ts'];
+  const FILES = [
+    'src/services/operator.service.ts',
+    'src/services/companyAccount.service.ts',
+    'src/routes/operator.routes.ts',
+  ];
 
   it.each(FILES)('%s reads a company’s work only as COUNT(*)', (file) => {
     const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
@@ -199,6 +203,6 @@ describe('counts, never content', () => {
   it('the routes import no company service', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'src/routes/operator.routes.ts'), 'utf8');
     const services = [...source.matchAll(/from '\.\.\/services\/([^']+)'/g)].map((m) => m[1]);
-    expect(services).toEqual(['operator.service']);
+    expect(services.sort()).toEqual(['companyAccount.service', 'operator.service']);
   });
 });

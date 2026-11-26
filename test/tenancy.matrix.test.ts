@@ -185,6 +185,22 @@ const EXEMPT: Record<string, string> = {
     'the operator’s list of every company, counts only; company tokens refused (operator.companies tests)',
   'GET /operator/companies/:id':
     'one company’s account, counts only; company tokens refused (operator.companies tests)',
+  'POST /operator/companies/:id/approve':
+    'changes one company’s account fields, never its work; company tokens refused (operator.lifecycle tests)',
+  'POST /operator/companies/:id/deny':
+    'changes one company’s account fields, never its work; company tokens refused (operator.lifecycle tests)',
+  'POST /operator/companies/:id/status':
+    'changes one company’s account fields, never its work; company tokens refused (operator.lifecycle tests)',
+  'POST /operator/companies/:id/restore':
+    'changes one company’s account fields, never its work; company tokens refused (operator.lifecycle tests)',
+  'POST /operator/companies/:id/extend':
+    'changes one company’s account fields, never its work; company tokens refused (operator.lifecycle tests)',
+  'POST /operator/companies/:id/hold':
+    'changes one company’s account fields, never its work; company tokens refused (operator.lifecycle tests)',
+  'POST /operator/companies/:id/release':
+    'changes one company’s account fields, never its work; company tokens refused (operator.lifecycle tests)',
+  'PATCH /operator/companies/:id':
+    'changes one company’s account fields, never its work; company tokens refused (operator.lifecycle tests)',
   'POST /auth/login':
     'signs in by email and password; the company comes from the account',
   'POST /auth/accept-invite':

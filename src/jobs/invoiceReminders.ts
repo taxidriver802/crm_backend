@@ -1,6 +1,7 @@
 import { pool } from '../db';
 import { createNotification } from '../lib/notifications';
 import { markOverdueInvoices } from '../services/invoices.service';
+import { liveCompanySql } from '../lib/lifecycle';
 
 export async function runInvoiceReminderJob() {
   // Due-soon: open invoices (sent or partially paid) due within 3 days.
@@ -9,6 +10,7 @@ export async function runInvoiceReminderJob() {
             GREATEST(i.grand_total - i.amount_paid, 0) AS balance
      FROM invoices i
      WHERE i.status IN ('Sent', 'Partially Paid')
+       AND ${liveCompanySql('i')}
        AND i.due_date IS NOT NULL
        AND i.due_date > NOW()
        AND i.due_date <= NOW() + INTERVAL '3 days'`

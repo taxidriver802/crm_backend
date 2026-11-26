@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { pool } from '../db';
 import { uploadsRoot } from '../lib/uploadsDir';
+import { allowedMoves, COMPANY_STATUSES, HOLDABLE, isCompanyStatus, type CompanyStatus } from '../lib/lifecycle';
 
 /**
  * Every query the operator surface makes (PLAN_operator.md §5–6).
@@ -14,17 +15,8 @@ import { uploadsRoot } from '../lib/uploadsDir';
  * this file and fails if that ever changes.
  */
 
-export const COMPANY_STATUSES = [
-  'pending',
-  'denied',
-  'trial',
-  'active',
-  'past_due',
-  'suspended',
-  'pending_deletion',
-  'on_hold',
-] as const;
-export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
+export { COMPANY_STATUSES };
+export type { CompanyStatus };
 
 const ACCOUNT_COLUMNS = `
   c.id, c.name, c.slug, c.status, c.status_changed_at, c.next_status_at,
@@ -167,7 +159,7 @@ export async function listCompanies(options: ListOptions = {}): Promise<Operator
 
 export async function getCompany(companyId: string) {
   const { rows } = await pool.query(
-    `SELECT ${ACCOUNT_COLUMNS}, c.operator_notes, ${SEATS_AND_OWNER}
+    `SELECT ${ACCOUNT_COLUMNS}, c.operator_notes, c.held_from_status, ${SEATS_AND_OWNER}
      FROM companies c
      ${SEATS_AND_OWNER_JOINS}
      WHERE c.id = $1`,
@@ -202,8 +194,12 @@ export async function getCompany(companyId: string) {
     ...shapeCompany(row),
     storage_bytes: await companyStorageBytes(companyId),
     operator_notes: row.operator_notes,
+    held_from_status: row.held_from_status,
     counts: counts.rows[0],
     events: events.rows,
+    // What the operator can do from here (src/lib/lifecycle.ts).
+    moves: isCompanyStatus(row.status) ? allowedMoves(row.status) : [],
+    can_hold: HOLDABLE.includes(row.status),
   };
 }
 

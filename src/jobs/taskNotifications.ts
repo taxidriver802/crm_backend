@@ -1,4 +1,5 @@
 import { pool } from '../db';
+import { liveCompanySql } from '../lib/lifecycle';
 import { contactNameSql } from '../lib/contacts';
 import { createNotification } from '../lib/notifications';
 
@@ -85,6 +86,7 @@ export async function runTaskNotificationJob() {
   const dueSoon = await pool.query(`
   ${TASK_NOTIFICATION_SELECT}
   WHERE t.status <> 'Completed'
+    AND ${liveCompanySql('t')}
     AND t.due_date IS NOT NULL
     AND t.due_date >= NOW()
     AND t.due_date <= NOW() + INTERVAL '24 hours'
@@ -122,6 +124,7 @@ export async function runTaskNotificationJob() {
   const overdue = await pool.query(`
   ${TASK_NOTIFICATION_SELECT}
   WHERE t.status <> 'Completed'
+    AND ${liveCompanySql('t')}
     AND t.due_date IS NOT NULL
     AND COALESCE(t.end_at, t.due_date) < NOW()
 `);

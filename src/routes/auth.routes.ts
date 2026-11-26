@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { pool } from '../db';
 import { asyncHandler } from '../utils/asyncHandler';
 import { requireAuth } from '../middleware/auth';
+import { staffAccess, staffRefusal } from '../lib/lifecycle';
 
 import {
   registerSchema,
@@ -197,6 +198,21 @@ authRouter.post(
   })
 );
 
+/**
+ * A company whose account allows no access (src/lib/lifecycle.ts) can't be
+ * signed in to by any route: the 403 carries the state's code and message
+ * so the sign-in page can say why.
+ */
+async function accountLockout(companyId: string, db: { query: typeof pool.query } = pool) {
+  const { rows } = await db.query(
+    `SELECT status, next_status_at FROM companies WHERE id = $1`,
+    [companyId]
+  );
+  const row = rows[0];
+  if (!row || staffAccess(row.status) !== 'none') return null;
+  return { code: `company_${row.status}`, error: staffRefusal(row.status, row.next_status_at) };
+}
+
 // POST /auth/login
 authRouter.post(
   '/login',
@@ -305,6 +321,13 @@ authRouter.post(
 
     clear(LIMITS.loginAccount, key);
 
+    // The right password, for a company that can't be used now: say why.
+    const lockout = await accountLockout(user.company_id);
+    if (lockout) {
+      recordLoginEvent(req, { ...attempt, ...found, event: 'login_failed', reason: 'access_denied' });
+      return res.status(403).json({ ok: false, ...lockout });
+    }
+
     const sessionId = await startSession(res, user);
     recordLoginEvent(req, {
       ...attempt,
@@ -394,6 +417,9 @@ authRouter.post(
         error: 'Invite has expired',
       });
     }
+
+    const lockout = await accountLockout(user.company_id);
+    if (lockout) return res.status(403).json({ ok: false, ...lockout });
 
     const password_hash = await bcrypt.hash(password, 10);
 
@@ -517,6 +543,11 @@ authRouter.get(
         mark_id: row.mark_id,
         logo_storage_key: row.logo_storage_key,
       }),
+      // For the banners: past_due warns, suspended is read-only.
+      account: {
+        status: req.companyAccount?.status ?? 'active',
+        next_status_at: req.companyAccount?.nextStatusAt ?? null,
+      },
     });
   })
 );
@@ -809,6 +840,13 @@ authRouter.post(
         });
       }
       reset = found.reset;
+      // Refused before the link is spent, so it still works once the
+      // company is back.
+      const lockout = await accountLockout(reset.company_id, client);
+      if (lockout) {
+        await client.query('ROLLBACK');
+        return res.status(403).json({ ok: false, ...lockout });
+      }
       await client.query(
         `UPDATE users
          SET password_hash = $1, password_set_at = now(), updated_at = now(),
