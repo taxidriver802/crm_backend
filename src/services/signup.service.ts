@@ -5,7 +5,6 @@ import { isMailConfigured, sendMail } from '../lib/mailer';
 import { notifyOperator } from '../lib/operatorNotify';
 import { isProduction } from '../config/production';
 import { buildSignupEmail, SignupEmailKind } from '../lib/signup-email';
-import type { CompanyDecision } from '../lib/companyNotices';
 import { configuredAppBaseUrl } from '../utils/appBase';
 
 /**
@@ -16,7 +15,7 @@ import { configuredAppBaseUrl } from '../utils/appBase';
 
 type Owner = { id: string; email: string; first_name: string; company_id: string };
 
-async function ownerOf(companyId: string): Promise<Owner | null> {
+export async function ownerOf(companyId: string): Promise<Owner | null> {
   const { rows } = await pool.query(
     `SELECT id, email, first_name, company_id FROM users
      WHERE company_id = $1 AND role = 'owner'
@@ -98,27 +97,29 @@ export async function afterVerifiedPending(companyId: string) {
   });
 }
 
-/** Approved or denied: the welcome email, or (when asked) the denial. */
-export async function onCompanyDecision(decision: CompanyDecision) {
-  const owner = await ownerOf(decision.companyId);
+/** Approved: the welcome email, with a sign-in link carrying the slug. */
+export async function sendWelcomeEmail(companyId: string) {
+  const owner = await ownerOf(companyId);
   if (!owner) return;
-  if (decision.decision === 'approved') {
-    const { rows } = await pool.query(
-      `SELECT slug, trial_ends_at, approved_at FROM companies WHERE id = $1`,
-      [decision.companyId]
-    );
-    const company = rows[0];
-    if (!company) return;
-    const url = `${configuredAppBaseUrl()}/login?company=${encodeURIComponent(company.slug)}`;
-    const trialDays =
-      company.trial_ends_at && company.approved_at
-        ? Math.round(
-            (new Date(company.trial_ends_at).getTime() - new Date(company.approved_at).getTime()) /
-              86400000
-          )
-        : null;
-    await send('welcome', owner, { url, trialDays });
-  } else if (decision.notify) {
-    await send('denied', owner);
-  }
+  const { rows } = await pool.query(
+    `SELECT slug, trial_ends_at, approved_at FROM companies WHERE id = $1`,
+    [companyId]
+  );
+  const company = rows[0];
+  if (!company) return;
+  const url = `${configuredAppBaseUrl()}/login?company=${encodeURIComponent(company.slug)}`;
+  const trialDays =
+    company.trial_ends_at && company.approved_at
+      ? Math.round(
+          (new Date(company.trial_ends_at).getTime() - new Date(company.approved_at).getTime()) /
+            86400000
+        )
+      : null;
+  await send('welcome', owner, { url, trialDays });
+}
+
+/** Denied, when the operator asked to tell the owner. Never the reason. */
+export async function sendDeniedEmail(companyId: string) {
+  const owner = await ownerOf(companyId);
+  if (owner) await send('denied', owner);
 }

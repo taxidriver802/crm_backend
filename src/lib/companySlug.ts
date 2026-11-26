@@ -107,6 +107,17 @@ export async function insertCompanyWithSlug(
       continue;
     }
 
+    // A deleted company's slug stays held back (PLAN_operator.md §3), so
+    // nobody inherits its old client links. Taken, as far as sign-up goes.
+    const reserved = await client.query(
+      `SELECT 1 FROM company_tombstones WHERE slug = $1 AND slug_reserved_until > now() LIMIT 1`,
+      [candidate]
+    );
+    if (reserved.rows.length) {
+      if (input.exactSlug) break;
+      continue;
+    }
+
     // A unique violation aborts the surrounding transaction. The next try
     // has to roll back to a savepoint, or Postgres rejects it with
     // "current transaction is aborted" and registration returns 500.

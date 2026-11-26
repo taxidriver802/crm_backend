@@ -4,8 +4,8 @@
  * it on, and what each state lets staff and clients do.
  *
  * Durations live here, in one place, so they can change without a
- * migration. The timers only record when a move is due; nothing moves a
- * company on its own until the lifecycle job (a later step).
+ * migration. The timers record when a move is due; the hourly lifecycle job
+ * (src/jobs/lifecycle.ts) makes it.
  */
 
 export const COMPANY_STATUSES = [
@@ -40,6 +40,40 @@ export const STATE_DAYS: Record<CompanyStatus, number | null> = {
 
 /** A company restored from pending_deletion to suspended gets this long to pay. */
 export const RESTORED_SUSPENDED_DAYS = 14;
+
+/**
+ * Where each state's timer moves a company. A trial that ends unpaid skips
+ * past_due (nothing was ever owed). pending_deletion has no move: when its
+ * timer runs out the company is "ready to delete", and only the operator
+ * deletes it.
+ */
+export const TIMER_MOVES: Partial<Record<CompanyStatus, CompanyStatus>> = {
+  trial: 'suspended',
+  past_due: 'suspended',
+  suspended: 'pending_deletion',
+};
+
+/** Why the timer moved a company, kept as the state's reason. */
+export const TIMER_REASONS: Partial<Record<CompanyStatus, string>> = {
+  trial: 'The trial ended.',
+  past_due: 'Payment was not made in time.',
+  suspended: 'The account stayed unpaid.',
+};
+
+/**
+ * Reminder emails, in days before a state's timer runs out (§3). Each goes
+ * once per timer: extending the timer sends them again.
+ */
+export const REMINDER_DAYS: Partial<Record<CompanyStatus, readonly number[]>> = {
+  trial: [7, 1],
+  // "payment missed" on day 0, a reminder on day 5 of 7.
+  past_due: [2],
+  suspended: [7],
+  pending_deletion: [7, 1],
+};
+
+/** How long a deleted company's slug stays reserved. */
+export const SLUG_RESERVED_DAYS = 180;
 
 /**
  * The moves an operator may make. on_hold is entered from any live state

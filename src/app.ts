@@ -52,8 +52,9 @@ import {
   sweepExports,
 } from './services/companyExport.service';
 import { onExportApproved } from './lib/exportQueue';
-import { onCompanyDecided } from './lib/companyNotices';
-import { onCompanyDecision } from './services/signup.service';
+import { onCompanyChanged, onCompanyDeleted } from './lib/companyNotices';
+import { onCompanyChange, onCompanyDeletion } from './services/accountNotices.service';
+import { runLifecycleJob } from './jobs/lifecycle';
 import { asyncHandler } from './utils/asyncHandler';
 import * as filesService from './services/files.service';
 import { requestScope } from './lib/tenant';
@@ -138,8 +139,10 @@ app.use('/product-metrics', productMetricsRouter);
 app.use('/company-export', companyExportRouter);
 // The operator approves a final export; the builder runs here.
 onExportApproved(scheduleExportBuilds);
-// The operator approves or denies a company; the owner's email goes from here.
-onCompanyDecided(onCompanyDecision);
+// A company's account changes (by the operator or the timer), or it is
+// deleted: the owner's email, and the files, are handled from here.
+onCompanyChanged(onCompanyChange);
+onCompanyDeleted(onCompanyDeletion);
 // The operator surface: off without OPERATOR_JWT_SECRET, and behind
 // Cloudflare Access in production (src/middleware/operator.ts).
 app.use('/operator', operatorRouter);
@@ -197,6 +200,14 @@ if (process.env.NODE_ENV !== 'test') {
   setInterval(() => {
     sweepExports().catch(console.error);
   }, 1000 * 60 * 60).unref();
+
+  // Account timers, reminders and "ready to delete" (PLAN_operator.md §6):
+  // two minutes after boot, then hourly. LIFECYCLE_DRY_RUN=true only logs.
+  const runLifecycle = () => {
+    runLifecycleJob().catch(console.error);
+  };
+  setTimeout(runLifecycle, 1000 * 60 * 2).unref();
+  setInterval(runLifecycle, 1000 * 60 * 60).unref();
 
   // Login history retention: a minute after boot, then daily.
   const pruneLoginEvents = () => {

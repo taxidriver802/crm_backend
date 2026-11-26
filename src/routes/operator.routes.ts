@@ -14,6 +14,13 @@ import {
 import { check, clientIp, LIMITS, record, tooManyRequests } from '../lib/rateLimit';
 import { operatorGate, requireOperator } from '../middleware/operator';
 import { asyncHandler } from '../utils/asyncHandler';
+import {
+  generateTotpSecret,
+  openTotpSecret,
+  sealTotpSecret,
+  totpUri,
+  verifyTotp,
+} from '../lib/totp';
 import * as operatorService from '../services/operator.service';
 import * as account from '../services/companyAccount.service';
 
@@ -30,6 +37,8 @@ operatorRouter.use(operatorGate);
 const loginSchema = z.object({
   email: z.string().trim().email().max(320),
   password: z.string().min(1).max(200),
+  // The authenticator code, once two-step sign-in is on.
+  code: z.string().trim().max(12).optional(),
 });
 
 // Compared against when the email is unknown, so a miss takes as long as a
@@ -60,7 +69,7 @@ operatorRouter.post(
     }
 
     const found = await pool.query(
-      `SELECT id, email, password_hash, disabled_at FROM operators
+      `SELECT id, email, password_hash, disabled_at, totp_secret, totp_last_step FROM operators
        WHERE lower(email) = $1 LIMIT 1`,
       [email]
     );
@@ -84,13 +93,59 @@ operatorRouter.post(
       return res.status(401).json({ ok: false, error: 'Invalid credentials' });
     }
 
+    // Two-step sign-in: the right password, then the authenticator's code.
+    let method: 'password' | 'totp' = 'password';
+    if (operator.totp_secret) {
+      if (!parsed.data.code) {
+        return res.status(401).json({
+          ok: false,
+          code: 'totp_required',
+          error: 'Enter the 6-digit code from your authenticator app.',
+        });
+      }
+      const secret = openTotpSecret(operator.totp_secret);
+      if (!secret) {
+        return res.status(401).json({
+          ok: false,
+          code: 'totp_unreadable',
+          error:
+            'The authenticator secret can’t be read on this server. Clear it on the host with operator:create --reset --clear-totp, then set it up again.',
+        });
+      }
+      const step = verifyTotp(secret, parsed.data.code, {
+        lastStep: operator.totp_last_step == null ? null : Number(operator.totp_last_step),
+      });
+      // Claim the step, so the same code can't sign in twice.
+      const claimed =
+        step != null &&
+        (
+          await pool.query(
+            `UPDATE operators SET totp_last_step = $2
+             WHERE id = $1 AND (totp_last_step IS NULL OR totp_last_step < $2)
+             RETURNING id`,
+            [operator.id, step]
+          )
+        ).rows.length > 0;
+      if (!claimed) {
+        recordLoginEvent(req, { ...attempt, event: 'login_failed', reason: 'bad_totp' });
+        record(LIMITS.operatorLoginAccount, email);
+        record(LIMITS.operatorLoginIp, ip);
+        return res.status(401).json({
+          ok: false,
+          code: 'totp_invalid',
+          error: 'That code isn’t right. Enter the newest one from your authenticator app.',
+        });
+      }
+      method = 'totp';
+    }
+
     const session = await createOperatorSession(operator.id);
     await pool.query(`UPDATE operators SET last_login_at = now() WHERE id = $1`, [operator.id]);
     setOperatorCookie(res, session.token);
     recordLoginEvent(req, {
       ...attempt,
       event: 'login_success',
-      method: 'password',
+      method,
       sessionId: session.sid,
     });
     res.json({ ok: true, operator: { id: operator.id, email: operator.email } });
@@ -117,10 +172,121 @@ operatorRouter.get(
   requireOperator,
   asyncHandler(async (req, res) => {
     const result = await pool.query(
-      `SELECT id, email, last_login_at, created_at FROM operators WHERE id = $1`,
+      `SELECT id, email, last_login_at, created_at, totp_enabled_at,
+              (totp_secret IS NOT NULL) AS totp_enabled
+       FROM operators WHERE id = $1`,
       [req.operator!.operatorId]
     );
     res.json({ ok: true, operator: result.rows[0] });
+  })
+);
+
+// Two-step sign-in. Set up makes a pending secret; entering a code from it
+// turns it on. Turning it off needs the password and a code.
+async function operatorRow(id: string) {
+  const { rows } = await pool.query(
+    `SELECT id, email, password_hash, totp_secret, totp_pending_secret, totp_last_step
+     FROM operators WHERE id = $1`,
+    [id]
+  );
+  return rows[0];
+}
+
+function totpLimited(operatorId: string) {
+  return check(LIMITS.operatorTotp, operatorId);
+}
+
+// POST /operator/auth/totp/setup
+operatorRouter.post(
+  '/auth/totp/setup',
+  requireOperator,
+  asyncHandler(async (req, res) => {
+    const operator = await operatorRow(req.operator!.operatorId);
+    if (operator.totp_secret) {
+      return res.status(409).json({ ok: false, error: 'Two-step sign-in is already on.' });
+    }
+    const secret = generateTotpSecret();
+    await pool.query(
+      `UPDATE operators SET totp_pending_secret = $2, updated_at = now() WHERE id = $1`,
+      [operator.id, sealTotpSecret(secret)]
+    );
+    res.json({ ok: true, secret, uri: totpUri(secret, operator.email) });
+  })
+);
+
+// POST /operator/auth/totp/enable  { code }
+operatorRouter.post(
+  '/auth/totp/enable',
+  requireOperator,
+  asyncHandler(async (req, res) => {
+    const operator = await operatorRow(req.operator!.operatorId);
+    const limited = totpLimited(operator.id);
+    if (!limited.allowed) return tooManyRequests(res, limited, LIMITS.operatorTotp);
+    if (operator.totp_secret) {
+      return res.status(409).json({ ok: false, error: 'Two-step sign-in is already on.' });
+    }
+    const secret = openTotpSecret(operator.totp_pending_secret);
+    if (!secret) {
+      return res.status(409).json({ ok: false, error: 'Start the setup again.' });
+    }
+    const step = verifyTotp(secret, req.body?.code);
+    if (step == null) {
+      record(LIMITS.operatorTotp, operator.id);
+      return res.status(400).json({
+        ok: false,
+        error: 'That code isn’t right. Check the app shows Joist operator, then enter its newest code.',
+      });
+    }
+    await pool.query(
+      `UPDATE operators SET
+         totp_secret = totp_pending_secret, totp_pending_secret = NULL,
+         totp_enabled_at = now(), totp_last_step = $2, updated_at = now()
+       WHERE id = $1`,
+      [operator.id, step]
+    );
+    await pool.query(
+      `INSERT INTO operator_events (operator_id, event) VALUES ($1, 'totp_enabled')`,
+      [operator.id]
+    );
+    res.json({ ok: true, totp_enabled: true });
+  })
+);
+
+// POST /operator/auth/totp/disable  { password, code }
+operatorRouter.post(
+  '/auth/totp/disable',
+  requireOperator,
+  asyncHandler(async (req, res) => {
+    const operator = await operatorRow(req.operator!.operatorId);
+    const limited = totpLimited(operator.id);
+    if (!limited.allowed) return tooManyRequests(res, limited, LIMITS.operatorTotp);
+    if (!operator.totp_secret) {
+      return res.status(409).json({ ok: false, error: 'Two-step sign-in is already off.' });
+    }
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const passwordOk = await bcrypt.compare(password, operator.password_hash);
+    const secret = openTotpSecret(operator.totp_secret);
+    const step = secret
+      ? verifyTotp(secret, req.body?.code, {
+          lastStep: operator.totp_last_step == null ? null : Number(operator.totp_last_step),
+        })
+      : null;
+    if (!passwordOk || step == null) {
+      record(LIMITS.operatorTotp, operator.id);
+      return res.status(400).json({ ok: false, error: 'Check your password and the code, then try again.' });
+    }
+    await pool.query(
+      `UPDATE operators SET
+         totp_secret = NULL, totp_pending_secret = NULL, totp_enabled_at = NULL,
+         totp_last_step = NULL, updated_at = now()
+       WHERE id = $1`,
+      [operator.id]
+    );
+    await pool.query(
+      `INSERT INTO operator_events (operator_id, event) VALUES ($1, 'totp_disabled')`,
+      [operator.id]
+    );
+    res.json({ ok: true, totp_enabled: false });
   })
 );
 
@@ -132,8 +298,17 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // GET /operator/overview
 operatorRouter.get(
   '/overview',
-  asyncHandler(async (_req, res) => {
-    res.json({ ok: true, ...(await operatorService.overview()) });
+  asyncHandler(async (req, res) => {
+    // Whether this operator has two-step sign-in, for the overview's nudge.
+    const { rows } = await pool.query(
+      `SELECT (totp_secret IS NOT NULL) AS on FROM operators WHERE id = $1`,
+      [req.operator!.operatorId]
+    );
+    res.json({
+      ok: true,
+      ...(await operatorService.overview()),
+      totp_enabled: Boolean(rows[0]?.on),
+    });
   })
 );
 
@@ -216,6 +391,26 @@ operatorRouter.post(
   change((req) =>
     account.denyCompany(companyId(req), actor(req), body(req).reason, body(req).notify === true)
   )
+);
+
+// POST /operator/companies/:id/delete  { confirm_slug, reason? }
+// Only once the pending_deletion date has passed. The answer has no company.
+operatorRouter.post(
+  '/companies/:id/delete',
+  asyncHandler(async (req, res) => {
+    try {
+      const result = await account.deleteCompany(companyId(req), actor(req), {
+        confirmSlug: body(req).confirm_slug,
+        reason: body(req).reason,
+      });
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      if (error instanceof account.AccountChangeError) {
+        return res.status(error.status).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
 );
 
 // POST /operator/companies/:id/status  { to, reason?, confirm_unverified? }

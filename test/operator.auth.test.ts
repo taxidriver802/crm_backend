@@ -298,8 +298,11 @@ describe('operator:create', () => {
     expect(parseArgs(['Me@Example.com', '--reset'])).toEqual({
       email: 'me@example.com',
       reset: true,
+      clearTotp: false,
       help: false,
     });
+    expect(parseArgs(['me@example.com', '--reset', '--clear-totp']).clearTotp).toBe(true);
+    expect(() => parseArgs(['me@example.com', '--clear-totp'])).toThrow(/goes with --reset/);
     expect(() => parseArgs(['--nope'])).toThrow(/Unknown argument/);
   });
 

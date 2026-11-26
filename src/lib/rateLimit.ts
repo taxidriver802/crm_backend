@@ -49,6 +49,8 @@ export const LIMITS = {
   // than a company's, since there is one account behind it.
   operatorLoginAccount: { name: 'operator-login-account', max: 5, windowMs: 15 * MINUTE },
   operatorLoginIp: { name: 'operator-login-ip', max: 5, windowMs: 15 * MINUTE },
+  // Wrong codes while turning two-step sign-in on or off, per operator.
+  operatorTotp: { name: 'operator-totp', max: 5, windowMs: 15 * MINUTE },
 } satisfies Record<string, Limit>;
 
 const hits = new Map<string, number[]>();

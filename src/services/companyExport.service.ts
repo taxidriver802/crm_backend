@@ -71,6 +71,7 @@ export const SKIPPED_TABLES: Record<string, string> = {
   company_exports: 'the exports themselves',
   operator_events: 'the operator’s account history',
   company_tombstones: 'kept by Joist after deletion',
+  company_notices: 'which account emails Joist has sent',
 };
 
 /** Columns never written to an archive: secrets and token hashes. */
@@ -90,7 +91,7 @@ export function exportsRoot(): string {
   return path.resolve(configured || path.join(process.cwd(), 'exports'));
 }
 
-function archivePath(exportId: string) {
+export function archivePath(exportId: string) {
   return path.join(exportsRoot(), `${exportId}.zip`);
 }
 

@@ -1,12 +1,15 @@
 import { pool } from '../db';
 import { exportApproved } from '../lib/exportQueue';
-import { companyDecided } from '../lib/companyNotices';
+import { companyChanged, companyDeleted } from '../lib/companyNotices';
 import {
   allowedMoves,
   canMove,
   HOLDABLE,
   isCompanyStatus,
   RESTORED_SUSPENDED_DAYS,
+  SLUG_RESERVED_DAYS,
+  TIMER_MOVES,
+  TIMER_REASONS,
   timerFor,
   type CompanyStatus,
 } from '../lib/lifecycle';
@@ -126,86 +129,133 @@ export async function setCompanyStatus(companyId: string, change: StatusChange, 
   if (!isCompanyStatus(change.to) || change.to === 'on_hold') {
     throw new AccountChangeError('Unknown status', 400);
   }
-  let decision: 'approved' | 'denied' | null = null;
-  const result = await inTransaction(async (db) => {
+  const applied = await inTransaction(async (db) => {
     const company = await lockCompany(db, companyId);
-    if (company.status === change.to) {
-      throw new AccountChangeError(`The company is already ${change.to}.`);
-    }
-    if (!canMove(company.status, change.to)) {
-      const allowed = allowedMoves(company.status);
-      throw new AccountChangeError(
-        allowed.length
-          ? `A ${company.status} company can move to ${allowed.join(', ')}, not ${change.to}.`
-          : `A ${company.status} company can't be moved this way.`
-      );
-    }
-    const approving = change.to === 'trial' && (company.status === 'pending' || company.status === 'denied');
-    if (approving && change.confirmUnverified !== true) {
-      const { rows: owners } = await db.query(
-        `SELECT email_verified_at FROM users
-         WHERE company_id = $1 AND role = 'owner'
-         ORDER BY created_at ASC LIMIT 1`,
-        [company.id]
-      );
-      if (owners[0] && !owners[0].email_verified_at) {
-        throw new AccountChangeError(
-          "The owner hasn't confirmed their email address. Confirm you want to approve anyway."
-        );
-      }
-    }
-    const takesAccess = ['denied', 'suspended', 'pending_deletion', 'past_due'].includes(change.to);
-    const reason = cleanReason(change.reason, takesAccess);
+    return applyStatusChange(db, company, change, actor);
+  });
+  // After the commit: the email for the new state (welcome, denial, …).
+  void companyChanged({
+    companyId: applied.row.id,
+    from: applied.from,
+    to: applied.row.status,
+    by: 'operator',
+    notify: change.notify === true,
+    nextStatusAt: applied.row.next_status_at,
+  });
+  return applied.row;
+}
 
-    const now = new Date();
-    let trialEndsAt: Date | null = null;
-    let next: Date | null;
-    if (change.to === 'trial') {
-      const days = Number.isInteger(change.trialDays) && change.trialDays! > 0 ? change.trialDays : undefined;
-      trialEndsAt = timerFor('trial', now, days);
-      next = trialEndsAt;
-    } else if (change.to === 'suspended' && Number.isInteger(change.days) && change.days! > 0) {
-      next = timerFor('suspended', now, change.days);
-    } else {
-      next = timerFor(change.to, now);
-    }
-
-    const { rows } = await db.query(
-      `UPDATE companies SET
-         status = $2,
-         status_changed_at = now(),
-         next_status_at = $3,
-         status_reason = $4,
-         trial_ends_at = COALESCE($5, trial_ends_at),
-         approved_at = CASE WHEN $2 = 'trial' AND approved_at IS NULL THEN now() ELSE approved_at END,
-         updated_at = now()
-       WHERE id = $1
-       RETURNING id, status, next_status_at`,
-      [company.id, change.to, next, reason, trialEndsAt]
+/** The move itself, on a locked company row, inside the caller's transaction. */
+async function applyStatusChange(
+  db: Queryable,
+  company: CompanyRow,
+  change: StatusChange,
+  actor: Actor,
+  { timer = false }: { timer?: boolean } = {}
+) {
+  if (company.status === change.to) {
+    throw new AccountChangeError(`The company is already ${change.to}.`);
+  }
+  if (!canMove(company.status, change.to)) {
+    const allowed = allowedMoves(company.status);
+    throw new AccountChangeError(
+      allowed.length
+        ? `A ${company.status} company can move to ${allowed.join(', ')}, not ${change.to}.`
+        : `A ${company.status} company can't be moved this way.`
     );
+  }
+  const approving = change.to === 'trial' && (company.status === 'pending' || company.status === 'denied');
+  if (approving && change.confirmUnverified !== true) {
+    const { rows: owners } = await db.query(
+      `SELECT email_verified_at FROM users
+       WHERE company_id = $1 AND role = 'owner'
+       ORDER BY created_at ASC LIMIT 1`,
+      [company.id]
+    );
+    if (owners[0] && !owners[0].email_verified_at) {
+      throw new AccountChangeError(
+        "The owner hasn't confirmed their email address. Confirm you want to approve anyway."
+      );
+    }
+  }
+  const takesAccess = ['denied', 'suspended', 'pending_deletion', 'past_due'].includes(change.to);
+  const reason = cleanReason(change.reason, takesAccess);
 
-    const event =
-      change.event ??
-      (company.status === 'pending' && change.to === 'trial'
+  const now = new Date();
+  let trialEndsAt: Date | null = null;
+  let next: Date | null;
+  if (change.to === 'trial') {
+    const days = Number.isInteger(change.trialDays) && change.trialDays! > 0 ? change.trialDays : undefined;
+    trialEndsAt = timerFor('trial', now, days);
+    next = trialEndsAt;
+  } else if (change.to === 'suspended' && Number.isInteger(change.days) && change.days! > 0) {
+    next = timerFor('suspended', now, change.days);
+  } else {
+    next = timerFor(change.to, now);
+  }
+
+  const { rows } = await db.query(
+    `UPDATE companies SET
+       status = $2,
+       status_changed_at = now(),
+       next_status_at = $3,
+       status_reason = $4,
+       trial_ends_at = COALESCE($5, trial_ends_at),
+       approved_at = CASE WHEN $2 = 'trial' AND approved_at IS NULL THEN now() ELSE approved_at END,
+       updated_at = now()
+     WHERE id = $1
+     RETURNING id, status, next_status_at`,
+    [company.id, change.to, next, reason, trialEndsAt]
+  );
+
+  const event =
+    change.event ??
+    (timer
+      ? 'timer_moved'
+      : company.status === 'pending' && change.to === 'trial'
         ? 'approved'
         : change.to === 'denied'
           ? 'denied'
           : company.status === 'pending_deletion'
             ? 'restored'
             : 'status_changed');
-    await recordEvent(db, company, actor, event, company.status, change.to, {
-      ...(reason ? { reason } : {}),
-      ...(next ? { next_status_at: next.toISOString() } : {}),
-      ...(approving && change.confirmUnverified ? { owner_unverified: true } : {}),
-      ...(change.to === 'denied' && company.status === 'pending' ? { notified: change.notify === true } : {}),
-    });
-    if (approving) decision = 'approved';
-    else if (change.to === 'denied' && company.status === 'pending') decision = 'denied';
-    return rows[0];
+  await recordEvent(db, company, actor, event, company.status, change.to, {
+    ...(reason ? { reason } : {}),
+    ...(next ? { next_status_at: next.toISOString() } : {}),
+    ...(approving && change.confirmUnverified ? { owner_unverified: true } : {}),
+    ...(change.to === 'denied' && company.status === 'pending' ? { notified: change.notify === true } : {}),
   });
-  // After the commit: the welcome or denial email.
-  if (decision) companyDecided({ companyId: result.id, decision, notify: change.notify === true });
-  return result;
+  return { row: rows[0] as { id: string; status: CompanyStatus; next_status_at: Date | null }, from: company.status };
+}
+
+/**
+ * The lifecycle job's move: a company whose timer has run out goes on to
+ * the next state (TIMER_MOVES). Checked again under the lock, so a change
+ * the operator made a moment ago wins. Returns null when there was nothing
+ * to do.
+ */
+export async function advanceDueCompany(companyId: string, now = new Date()) {
+  const applied = await inTransaction(async (db) => {
+    const company = await lockCompany(db, companyId);
+    const to = TIMER_MOVES[company.status];
+    if (!to || !company.next_status_at || new Date(company.next_status_at) > now) return null;
+    return applyStatusChange(
+      db,
+      company,
+      { to, reason: TIMER_REASONS[company.status] },
+      { operatorId: null },
+      { timer: true }
+    );
+  });
+  if (!applied) return null;
+  await companyChanged({
+    companyId: applied.row.id,
+    from: applied.from,
+    to: applied.row.status,
+    by: 'timer',
+    nextStatusAt: applied.row.next_status_at,
+  });
+  return { id: applied.row.id, from: applied.from, to: applied.row.status };
 }
 
 /** Approve a pending company: it starts its trial. */
@@ -239,7 +289,7 @@ export function restoreCompany(companyId: string, actor: Actor, to: unknown, rea
 
 /** A hard stop for abuse or a security problem. The state's clock stops. */
 export async function holdCompany(companyId: string, actor: Actor, reason: unknown) {
-  return inTransaction(async (db) => {
+  const held = await inTransaction(async (db) => {
     const company = await lockCompany(db, companyId);
     if (!HOLDABLE.includes(company.status)) {
       throw new AccountChangeError(`A ${company.status} company can't be put on hold.`);
@@ -261,8 +311,11 @@ export async function holdCompany(companyId: string, actor: Actor, reason: unkno
       [company.id, company.status, remainingMs, text]
     );
     await recordEvent(db, company, actor, 'held', company.status, 'on_hold', { reason: text });
-    return { id: company.id, status: 'on_hold' };
+    return { id: company.id, status: 'on_hold' as const, from: company.status };
   });
+  // The one notice a hold sends (§3).
+  void companyChanged({ companyId: held.id, from: held.from, to: 'on_hold', by: 'operator' });
+  return { id: held.id, status: held.status };
 }
 
 /** Lift a hold: back to the state it came from, with the time it had left. */
@@ -456,4 +509,117 @@ export async function denyExport(exportId: string, actor: Actor, reason: unknown
     });
     return { id: row.id, company_id: row.company_id };
   });
+}
+
+/**
+ * Deletes a company whose pending_deletion timer has run out ("ready to
+ * delete", §3). The operator types the slug to confirm.
+ *
+ * In one transaction: a tombstone (who it was, its dates, its path through
+ * the states, whether a final export went out, and its slug held back for
+ * SLUG_RESERVED_DAYS), a "deleted" event, then the company row, which takes
+ * every row of its work with it through the cascade. After the commit, its
+ * files go and the "deleted" email is sent (companyNotices).
+ */
+export async function deleteCompany(
+  companyId: string,
+  actor: Actor,
+  input: { confirmSlug: unknown; reason?: unknown },
+  now = new Date()
+) {
+  const deletion = await inTransaction(async (db) => {
+    const company = await lockCompany(db, companyId);
+    if (
+      company.status !== 'pending_deletion' ||
+      !company.next_status_at ||
+      new Date(company.next_status_at) > now
+    ) {
+      throw new AccountChangeError(
+        'Only a company whose deletion date has passed can be deleted.'
+      );
+    }
+    const typed = typeof input.confirmSlug === 'string' ? input.confirmSlug.trim().toLowerCase() : '';
+    if (typed !== company.slug) {
+      throw new AccountChangeError('Type the company’s slug to confirm.', 400);
+    }
+    const reason = cleanReason(input.reason, false);
+
+    const { rows: details } = await db.query(
+      `SELECT c.created_at, c.approved_at, c.billing_email, c.palette_id, c.mark_id,
+              o.first_name AS owner_first_name, o.last_name AS owner_last_name, o.email AS owner_email
+       FROM companies c
+       LEFT JOIN LATERAL (
+         SELECT first_name, last_name, email FROM users
+         WHERE company_id = c.id AND role = 'owner'
+         ORDER BY created_at ASC LIMIT 1
+       ) o ON true
+       WHERE c.id = $1`,
+      [company.id]
+    );
+    const d = details[0];
+    const { rows: path } = await db.query(
+      `SELECT to_status, created_at FROM operator_events
+       WHERE company_id = $1 AND to_status IS NOT NULL
+       ORDER BY created_at, id`,
+      [company.id]
+    );
+    const { rows: exports } = await db.query(
+      `SELECT id, kind, status FROM company_exports WHERE company_id = $1`,
+      [company.id]
+    );
+    const finalSent = exports.some(
+      (x: { kind: string; status: string }) =>
+        x.kind === 'final' && ['built', 'sent', 'downloaded', 'expired'].includes(x.status)
+    );
+    const ownerName = [d.owner_first_name, d.owner_last_name].filter(Boolean).join(' ') || null;
+
+    await db.query(
+      `INSERT INTO company_tombstones (
+         company_id, name, slug, owner_name, owner_email, billing_email,
+         created_at, approved_at, deleted_by, status_path, final_export_sent, slug_reserved_until
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now() + make_interval(days => $12))`,
+      [
+        company.id,
+        company.name,
+        company.slug,
+        ownerName,
+        d.owner_email,
+        d.billing_email,
+        d.created_at,
+        d.approved_at,
+        actor.operatorId,
+        JSON.stringify(path.map((p: { to_status: string; created_at: Date }) => ({ status: p.to_status, at: p.created_at }))),
+        finalSent,
+        SLUG_RESERVED_DAYS,
+      ]
+    );
+    await recordEvent(db, company, actor, 'deleted', company.status, null, {
+      ...(reason ? { reason } : {}),
+      final_export_sent: finalSent,
+    });
+    await db.query(`DELETE FROM companies WHERE id = $1`, [company.id]);
+
+    return {
+      companyId: company.id,
+      name: company.name,
+      slug: company.slug,
+      exportIds: exports.map((x: { id: string }) => x.id),
+      to: d.billing_email || d.owner_email || null,
+      firstName: d.owner_first_name || null,
+      paletteId: d.palette_id ?? null,
+      markId: d.mark_id ?? null,
+    };
+  });
+  // After the commit: its files, and the "deleted" email.
+  void companyDeleted(deletion);
+  return { id: deletion.companyId, slug: deletion.slug, deleted: true };
+}
+
+/** Whether a slug belongs to a deleted company and is still held back. */
+export async function slugReserved(slug: string, db: Queryable = pool) {
+  const { rows } = await db.query(
+    `SELECT 1 FROM company_tombstones WHERE slug = $1 AND slug_reserved_until > now() LIMIT 1`,
+    [slug]
+  );
+  return rows.length > 0;
 }

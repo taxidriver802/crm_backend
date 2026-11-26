@@ -179,6 +179,14 @@ const EXEMPT: Record<string, string> = {
     'ends the operator’s own session; no company token is accepted (operator.auth tests)',
   'GET /operator/auth/me':
     'the signed-in operator, not a company; company tokens refused (operator.auth tests)',
+  'POST /operator/auth/totp/setup':
+    'the signed-in operator’s own second factor, not a company; company tokens refused (operator.timers tests)',
+  'POST /operator/auth/totp/enable':
+    'the signed-in operator’s own second factor, not a company; company tokens refused (operator.timers tests)',
+  'POST /operator/auth/totp/disable':
+    'the signed-in operator’s own second factor, not a company; company tokens refused (operator.timers tests)',
+  'POST /operator/companies/:id/delete':
+    'deletes one company the operator names, only after its deletion date; company tokens refused (operator.timers tests)',
   'GET /operator/overview':
     'the operator’s view across companies, counts only; company tokens refused (operator.companies tests)',
   'GET /operator/companies':

@@ -6,10 +6,13 @@
  * Usage (from crm_backend, with its .env):
  *   npm run operator:create -- you@example.com
  *   npm run operator:create -- you@example.com --reset
+ *   npm run operator:create -- you@example.com --reset --clear-totp
  *
  * The password is asked for twice and never echoed. Piped input works too
  * (one line), for scripted setups. Setting a new password with --reset
- * signs the operator out everywhere.
+ * signs the operator out everywhere. --clear-totp also turns two-step
+ * sign-in off: the way back in after losing the authenticator, or after
+ * OPERATOR_JWT_SECRET changed (the stored secret is sealed with it).
  */
 require('dotenv').config();
 
@@ -20,13 +23,17 @@ const { Pool } = require('pg');
 const MIN_PASSWORD = 12;
 
 function parseArgs(argv) {
-  const options = { email: '', reset: false, help: false };
+  const options = { email: '', reset: false, clearTotp: false, help: false };
   for (const arg of argv) {
     if (arg === '--reset') options.reset = true;
+    else if (arg === '--clear-totp') options.clearTotp = true;
     else if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg.startsWith('--')) throw new Error(`Unknown argument: ${arg}`);
     else if (!options.email) options.email = arg.trim().toLowerCase();
     else throw new Error(`Unexpected argument: ${arg}`);
+  }
+  if (options.clearTotp && !options.reset) {
+    throw new Error('--clear-totp goes with --reset.');
   }
   return options;
 }
@@ -38,7 +45,7 @@ function checkPassword(password) {
 }
 
 /** Creates or resets the operator. Exported for the tests. */
-async function upsertOperator(pool, { email, password, reset = false }) {
+async function upsertOperator(pool, { email, password, reset = false, clearTotp = false }) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || ''))
     throw new Error('Give the operator email as the first argument.');
   checkPassword(password);
@@ -63,6 +70,14 @@ async function upsertOperator(pool, { email, password, reset = false }) {
         `UPDATE operators SET password_hash = $2, updated_at = now() WHERE id = $1`,
         [id, hash]
       );
+      if (clearTotp) {
+        await client.query(
+          `UPDATE operators SET totp_secret = NULL, totp_pending_secret = NULL,
+             totp_enabled_at = NULL, totp_last_step = NULL
+           WHERE id = $1`,
+          [id]
+        );
+      }
       await client.query(
         `UPDATE operator_sessions SET ended_at = now(), ended_reason = 'password_changed'
          WHERE operator_id = $1 AND ended_at IS NULL`,
@@ -110,7 +125,7 @@ function askHidden(question) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help || !options.email) {
-    console.log('npm run operator:create -- <email> [--reset]');
+    console.log('npm run operator:create -- <email> [--reset [--clear-totp]]');
     return;
   }
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not set.');
@@ -128,7 +143,7 @@ async function main() {
     console.log(
       created
         ? `Operator ${options.email} created.`
-        : `New password set for ${options.email}; its sessions have ended.`
+        : `New password set for ${options.email}; its sessions have ended.${options.clearTotp ? ' Two-step sign-in is off.' : ''}`
     );
     if (!(process.env.OPERATOR_JWT_SECRET || '').trim()) {
       console.log(

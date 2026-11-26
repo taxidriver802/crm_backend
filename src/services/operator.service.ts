@@ -157,6 +157,14 @@ export async function listCompanies(options: ListOptions = {}): Promise<Operator
   );
 }
 
+function isReadyToDelete(row: { status: string; next_status_at: Date | string | null }) {
+  return (
+    row.status === 'pending_deletion' &&
+    row.next_status_at != null &&
+    new Date(row.next_status_at).getTime() <= Date.now()
+  );
+}
+
 export async function getCompany(companyId: string) {
   const { rows } = await pool.query(
     `SELECT ${ACCOUNT_COLUMNS}, c.operator_notes, c.held_from_status, ${SEATS_AND_OWNER}
@@ -201,6 +209,8 @@ export async function getCompany(companyId: string) {
     // What the operator can do from here (src/lib/lifecycle.ts).
     moves: isCompanyStatus(row.status) ? allowedMoves(row.status) : [],
     can_hold: HOLDABLE.includes(row.status),
+    // Its pending_deletion date has passed: only the operator deletes it.
+    ready_to_delete: isReadyToDelete(row),
   };
 }
 
@@ -233,6 +243,20 @@ export async function overview() {
 
   const exportRequests = await listExportRequests();
 
+  const { rows: readyToDelete } = await pool.query(
+    `SELECT c.id, c.name, c.slug, c.status, c.next_status_at
+     FROM companies c
+     WHERE c.status = 'pending_deletion' AND c.next_status_at <= now()
+     ORDER BY c.next_status_at`
+  );
+  const { rows: recentlyDeleted } = await pool.query(
+    `SELECT company_id, name, slug, deleted_at, slug_reserved_until
+     FROM company_tombstones
+     WHERE deleted_at > now() - interval '30 days'
+     ORDER BY deleted_at DESC
+     LIMIT 10`
+  );
+
   return {
     totals,
     export_requests: exportRequests,
@@ -245,7 +269,11 @@ export async function overview() {
       const vb = b.owner?.email_verified ? 0 : 1;
       return va - vb || +new Date(a.created_at) - +new Date(b.created_at);
     }),
-    timers_7d: timers,
+    // Due ones are listed as ready to delete instead.
+    timers_7d: timers.filter((c) => !isReadyToDelete(c)),
+    ready_to_delete: readyToDelete,
+    recently_deleted: recentlyDeleted,
+    lifecycle: { dry_run: (process.env.LIFECYCLE_DRY_RUN ?? '').trim().toLowerCase() === 'true' },
   };
 }
 

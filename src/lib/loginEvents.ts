@@ -32,9 +32,12 @@ export type LoginFailReason =
   | 'rate_limited_account'
   | 'rate_limited_ip'
   /** An operator request without a valid Cloudflare Access assertion. */
-  | 'access_denied';
+  | 'access_denied'
+  /** The operator's password was right but the authenticator code wasn't (0009). */
+  | 'bad_totp';
 
-export type LoginMethod = 'password' | 'register' | 'invite' | 'reset';
+/** totp: the operator signed in with a password and an authenticator code (0009). */
+export type LoginMethod = 'password' | 'register' | 'invite' | 'reset' | 'totp';
 
 export type LoginEvent = {
   event: LoginEventName;
