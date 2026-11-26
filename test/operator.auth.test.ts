@@ -333,6 +333,7 @@ describe('production boot rules for the operator', () => {
     FRONTEND_URL: 'https://crm.example.com',
     JWT_SECRET: 'a'.repeat(64),
     TRUST_PROXY: 'loopback',
+    REGISTRATION_MODE: 'closed',
   };
 
   it('is fine with the operator surface off', () => {

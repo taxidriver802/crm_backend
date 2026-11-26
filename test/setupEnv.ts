@@ -32,3 +32,7 @@ dotenv.config({
 process.env.UPLOADS_DIR = path.join(os.tmpdir(), `joist-jest-uploads-${process.pid}`);
 // Company export archives, likewise kept out of the working directory.
 process.env.EXPORTS_DIR = path.join(os.tmpdir(), `joist-jest-exports-${process.pid}`);
+// The registration gate (PLAN_operator.md §7) is tested on its own, in
+// test/registration.test.ts. Every other test registers to get a working
+// company, so they keep registration open.
+process.env.REGISTRATION_MODE = 'open';

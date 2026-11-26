@@ -13,7 +13,13 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
   changePasswordSchema,
+  verifyEmailSchema,
+  resendVerifySchema,
 } from '../validators/auth.schemas';
+import { inviteCodeMatches, registrationMode } from '../lib/registration';
+import { lookupVerification } from '../lib/emailVerifications';
+import { afterVerifiedPending, sendVerifyLink } from '../services/signup.service';
+import { approveCompany } from '../services/companyAccount.service';
 
 import { authCookieOptions } from '../lib/authCookies';
 import {
@@ -111,16 +117,37 @@ async function recordAccountEventSafely(
   }
 }
 
+// GET /auth/registration
+// What the sign-up page should show: the mode, and whether this host can
+// send the email that confirms an owner.
+authRouter.get('/registration', (_req, res) => {
+  const mode = registrationMode();
+  res.json({ ok: true, mode, mail: isMailConfigured() });
+});
+
 // POST /auth/register
+// PLAN_operator.md §7: the company starts pending and the owner unconfirmed,
+// with no session. The owner confirms their email, then the company waits
+// for the operator (or, with a sign-up code, starts its trial). Only
+// REGISTRATION_MODE=open (dev and tests) still signs the owner straight in.
 authRouter.post(
   '/register',
   limitByIp(LIMITS.register),
   asyncHandler(async (req, res) => {
+    const mode = registrationMode();
+    if (mode === 'closed') {
+      return res.status(403).json({
+        ok: false,
+        code: 'registration_closed',
+        error: 'Joist isn’t taking new sign-ups right now.',
+      });
+    }
+
     const parsed = registerSchema.safeParse(req.body);
     if (!parsed.success)
       return res.status(400).json({ ok: false, error: parsed.error.flatten() });
 
-    const { first_name, last_name, email, password, company_name, slug, mark_id, palette_id } =
+    const { first_name, last_name, email, password, company_name, slug, mark_id, palette_id, invite_code } =
       parsed.data;
     const normalEmail = email.toLocaleLowerCase();
     const desiredSlug = slug ?? slugifyCompanyName(company_name);
@@ -131,6 +158,21 @@ authRouter.post(
         error: 'company_name must include letters or numbers',
       });
     }
+
+    // A code that is given but wrong is an error, so a typo doesn't quietly
+    // put the company in the queue.
+    let via: 'approval' | 'invite_code' | 'open' = mode === 'open' ? 'open' : 'approval';
+    if (mode === 'invite_code' && invite_code) {
+      if (!inviteCodeMatches(invite_code)) {
+        return res.status(400).json({
+          ok: false,
+          code: 'invite_code_invalid',
+          error: 'That sign-up code isn’t right. Check it, or leave it blank to wait for approval.',
+        });
+      }
+      via = 'invite_code';
+    }
+    const open = via === 'open';
 
     const password_hash = await bcrypt.hash(password, 10);
     const client = await pool.connect();
@@ -145,6 +187,12 @@ authRouter.post(
         mark_id,
         palette_id,
       });
+      await client.query(
+        `UPDATE companies
+         SET status = $2, registered_via = $3, status_changed_at = now(), next_status_at = NULL
+         WHERE id = $1`,
+        [company.id, open ? 'active' : 'pending', via]
+      );
 
       const result = await client.query(
         `
@@ -152,36 +200,53 @@ authRouter.post(
           first_name, last_name, email, password_hash, role, status, company_id,
           password_set_at, last_login_at
         )
-        VALUES ($1, $2, $3, $4, 'owner', 'active', $5, now(), now())
+        VALUES ($1, $2, $3, $4, 'owner', 'active', $5, now(), CASE WHEN $6 THEN now() END)
         RETURNING id, email, first_name, last_name, role, status, company_id
         `,
-        [first_name, last_name, normalEmail, password_hash, company.id]
+        [first_name, last_name, normalEmail, password_hash, company.id, open]
+      );
+      const user = result.rows[0];
+
+      await client.query(
+        `INSERT INTO operator_events (operator_id, company_id, company_slug, event, from_status, to_status, detail)
+         VALUES (NULL, $1, $2, 'registered', NULL, $3, $4)`,
+        [company.id, company.slug, open ? 'active' : 'pending', JSON.stringify({ via })]
       );
 
-      const user = result.rows[0];
-      // In the transaction: if the session can't be written, no company is
-      // left behind without a way in.
-      const session = await createSession(user, client);
+      if (open) {
+        // In the transaction: if the session can't be written, no company is
+        // left behind without a way in.
+        const session = await createSession(user, client);
+        await client.query('COMMIT');
+        setSessionCookie(res, session.token);
+        recordLoginEvent(req, {
+          event: 'login_success',
+          method: 'register',
+          companyId: company.id,
+          userId: user.id,
+          companySlug: company.slug,
+          email: normalEmail,
+          sessionId: session.sid,
+        });
+        return res.status(201).json({
+          ok: true,
+          user: publicUser(user),
+          company: publicCompany(company),
+        });
+      }
 
       await client.query('COMMIT');
-      setSessionCookie(res, session.token);
-      recordLoginEvent(req, {
-        event: 'login_success',
-        method: 'register',
-        companyId: company.id,
-        userId: user.id,
-        companySlug: company.slug,
-        email: normalEmail,
-        sessionId: session.sid,
-      });
-
-      res.status(201).json({
+      const emailed = await sendVerifyLink(user);
+      return res.status(201).json({
         ok: true,
-        user: publicUser(user),
+        next: 'verify_email',
+        email: normalEmail,
         company: publicCompany(company),
+        email_sent: emailed,
+        mail: isMailConfigured(),
       });
     } catch (error) {
-      await client.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
       if (
         isPgUniqueViolation(error) ||
         (error as { status?: number }).status === 409
@@ -195,6 +260,109 @@ authRouter.post(
     } finally {
       client.release();
     }
+  })
+);
+
+// POST /auth/verify-email  { token }
+// Confirms a new owner's email. A pending company then waits for review and
+// the operator is pinged; one that signed up with a code starts its trial.
+authRouter.post(
+  '/verify-email',
+  limitByIp(LIMITS.verifyEmail),
+  asyncHandler(async (req, res) => {
+    const parsed = verifyEmailSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ ok: false, status: 'invalid' });
+
+    const client = await pool.connect();
+    let found;
+    try {
+      await client.query('BEGIN');
+      found = await lookupVerification(parsed.data.token, client, { lock: true });
+      if (found.status === 'valid' && found.verification) {
+        const v = found.verification;
+        await client.query(`UPDATE email_verifications SET used_at = now() WHERE id = $1`, [v.id]);
+        await client.query(
+          `UPDATE users SET email_verified_at = COALESCE(email_verified_at, now()), updated_at = now()
+           WHERE id = $1`,
+          [v.user_id]
+        );
+        await client.query(
+          `INSERT INTO operator_events (operator_id, company_id, company_slug, event, from_status, to_status, detail)
+           VALUES (NULL, $1, $2, 'email_verified', NULL, NULL, '{}')`,
+          [v.company_id, v.company_slug]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    const v = found.verification;
+    // A second click on a used link: the email is confirmed either way.
+    if (found.status === 'used' && v?.email_verified_at) {
+      return res.json({
+        ok: true,
+        already: true,
+        company: { slug: v.company_slug, status: v.company_status },
+      });
+    }
+    if (found.status !== 'valid' || !v) {
+      return res.status(400).json({ ok: false, status: found.status });
+    }
+
+    let status = v.company_status;
+    if (status === 'pending' && v.registered_via === 'invite_code') {
+      // The code skipped the queue; the confirmed email was all it waited for.
+      await approveCompany(v.company_id, { operatorId: null });
+      status = 'trial';
+    } else if (status === 'pending') {
+      void afterVerifiedPending(v.company_id).catch((error) => {
+        console.error('[auth/verify-email] follow-up failed:', error);
+      });
+    }
+
+    res.json({ ok: true, company: { slug: v.company_slug, status } });
+  })
+);
+
+// POST /auth/verify-email/resend  { email, company_slug }
+// Answers the same whether or not there is an unconfirmed owner, and does
+// its work after answering, like Forgot.
+authRouter.post(
+  '/verify-email/resend',
+  asyncHandler(async (req, res) => {
+    const parsed = resendVerifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ ok: false, error: parsed.error.flatten() });
+    }
+    const { company_slug, email } = parsed.data;
+
+    const byIp = consume(LIMITS.verifyResendIp, clientIp(req));
+    if (!byIp.allowed) return tooManyRequests(res, byIp, LIMITS.verifyResendIp);
+    const byAccount = consume(LIMITS.verifyResendAccount, accountKey(company_slug, email));
+    if (!byAccount.allowed) {
+      return tooManyRequests(res, byAccount, LIMITS.verifyResendAccount);
+    }
+
+    res.json({ ok: true, mail: isMailConfigured() });
+
+    void (async () => {
+      const { rows } = await pool.query(
+        `SELECT u.id, u.email, u.first_name, u.company_id
+         FROM users u
+         JOIN companies c ON c.id = u.company_id
+         WHERE c.slug = $1 AND LOWER(u.email) = LOWER($2)
+           AND u.role = 'owner' AND u.status = 'active' AND u.email_verified_at IS NULL
+         LIMIT 1`,
+        [company_slug, email]
+      );
+      if (rows[0]) await sendVerifyLink(rows[0]);
+    })().catch((error) => {
+      console.error('[auth/verify-email/resend] failed:', error);
+    });
   })
 );
 
@@ -285,7 +453,8 @@ authRouter.post(
     // an unknown email. Only an active account may sign in (checked below).
     // Emails are unique per company (idx_users_company_lower_email).
     const result = await pool.query(
-      `SELECT id, email, password_hash, first_name, last_name, role, status, company_id
+      `SELECT id, email, password_hash, first_name, last_name, role, status, company_id,
+              email_verified_at
        FROM users
        WHERE company_id = $1 AND LOWER(email) = LOWER($2)
        LIMIT 1`,
@@ -322,7 +491,15 @@ authRouter.post(
     clear(LIMITS.loginAccount, key);
 
     // The right password, for a company that can't be used now: say why.
-    const lockout = await accountLockout(user.company_id);
+    let lockout = await accountLockout(user.company_id);
+    // A new owner who hasn't confirmed their email: that comes first, and
+    // the sign-in page offers to send the link again.
+    if (lockout?.code === 'company_pending' && !user.email_verified_at) {
+      lockout = {
+        code: 'email_unverified',
+        error: 'Confirm your email first. Use the link we sent when you signed up.',
+      };
+    }
     if (lockout) {
       recordLoginEvent(req, { ...attempt, ...found, event: 'login_failed', reason: 'access_denied' });
       return res.status(403).json({ ok: false, ...lockout });
@@ -423,6 +600,19 @@ authRouter.post(
 
     const password_hash = await bcrypt.hash(password, 10);
 
+    // Opening a link that was emailed proves the address. A link copied by
+    // hand (mail off, or "Copy invite link") proves nothing, so that person
+    // stays unconfirmed (PLAN_operator.md §7).
+    const { rows: inviteRows } = await pool.query(
+      `SELECT (detail->>'emailed')::boolean AS emailed
+       FROM account_events
+       WHERE user_id = $1 AND event IN ('invite_sent', 'invite_resent')
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [user.id]
+    );
+    const inviteEmailed = inviteRows[0]?.emailed === true;
+
     const authUser = {
       id: user.id,
       email: user.email,
@@ -447,11 +637,12 @@ authRouter.post(
           invite_token_hash = NULL,
           invite_expires_at = NULL,
           password_set_at = CURRENT_TIMESTAMP,
+          email_verified_at = CASE WHEN $4 THEN COALESCE(email_verified_at, CURRENT_TIMESTAMP) ELSE email_verified_at END,
           updated_at = CURRENT_TIMESTAMP,
           last_login_at = CURRENT_TIMESTAMP
         WHERE id = $2 AND status = 'invited' AND invite_token_hash = $3
         `,
-        [password_hash, user.id, inviteTokenHash]
+        [password_hash, user.id, inviteTokenHash, inviteEmailed]
       );
       if (accepted.rowCount === 0) {
         // Someone used this link a moment ago.

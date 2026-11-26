@@ -15,6 +15,21 @@ export const registerSchema = z.object({
   }, z.string().max(60).regex(COMPANY_SLUG_RE).optional()),
   mark_id: z.enum(COMPANY_MARK_IDS).optional(),
   palette_id: z.enum(COMPANY_PALETTE_IDS).optional(),
+  // REGISTRATION_MODE=invite_code: a code that skips the approval queue.
+  invite_code: z.string().trim().max(100).optional(),
+});
+
+export const verifyEmailSchema = z.object({
+  token: z.string().min(1).max(200),
+});
+
+export const resendVerifySchema = z.object({
+  email: z.string().email(),
+  company_slug: z.preprocess((value) => {
+    if (value == null) return value;
+    if (typeof value !== "string") return value;
+    return value.trim().toLowerCase();
+  }, z.string().min(1).max(60).regex(COMPANY_SLUG_RE)),
 });
 
 export const loginSchema = z.object({

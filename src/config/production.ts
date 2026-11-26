@@ -8,6 +8,8 @@
  * company on the host. See docs/guide/hosting.md.
  */
 
+import { registrationConfigProblems } from '../lib/registration';
+
 type Env = Record<string, string | undefined>;
 
 const MIN_JWT_SECRET_BYTES = 32;
@@ -93,6 +95,13 @@ export function productionConfigProblems(env: Env = process.env): string[] {
       );
     }
   }
+
+  // The registration gate (PLAN_operator.md §7) needs mail to confirm each
+  // new owner's email, and never runs open.
+  const mailConfigured = ['SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'MAIL_FROM'].every(
+    (key) => (env[key] ?? '').trim() !== ''
+  );
+  problems.push(...registrationConfigProblems(env, mailConfigured));
 
   if ((env.TRUST_PROXY ?? '').trim().toLowerCase() === 'true') {
     problems.push(

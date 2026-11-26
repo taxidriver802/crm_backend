@@ -220,6 +220,12 @@ const EXEMPT: Record<string, string> = {
   'POST /auth/accept-invite':
     'addressed by an unguessable invite token, not an id',
   'POST /auth/logout': 'ends the caller’s own session and clears its cookie',
+  'GET /auth/registration':
+    'says only the sign-up mode and whether mail is on; nothing per company (registration tests)',
+  'POST /auth/verify-email':
+    'addressed by an unguessable verify token, not an id (registration tests)',
+  'POST /auth/verify-email/resend':
+    'takes a company slug and email, answers the same for any account, and mails only that unconfirmed owner (registration tests)',
   'POST /auth/forgot-password':
     'takes a company slug and email, answers the same for any account, and mails only that account (accounts tests)',
   'GET /auth/reset-password/validate':

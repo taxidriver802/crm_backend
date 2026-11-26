@@ -25,6 +25,11 @@ const GOOD_PRODUCTION_ENV = {
   JWT_SECRET: 'a'.repeat(64),
   DATABASE_URL: 'postgres://joist@localhost/joist',
   TRUST_PROXY: 'loopback',
+  // REGISTRATION_MODE defaults to approval, which needs mail.
+  SMTP_HOST: 'smtp.example.com',
+  SMTP_USER: 'joist',
+  SMTP_PASS: 'secret',
+  MAIL_FROM: 'Joist <hello@joist.example.com>',
 };
 
 /** Run `fn` with some process.env values replaced, then put them back. */
@@ -67,7 +72,8 @@ describe('Production boot check', () => {
       TRUST_PROXY: 'true',
     });
     const text = problems.join('\n');
-    expect(problems).toHaveLength(7);
+    expect(problems).toHaveLength(8);
+    expect(text).toContain('REGISTRATION_MODE=approval');
     expect(text).toContain('APP_BASE_URL');
     expect(text).toContain('FRONTEND_URL');
     expect(text).toContain('JWT_SECRET');

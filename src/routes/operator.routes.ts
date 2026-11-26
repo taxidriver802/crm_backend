@@ -198,23 +198,39 @@ function change(run: (req: any) => Promise<unknown>) {
 
 const body = (req: any) => (req.body && typeof req.body === 'object' ? req.body : {});
 
-// POST /operator/companies/:id/approve  { trial_days? }
+// POST /operator/companies/:id/approve  { trial_days?, confirm_unverified? }
+// An owner who hasn't confirmed their email needs confirm_unverified: true.
 operatorRouter.post(
   '/companies/:id/approve',
-  change((req) => account.approveCompany(companyId(req), actor(req), body(req).trial_days))
+  change((req) =>
+    account.approveCompany(companyId(req), actor(req), body(req).trial_days, {
+      confirmUnverified: body(req).confirm_unverified === true,
+    })
+  )
 );
 
-// POST /operator/companies/:id/deny  { reason }
+// POST /operator/companies/:id/deny  { reason, notify? }
+// notify: true emails the owner that the company wasn't approved.
 operatorRouter.post(
   '/companies/:id/deny',
-  change((req) => account.denyCompany(companyId(req), actor(req), body(req).reason))
+  change((req) =>
+    account.denyCompany(companyId(req), actor(req), body(req).reason, body(req).notify === true)
+  )
 );
 
-// POST /operator/companies/:id/status  { to, reason? }
+// POST /operator/companies/:id/status  { to, reason?, confirm_unverified? }
 operatorRouter.post(
   '/companies/:id/status',
   change((req) =>
-    account.setCompanyStatus(companyId(req), { to: body(req).to, reason: body(req).reason }, actor(req))
+    account.setCompanyStatus(
+      companyId(req),
+      {
+        to: body(req).to,
+        reason: body(req).reason,
+        confirmUnverified: body(req).confirm_unverified === true,
+      },
+      actor(req)
+    )
   )
 );
 

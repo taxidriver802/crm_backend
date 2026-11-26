@@ -27,6 +27,11 @@ export const LIMITS = {
   loginAccount: { name: 'login-account', max: 10, windowMs: 15 * MINUTE },
   loginIp: { name: 'login-ip', max: 50, windowMs: 15 * MINUTE },
   register: { name: 'register-ip', max: 10, windowMs: 60 * MINUTE },
+  // Confirming a sign-up email, and asking for the link again (per address
+  // and per account, like Forgot).
+  verifyEmail: { name: 'verify-email-ip', max: 30, windowMs: 15 * MINUTE },
+  verifyResendIp: { name: 'verify-resend-ip', max: 10, windowMs: 60 * MINUTE },
+  verifyResendAccount: { name: 'verify-resend-account', max: 3, windowMs: 60 * MINUTE },
   acceptInvite: { name: 'accept-invite-ip', max: 20, windowMs: 15 * MINUTE },
   inviteValidate: { name: 'invite-validate-ip', max: 60, windowMs: 15 * MINUTE },
   publicRead: { name: 'public-read-ip', max: 300, windowMs: 15 * MINUTE },

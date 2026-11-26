@@ -22,7 +22,7 @@ export function personName(row: {
   );
 }
 
-async function companyBrand(companyId: string, appBaseUrl: string) {
+export async function companyBrand(companyId: string, appBaseUrl: string) {
   const branding = await loadPublicBrandingByCompanyId(companyId);
   return {
     companyName: branding?.name || 'CRM',

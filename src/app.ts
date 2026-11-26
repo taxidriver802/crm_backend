@@ -52,6 +52,8 @@ import {
   sweepExports,
 } from './services/companyExport.service';
 import { onExportApproved } from './lib/exportQueue';
+import { onCompanyDecided } from './lib/companyNotices';
+import { onCompanyDecision } from './services/signup.service';
 import { asyncHandler } from './utils/asyncHandler';
 import * as filesService from './services/files.service';
 import { requestScope } from './lib/tenant';
@@ -136,6 +138,8 @@ app.use('/product-metrics', productMetricsRouter);
 app.use('/company-export', companyExportRouter);
 // The operator approves a final export; the builder runs here.
 onExportApproved(scheduleExportBuilds);
+// The operator approves or denies a company; the owner's email goes from here.
+onCompanyDecided(onCompanyDecision);
 // The operator surface: off without OPERATOR_JWT_SECRET, and behind
 // Cloudflare Access in production (src/middleware/operator.ts).
 app.use('/operator', operatorRouter);

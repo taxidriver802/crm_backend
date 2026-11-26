@@ -1,5 +1,6 @@
 import { pool } from '../db';
 import { exportApproved } from '../lib/exportQueue';
+import { companyDecided } from '../lib/companyNotices';
 import {
   allowedMoves,
   canMove,
@@ -15,8 +16,8 @@ import {
  * change locks the company row, checks the move against src/lib/lifecycle.ts,
  * sets its timer, and writes an operator_events row, in one transaction.
  *
- * Reads and writes only the companies table and operator_events: no
- * company's work (the operator's "counts, never content" rule; see
+ * Reads and writes only the companies table and operator_events, and reads
+ * whether the owner confirmed their email: no company's work (the operator's "counts, never content" rule; see
  * test/operator.companies.test.ts).
  */
 
@@ -111,6 +112,10 @@ export type StatusChange = {
   /** suspended only: days before it moves on (default from lifecycle.ts). */
   days?: number;
   event?: string;
+  /** pending or denied → trial: the operator saw that the owner's email isn't confirmed. */
+  confirmUnverified?: boolean;
+  /** → denied: email the owner that the company wasn't approved. */
+  notify?: boolean;
 };
 
 /**
@@ -121,7 +126,8 @@ export async function setCompanyStatus(companyId: string, change: StatusChange, 
   if (!isCompanyStatus(change.to) || change.to === 'on_hold') {
     throw new AccountChangeError('Unknown status', 400);
   }
-  return inTransaction(async (db) => {
+  let decision: 'approved' | 'denied' | null = null;
+  const result = await inTransaction(async (db) => {
     const company = await lockCompany(db, companyId);
     if (company.status === change.to) {
       throw new AccountChangeError(`The company is already ${change.to}.`);
@@ -133,6 +139,20 @@ export async function setCompanyStatus(companyId: string, change: StatusChange, 
           ? `A ${company.status} company can move to ${allowed.join(', ')}, not ${change.to}.`
           : `A ${company.status} company can't be moved this way.`
       );
+    }
+    const approving = change.to === 'trial' && (company.status === 'pending' || company.status === 'denied');
+    if (approving && change.confirmUnverified !== true) {
+      const { rows: owners } = await db.query(
+        `SELECT email_verified_at FROM users
+         WHERE company_id = $1 AND role = 'owner'
+         ORDER BY created_at ASC LIMIT 1`,
+        [company.id]
+      );
+      if (owners[0] && !owners[0].email_verified_at) {
+        throw new AccountChangeError(
+          "The owner hasn't confirmed their email address. Confirm you want to approve anyway."
+        );
+      }
     }
     const takesAccess = ['denied', 'suspended', 'pending_deletion', 'past_due'].includes(change.to);
     const reason = cleanReason(change.reason, takesAccess);
@@ -176,18 +196,35 @@ export async function setCompanyStatus(companyId: string, change: StatusChange, 
     await recordEvent(db, company, actor, event, company.status, change.to, {
       ...(reason ? { reason } : {}),
       ...(next ? { next_status_at: next.toISOString() } : {}),
+      ...(approving && change.confirmUnverified ? { owner_unverified: true } : {}),
+      ...(change.to === 'denied' && company.status === 'pending' ? { notified: change.notify === true } : {}),
     });
+    if (approving) decision = 'approved';
+    else if (change.to === 'denied' && company.status === 'pending') decision = 'denied';
     return rows[0];
   });
+  // After the commit: the welcome or denial email.
+  if (decision) companyDecided({ companyId: result.id, decision, notify: change.notify === true });
+  return result;
 }
 
 /** Approve a pending company: it starts its trial. */
-export function approveCompany(companyId: string, actor: Actor, trialDays?: number) {
-  return setCompanyStatus(companyId, { to: 'trial', trialDays }, actor);
+export function approveCompany(
+  companyId: string,
+  actor: Actor,
+  trialDays?: number,
+  options: { confirmUnverified?: boolean } = {}
+) {
+  return setCompanyStatus(
+    companyId,
+    { to: 'trial', trialDays, confirmUnverified: options.confirmUnverified },
+    actor
+  );
 }
 
-export function denyCompany(companyId: string, actor: Actor, reason: unknown) {
-  return setCompanyStatus(companyId, { to: 'denied', reason }, actor);
+/** Deny a pending company. `notify` emails the owner (never the reason). */
+export function denyCompany(companyId: string, actor: Actor, reason: unknown, notify = false) {
+  return setCompanyStatus(companyId, { to: 'denied', reason, notify }, actor);
 }
 
 /** Back from pending_deletion: to suspended with time to pay (default), or straight to active. */

@@ -448,7 +448,8 @@ usersRouter.get(
         password_set_at,
         last_login_at,
         invite_revoked_at,
-        invite_superseded_at
+        invite_superseded_at,
+        email_verified_at
       FROM users
       WHERE company_id = $1
       ORDER BY created_at DESC, id DESC
