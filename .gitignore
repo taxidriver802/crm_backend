@@ -28,4 +28,6 @@ cookies.txt
 # every company's data.
 backups/
 restore-check/
+# Company export archives (EXPORTS_DIR): one company's whole workspace each.
+exports/
 *.dump

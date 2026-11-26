@@ -30,3 +30,5 @@ dotenv.config({
 // test run can never touch the uploads a running app serves, whatever
 // .env.test says.
 process.env.UPLOADS_DIR = path.join(os.tmpdir(), `joist-jest-uploads-${process.pid}`);
+// Company export archives, likewise kept out of the working directory.
+process.env.EXPORTS_DIR = path.join(os.tmpdir(), `joist-jest-exports-${process.pid}`);

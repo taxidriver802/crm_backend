@@ -201,6 +201,20 @@ const EXEMPT: Record<string, string> = {
     'changes one company’s account fields, never its work; company tokens refused (operator.lifecycle tests)',
   'PATCH /operator/companies/:id':
     'changes one company’s account fields, never its work; company tokens refused (operator.lifecycle tests)',
+  'GET /company-export':
+    'the caller’s own company’s exports only, owner only (companyExport tests)',
+  'POST /company-export':
+    'exports the caller’s own company; no id to cross (companyExport tests)',
+  'POST /company-export/final':
+    'asks for the caller’s own company’s final export; no id to cross (companyExport tests)',
+  'GET /company-export/:id/download':
+    'looked up by id AND the caller’s company; another company’s export is 404 (companyExport tests)',
+  'GET /operator/exports':
+    'the operator’s queue of export requests, records only; company tokens refused (companyExport tests)',
+  'POST /operator/exports/:id/approve':
+    'the operator approves a request; never the archive; company tokens refused (companyExport tests)',
+  'POST /operator/exports/:id/deny':
+    'the operator denies a request; company tokens refused (companyExport tests)',
   'POST /auth/login':
     'signs in by email and password; the company comes from the account',
   'POST /auth/accept-invite':

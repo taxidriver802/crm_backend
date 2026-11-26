@@ -254,3 +254,40 @@ operatorRouter.patch(
   '/companies/:id',
   change((req) => account.editCompany(companyId(req), actor(req), body(req)))
 );
+
+// GET /operator/exports — final export requests waiting for you
+operatorRouter.get(
+  '/exports',
+  asyncHandler(async (_req, res) => {
+    res.json({ ok: true, requests: await operatorService.listExportRequests() });
+  })
+);
+
+function exportChange(run: (id: string, req: any) => Promise<{ company_id: string }>) {
+  return asyncHandler(async (req, res) => {
+    const id = String(req.params.id);
+    if (!UUID.test(id)) return res.status(404).json({ ok: false, error: 'Export request not found' });
+    let done;
+    try {
+      done = await run(id, req);
+    } catch (error) {
+      if (error instanceof account.AccountChangeError) {
+        return res.status(error.status).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+    res.json({ ok: true, company: await operatorService.getCompany(done.company_id) });
+  });
+}
+
+// POST /operator/exports/:id/approve  { reason? }
+operatorRouter.post(
+  '/exports/:id/approve',
+  exportChange((id, req) => account.approveExport(id, actor(req), body(req).reason))
+);
+
+// POST /operator/exports/:id/deny  { reason }
+operatorRouter.post(
+  '/exports/:id/deny',
+  exportChange((id, req) => account.denyExport(id, actor(req), body(req).reason))
+);

@@ -27,7 +27,8 @@ const READS = new Set(['GET', 'HEAD', 'OPTIONS']);
  * - full access (trial, active, past_due): everything;
  * - read-only (suspended): reading, plus signing out, the person's own
  *   settings and marking notifications read;
- * - none (pending, denied, pending_deletion, on_hold): signing out only.
+ * - none (pending, denied, pending_deletion, on_hold): signing out only,
+ *   and for a closing company, its owner's final export.
  * Sessions are not ended: when the account is restored, people are back in.
  */
 function accountRefusal(req: Request, status: string, nextStatusAt: Date | null) {
@@ -35,8 +36,13 @@ function accountRefusal(req: Request, status: string, nextStatusAt: Date | null)
   const signingOut = mount === '/auth' && req.path === '/logout';
   const access = staffAccess(status);
   if (access === 'full' || signingOut) return null;
+  // The owner's export: read-only companies export directly, and a closing
+  // company's owner asks for a final one (src/routes/companyExport.routes.ts).
+  const exporting = mount === '/company-export' && (access === 'read_only' || status === 'pending_deletion');
+  if (exporting) return null;
   if (access === 'none') {
-    return { code: `company_${status}`, error: staffRefusal(status, nextStatusAt) };
+    // The role lets the closing page offer the owner a final export.
+    return { code: `company_${status}`, error: staffRefusal(status, nextStatusAt), role: req.user?.role };
   }
   if (READS.has(req.method) || ['/auth', '/me', '/notifications'].includes(mount)) return null;
   // Money still goes where it needs to (Q7): a payment a client made can be

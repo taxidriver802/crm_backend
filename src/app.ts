@@ -45,6 +45,13 @@ import { productMetricsRouter } from './routes/productMetrics.routes';
 import { operatorRouter } from './routes/operator.routes';
 import { requireAuth } from './middleware/auth';
 import { clientLinkGate } from './middleware/clientLinkGate';
+import { companyExportRouter } from './routes/companyExport.routes';
+import {
+  resumeInterruptedBuilds,
+  scheduleExportBuilds,
+  sweepExports,
+} from './services/companyExport.service';
+import { onExportApproved } from './lib/exportQueue';
 import { asyncHandler } from './utils/asyncHandler';
 import * as filesService from './services/files.service';
 import { requestScope } from './lib/tenant';
@@ -126,6 +133,9 @@ app.use('/public/portal', limitPublic, clientLinkGate('portal'), publicPortalRou
 app.use('/intake', intakeRouter);
 app.use('/public/intake', limitPublic, clientLinkGate('intake'), publicIntakeRouter);
 app.use('/product-metrics', productMetricsRouter);
+app.use('/company-export', companyExportRouter);
+// The operator approves a final export; the builder runs here.
+onExportApproved(scheduleExportBuilds);
 // The operator surface: off without OPERATOR_JWT_SECRET, and behind
 // Cloudflare Access in production (src/middleware/operator.ts).
 app.use('/operator', operatorRouter);
@@ -176,6 +186,13 @@ if (process.env.NODE_ENV !== 'test') {
     },
     1000 * 60 * 15
   );
+
+  // Company exports: builds cut off by a restart start again, and
+  // archives past their 72 hours are removed, hourly.
+  resumeInterruptedBuilds().catch(console.error);
+  setInterval(() => {
+    sweepExports().catch(console.error);
+  }, 1000 * 60 * 60).unref();
 
   // Login history retention: a minute after boot, then daily.
   const pruneLoginEvents = () => {

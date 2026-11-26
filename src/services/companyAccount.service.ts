@@ -1,4 +1,5 @@
 import { pool } from '../db';
+import { exportApproved } from '../lib/exportQueue';
 import {
   allowedMoves,
   canMove,
@@ -363,5 +364,59 @@ export async function editCompany(companyId: string, actor: Actor, edit: Account
     await db.query(`UPDATE companies SET ${sets.join(', ')}, updated_at = now() WHERE id = $1`, params);
     await recordEvent(db, before, actor, 'edited', null, null, { changed });
     return { id: companyId, changed: Object.keys(changed) };
+  });
+}
+
+// ─── Final exports (PLAN_operator.md §3) ───────────────────────────────────
+// The operator approves or denies a closing company's request. The archive
+// is built by the system for the owner; nothing here reads it.
+
+async function lockExportRequest(db: Queryable, exportId: string) {
+  const { rows } = await db.query(
+    `SELECT x.id, x.status, x.kind, c.id AS company_id, c.slug
+     FROM company_exports x JOIN companies c ON c.id = x.company_id
+     WHERE x.id = $1 FOR UPDATE OF x`,
+    [exportId]
+  );
+  const row = rows[0];
+  if (!row) throw new AccountChangeError('Export request not found', 404);
+  if (row.kind !== 'final' || row.status !== 'requested') {
+    throw new AccountChangeError('This export request has already been handled.');
+  }
+  return row;
+}
+
+export async function approveExport(exportId: string, actor: Actor, reason: unknown) {
+  const text = cleanReason(reason, false);
+  const result = await inTransaction(async (db) => {
+    const row = await lockExportRequest(db, exportId);
+    await db.query(
+      `UPDATE company_exports SET status = 'approved', approved_by = $2, approved_at = now(), updated_at = now()
+       WHERE id = $1`,
+      [row.id, actor.operatorId]
+    );
+    await recordEvent(db, { id: row.company_id, slug: row.slug }, actor, 'export_approved', null, null, {
+      export_id: row.id,
+      ...(text ? { reason: text } : {}),
+    });
+    return { id: row.id, company_id: row.company_id };
+  });
+  exportApproved();
+  return result;
+}
+
+export async function denyExport(exportId: string, actor: Actor, reason: unknown) {
+  const text = cleanReason(reason, true);
+  return inTransaction(async (db) => {
+    const row = await lockExportRequest(db, exportId);
+    await db.query(
+      `UPDATE company_exports SET status = 'denied', deny_reason = $2, updated_at = now() WHERE id = $1`,
+      [row.id, text]
+    );
+    await recordEvent(db, { id: row.company_id, slug: row.slug }, actor, 'export_denied', null, null, {
+      export_id: row.id,
+      reason: text,
+    });
+    return { id: row.id, company_id: row.company_id };
   });
 }

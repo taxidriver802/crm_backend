@@ -197,6 +197,7 @@ export async function getCompany(companyId: string) {
     held_from_status: row.held_from_status,
     counts: counts.rows[0],
     events: events.rows,
+    exports: await companyExports(companyId),
     // What the operator can do from here (src/lib/lifecycle.ts).
     moves: isCompanyStatus(row.status) ? allowedMoves(row.status) : [],
     can_hold: HOLDABLE.includes(row.status),
@@ -230,8 +231,11 @@ export async function overview() {
      ORDER BY c.next_status_at`
   );
 
+  const exportRequests = await listExportRequests();
+
   return {
     totals,
+    export_requests: exportRequests,
     companies: recent.rows[0].companies,
     signups_7d: recent.rows[0].signups_7d,
     active_people: people.rows[0].active_people,
@@ -243,4 +247,43 @@ export async function overview() {
     }),
     timers_7d: timers,
   };
+}
+
+// ─── Exports: their records, never their contents ──────────────────────────
+
+const EXPORT_FIELDS = `x.id, x.kind, x.status, x.created_at, x.approved_at, x.built_at,
+  x.expires_at, x.byte_size, x.downloaded_at, x.download_count, x.deny_reason`;
+
+/** Final exports waiting for the operator, oldest first. */
+export async function listExportRequests() {
+  const { rows } = await pool.query(
+    `SELECT ${EXPORT_FIELDS}, c.id AS company_id, c.name AS company_name, c.slug AS company_slug,
+            u.first_name, u.last_name, u.email,
+            EXISTS (SELECT 1 FROM company_exports p
+                    WHERE p.company_id = x.company_id AND p.kind = 'final'
+                      AND p.status IN ('built', 'downloaded', 'expired')) AS final_sent_before
+     FROM company_exports x
+     JOIN companies c ON c.id = x.company_id
+     LEFT JOIN users u ON u.id = x.requested_by
+     WHERE x.kind = 'final' AND x.status = 'requested'
+     ORDER BY x.created_at`
+  );
+  return rows.map((row: Row) => ({
+    id: row.id,
+    created_at: row.created_at,
+    final_sent_before: row.final_sent_before,
+    company: { id: row.company_id, name: row.company_name, slug: row.company_slug },
+    requested_by: row.email
+      ? { name: [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null, email: row.email }
+      : null,
+  }));
+}
+
+export async function companyExports(companyId: string) {
+  const { rows } = await pool.query(
+    `SELECT ${EXPORT_FIELDS} FROM company_exports x WHERE x.company_id = $1
+     ORDER BY x.created_at DESC LIMIT 20`,
+    [companyId]
+  );
+  return rows.map((row: Row) => ({ ...row, byte_size: row.byte_size == null ? null : Number(row.byte_size) }));
 }
