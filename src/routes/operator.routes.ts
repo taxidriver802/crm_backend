@@ -413,6 +413,27 @@ operatorRouter.post(
   })
 );
 
+// POST /operator/companies/:id/remove  { confirm_slug, reason? }
+// "Remove now": a denied company only, cleared at once with no email and its
+// slug free. The answer has no company.
+operatorRouter.post(
+  '/companies/:id/remove',
+  asyncHandler(async (req, res) => {
+    try {
+      const result = await account.removeDeniedCompany(companyId(req), actor(req), {
+        confirmSlug: body(req).confirm_slug,
+        reason: body(req).reason,
+      });
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      if (error instanceof account.AccountChangeError) {
+        return res.status(error.status).json({ ok: false, error: error.message });
+      }
+      throw error;
+    }
+  })
+);
+
 // POST /operator/companies/:id/status  { to, reason?, confirm_unverified? }
 operatorRouter.post(
   '/companies/:id/status',

@@ -1,9 +1,11 @@
 import { pool } from '../db';
 import { exportApproved } from '../lib/exportQueue';
-import { companyChanged, companyDeleted } from '../lib/companyNotices';
+import { companyChanged, companyDeleted, type CompanyDeletion } from '../lib/companyNotices';
 import {
   allowedMoves,
   canMove,
+  CLEARED_SLUG_RESERVED_DAYS,
+  PENDING_UNCONFIRMED_DAYS,
   HOLDABLE,
   isCompanyStatus,
   RESTORED_SUSPENDED_DAYS,
@@ -512,14 +514,105 @@ export async function denyExport(exportId: string, actor: Actor, reason: unknown
 }
 
 /**
- * Deletes a company whose pending_deletion timer has run out ("ready to
- * delete", §3). The operator types the slug to confirm.
+ * What deleting and clearing share, inside the caller's transaction, after
+ * the caller has checked that this company may go: a tombstone (who it was,
+ * its dates, its path through the states, whether a final export went out,
+ * and how long its slug is held), an event, then the company row, which
+ * takes every row of its work with it through the cascade.
  *
- * In one transaction: a tombstone (who it was, its dates, its path through
- * the states, whether a final export went out, and its slug held back for
- * SLUG_RESERVED_DAYS), a "deleted" event, then the company row, which takes
- * every row of its work with it through the cascade. After the commit, its
- * files go and the "deleted" email is sent (companyNotices).
+ * Returns what companyDeleted() needs once the transaction commits: its files
+ * go, and the "deleted" email when `to` is set (never for a cleared company).
+ */
+async function removeCompany(
+  db: Queryable,
+  company: CompanyRow,
+  actor: Actor,
+  how: {
+    event: 'deleted' | 'cleared';
+    slugReservedDays: number;
+    sendEmail: boolean;
+    detail: Record<string, unknown>;
+  }
+): Promise<CompanyDeletion> {
+  const { rows: details } = await db.query(
+    `SELECT c.created_at, c.approved_at, c.billing_email, c.palette_id, c.mark_id,
+            o.first_name AS owner_first_name, o.last_name AS owner_last_name, o.email AS owner_email
+     FROM companies c
+     LEFT JOIN LATERAL (
+       SELECT first_name, last_name, email FROM users
+       WHERE company_id = c.id AND role = 'owner'
+       ORDER BY created_at ASC LIMIT 1
+     ) o ON true
+     WHERE c.id = $1`,
+    [company.id]
+  );
+  const d = details[0];
+  const { rows: path } = await db.query(
+    `SELECT to_status, created_at FROM operator_events
+     WHERE company_id = $1 AND to_status IS NOT NULL
+     ORDER BY created_at, id`,
+    [company.id]
+  );
+  const { rows: exports } = await db.query(
+    `SELECT id, kind, status FROM company_exports WHERE company_id = $1`,
+    [company.id]
+  );
+  const finalSent = exports.some(
+    (x: { kind: string; status: string }) =>
+      x.kind === 'final' && ['built', 'sent', 'downloaded', 'expired'].includes(x.status)
+  );
+  const ownerName = [d.owner_first_name, d.owner_last_name].filter(Boolean).join(' ') || null;
+
+  await db.query(
+    `INSERT INTO company_tombstones (
+       company_id, name, slug, owner_name, owner_email, billing_email,
+       created_at, approved_at, deleted_by, status_path, final_export_sent, slug_reserved_until, cleared
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now() + make_interval(days => $12), $13)`,
+    [
+      company.id,
+      company.name,
+      company.slug,
+      ownerName,
+      d.owner_email,
+      d.billing_email,
+      d.created_at,
+      d.approved_at,
+      actor.operatorId,
+      JSON.stringify(path.map((p: { to_status: string; created_at: Date }) => ({ status: p.to_status, at: p.created_at }))),
+      finalSent,
+      how.slugReservedDays,
+      how.event === 'cleared',
+    ]
+  );
+  await recordEvent(db, company, actor, how.event, company.status, null, {
+    ...how.detail,
+    final_export_sent: finalSent,
+  });
+  await db.query(`DELETE FROM companies WHERE id = $1`, [company.id]);
+
+  return {
+    companyId: company.id,
+    name: company.name,
+    slug: company.slug,
+    exportIds: exports.map((x: { id: string }) => x.id),
+    to: how.sendEmail ? d.billing_email || d.owner_email || null : null,
+    firstName: d.owner_first_name || null,
+    paletteId: d.palette_id ?? null,
+    markId: d.mark_id ?? null,
+  };
+}
+
+function checkTypedSlug(company: CompanyRow, confirmSlug: unknown) {
+  const typed = typeof confirmSlug === 'string' ? confirmSlug.trim().toLowerCase() : '';
+  if (typed !== company.slug) {
+    throw new AccountChangeError('Type the company’s slug to confirm.', 400);
+  }
+}
+
+/**
+ * Deletes a company whose pending_deletion timer has run out ("ready to
+ * delete", §3). The operator types the slug to confirm. Its slug is held for
+ * SLUG_RESERVED_DAYS, and the owner gets the "deleted" email.
  */
 export async function deleteCompany(
   companyId: string,
@@ -538,81 +631,97 @@ export async function deleteCompany(
         'Only a company whose deletion date has passed can be deleted.'
       );
     }
-    const typed = typeof input.confirmSlug === 'string' ? input.confirmSlug.trim().toLowerCase() : '';
-    if (typed !== company.slug) {
-      throw new AccountChangeError('Type the company’s slug to confirm.', 400);
-    }
+    checkTypedSlug(company, input.confirmSlug);
     const reason = cleanReason(input.reason, false);
+    return removeCompany(db, company, actor, {
+      event: 'deleted',
+      slugReservedDays: SLUG_RESERVED_DAYS,
+      sendEmail: true,
+      detail: reason ? { reason } : {},
+    });
+  });
+  // After the commit: its files, and the "deleted" email.
+  void companyDeleted(deletion);
+  return { id: deletion.companyId, slug: deletion.slug, deleted: true };
+}
 
-    const { rows: details } = await db.query(
-      `SELECT c.created_at, c.approved_at, c.billing_email, c.palette_id, c.mark_id,
-              o.first_name AS owner_first_name, o.last_name AS owner_last_name, o.email AS owner_email
+/**
+ * The operator's "Remove now" for a denied company (a test sign-up, spam):
+ * cleared at once, as the timer would clear it, with the slug typed to
+ * confirm. No email, and the slug is free again (CLEARED_SLUG_RESERVED_DAYS).
+ */
+export async function removeDeniedCompany(
+  companyId: string,
+  actor: Actor,
+  input: { confirmSlug: unknown; reason?: unknown }
+) {
+  const removal = await inTransaction(async (db) => {
+    const company = await lockCompany(db, companyId);
+    if (company.status !== 'denied') {
+      throw new AccountChangeError('Only a denied company can be removed this way.');
+    }
+    checkTypedSlug(company, input.confirmSlug);
+    const reason = cleanReason(input.reason, false);
+    return removeCompany(db, company, actor, {
+      event: 'cleared',
+      slugReservedDays: CLEARED_SLUG_RESERVED_DAYS,
+      sendEmail: false,
+      detail: { cause: 'removed', ...(reason ? { reason } : {}) },
+    });
+  });
+  void companyDeleted(removal);
+  return { id: removal.companyId, slug: removal.slug, removed: true };
+}
+
+export type ClearCause = 'denied_expired' | 'pending_unconfirmed';
+
+/**
+ * The lifecycle job's clearing: a denied company whose timer ran out, or a
+ * pending one whose owner never confirmed their email within
+ * PENDING_UNCONFIRMED_DAYS. Checked again under the lock, so an approval a
+ * moment ago wins. Returns the clean-up to run after the commit (the job
+ * awaits it), or null when there was nothing to do.
+ */
+export async function clearDueCompany(companyId: string, now = new Date()) {
+  const removal = await inTransaction(async (db) => {
+    const company = await lockCompany(db, companyId);
+    const cause = await clearCause(db, company, now);
+    if (!cause) return null;
+    const deletion = await removeCompany(db, company, { operatorId: null }, {
+      event: 'cleared',
+      slugReservedDays: CLEARED_SLUG_RESERVED_DAYS,
+      sendEmail: false,
+      detail: { cause },
+    });
+    return { deletion, cause, from: company.status };
+  });
+  if (!removal) return null;
+  await companyDeleted(removal.deletion);
+  return { id: removal.deletion.companyId, slug: removal.deletion.slug, from: removal.from, cause: removal.cause };
+}
+
+async function clearCause(db: Queryable, company: CompanyRow, now: Date): Promise<ClearCause | null> {
+  if (company.status === 'denied') {
+    return company.next_status_at && new Date(company.next_status_at) <= now ? 'denied_expired' : null;
+  }
+  if (company.status === 'pending') {
+    const { rows } = await db.query(
+      `SELECT c.created_at, o.email_verified_at
        FROM companies c
        LEFT JOIN LATERAL (
-         SELECT first_name, last_name, email FROM users
+         SELECT email_verified_at FROM users
          WHERE company_id = c.id AND role = 'owner'
          ORDER BY created_at ASC LIMIT 1
        ) o ON true
        WHERE c.id = $1`,
       [company.id]
     );
-    const d = details[0];
-    const { rows: path } = await db.query(
-      `SELECT to_status, created_at FROM operator_events
-       WHERE company_id = $1 AND to_status IS NOT NULL
-       ORDER BY created_at, id`,
-      [company.id]
-    );
-    const { rows: exports } = await db.query(
-      `SELECT id, kind, status FROM company_exports WHERE company_id = $1`,
-      [company.id]
-    );
-    const finalSent = exports.some(
-      (x: { kind: string; status: string }) =>
-        x.kind === 'final' && ['built', 'sent', 'downloaded', 'expired'].includes(x.status)
-    );
-    const ownerName = [d.owner_first_name, d.owner_last_name].filter(Boolean).join(' ') || null;
-
-    await db.query(
-      `INSERT INTO company_tombstones (
-         company_id, name, slug, owner_name, owner_email, billing_email,
-         created_at, approved_at, deleted_by, status_path, final_export_sent, slug_reserved_until
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now() + make_interval(days => $12))`,
-      [
-        company.id,
-        company.name,
-        company.slug,
-        ownerName,
-        d.owner_email,
-        d.billing_email,
-        d.created_at,
-        d.approved_at,
-        actor.operatorId,
-        JSON.stringify(path.map((p: { to_status: string; created_at: Date }) => ({ status: p.to_status, at: p.created_at }))),
-        finalSent,
-        SLUG_RESERVED_DAYS,
-      ]
-    );
-    await recordEvent(db, company, actor, 'deleted', company.status, null, {
-      ...(reason ? { reason } : {}),
-      final_export_sent: finalSent,
-    });
-    await db.query(`DELETE FROM companies WHERE id = $1`, [company.id]);
-
-    return {
-      companyId: company.id,
-      name: company.name,
-      slug: company.slug,
-      exportIds: exports.map((x: { id: string }) => x.id),
-      to: d.billing_email || d.owner_email || null,
-      firstName: d.owner_first_name || null,
-      paletteId: d.palette_id ?? null,
-      markId: d.mark_id ?? null,
-    };
-  });
-  // After the commit: its files, and the "deleted" email.
-  void companyDeleted(deletion);
-  return { id: deletion.companyId, slug: deletion.slug, deleted: true };
+    const row = rows[0];
+    if (!row || row.email_verified_at) return null;
+    const due = new Date(row.created_at).getTime() + PENDING_UNCONFIRMED_DAYS * 86400000;
+    return due <= now.getTime() ? 'pending_unconfirmed' : null;
+  }
+  return null;
 }
 
 /** Whether a slug belongs to a deleted company and is still held back. */

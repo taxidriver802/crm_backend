@@ -1,8 +1,8 @@
 import { pool } from '../db';
-import { REMINDER_DAYS, TIMER_MOVES, type CompanyStatus } from '../lib/lifecycle';
+import { PENDING_UNCONFIRMED_DAYS, REMINDER_DAYS, TIMER_MOVES, type CompanyStatus } from '../lib/lifecycle';
 import { isMailConfigured } from '../lib/mailer';
 import { notifyOperator } from '../lib/operatorNotify';
-import { advanceDueCompany } from '../services/companyAccount.service';
+import { advanceDueCompany, clearDueCompany } from '../services/companyAccount.service';
 import { sendTimerReminder } from '../services/accountNotices.service';
 
 /**
@@ -11,9 +11,13 @@ import { sendTimerReminder } from '../services/accountNotices.service';
  * 1. Moves each company whose timer has run out: trial → suspended,
  *    past_due → suspended, suspended → pending_deletion. Each move sends
  *    the new state's email.
- * 2. Flags a pending_deletion company whose 30 days are up as "ready to
+ * 2. Clears refused sign-ups by itself, silently: a denied company whose
+ *    timer ran out, and a pending one whose owner never confirmed their
+ *    email within PENDING_UNCONFIRMED_DAYS. No email, no ping; the slug is
+ *    free again.
+ * 3. Flags a pending_deletion company whose 30 days are up as "ready to
  *    delete", once, and pings the operator. It never deletes.
- * 3. Sends the reminders before a timer runs out (REMINDER_DAYS), each once
+ * 4. Sends the reminders before a timer runs out (REMINDER_DAYS), each once
  *    per timer. A run that comes late sends only the nearest one.
  *
  * LIFECYCLE_DRY_RUN=true logs what it would do and changes nothing.
@@ -24,6 +28,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export type LifecycleRun = {
   dryRun: boolean;
   moved: { company_id: string; slug: string; from: string; to: string }[];
+  cleared: { company_id: string; slug: string; from: string; cause: string }[];
   ready_to_delete: { company_id: string; slug: string }[];
   reminders: { company_id: string; slug: string; status: string; days_left: number }[];
 };
@@ -35,7 +40,7 @@ export function lifecycleDryRun(env = process.env) {
 }
 
 export async function runLifecycleJob({ now = new Date(), dryRun = lifecycleDryRun() }: Options = {}) {
-  const run: LifecycleRun = { dryRun, moved: [], ready_to_delete: [], reminders: [] };
+  const run: LifecycleRun = { dryRun, moved: [], cleared: [], ready_to_delete: [], reminders: [] };
 
   // 1. Moves.
   const movable = Object.keys(TIMER_MOVES);
@@ -55,7 +60,31 @@ export async function runLifecycleJob({ now = new Date(), dryRun = lifecycleDryR
     if (moved) run.moved.push({ company_id: company.id, slug: company.slug, from: moved.from, to: moved.to });
   }
 
-  // 2. Ready to delete.
+  // 2. Clearing refused sign-ups.
+  const { rows: clearable } = await pool.query(
+    `SELECT c.id, c.slug, c.status,
+            CASE WHEN c.status = 'denied' THEN 'denied_expired' ELSE 'pending_unconfirmed' END AS cause
+     FROM companies c
+     WHERE (c.status = 'denied' AND c.next_status_at IS NOT NULL AND c.next_status_at <= $1)
+        OR (c.status = 'pending'
+            AND c.created_at <= $1::timestamptz - make_interval(days => $2)
+            AND NOT EXISTS (
+              SELECT 1 FROM users u
+              WHERE u.company_id = c.id AND u.role = 'owner' AND u.email_verified_at IS NOT NULL
+            ))
+     ORDER BY c.created_at`,
+    [now, PENDING_UNCONFIRMED_DAYS]
+  );
+  for (const company of clearable) {
+    if (dryRun) {
+      run.cleared.push({ company_id: company.id, slug: company.slug, from: company.status, cause: company.cause });
+      continue;
+    }
+    const cleared = await clearDueCompany(company.id, now);
+    if (cleared) run.cleared.push({ company_id: cleared.id, slug: cleared.slug, from: cleared.from, cause: cleared.cause });
+  }
+
+  // 3. Ready to delete.
   const { rows: expired } = await pool.query(
     `SELECT c.id, c.name, c.slug, c.next_status_at
      FROM companies c
@@ -89,7 +118,7 @@ export async function runLifecycleJob({ now = new Date(), dryRun = lifecycleDryR
     run.ready_to_delete.push({ company_id: company.id, slug: company.slug });
   }
 
-  // 3. Reminders. Without mail nothing is claimed, so they go once mail is on.
+  // 4. Reminders. Without mail nothing is claimed, so they go once mail is on.
   if (isMailConfigured()) {
     const statuses = Object.keys(REMINDER_DAYS);
     const longest = Math.max(...Object.values(REMINDER_DAYS).flatMap((d) => d ?? []));
@@ -145,12 +174,13 @@ export async function runLifecycleJob({ now = new Date(), dryRun = lifecycleDryR
     }
   }
 
-  if (run.moved.length || run.ready_to_delete.length || run.reminders.length || dryRun) {
+  if (run.moved.length || run.cleared.length || run.ready_to_delete.length || run.reminders.length || dryRun) {
     console.info(
       JSON.stringify({
         level: 'info',
         event: dryRun ? 'lifecycle_dry_run' : 'lifecycle_run',
         moved: run.moved,
+        cleared: run.cleared.map((c) => `${c.slug}:${c.cause}`),
         ready_to_delete: run.ready_to_delete.map((c) => c.slug),
         reminders: run.reminders.map((r) => `${r.slug}:${r.status}:${r.days_left}d`),
       })

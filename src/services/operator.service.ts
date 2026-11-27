@@ -2,7 +2,14 @@ import fs from 'fs/promises';
 import path from 'path';
 import { pool } from '../db';
 import { uploadsRoot } from '../lib/uploadsDir';
-import { allowedMoves, COMPANY_STATUSES, HOLDABLE, isCompanyStatus, type CompanyStatus } from '../lib/lifecycle';
+import {
+  allowedMoves,
+  COMPANY_STATUSES,
+  HOLDABLE,
+  isCompanyStatus,
+  PENDING_UNCONFIRMED_DAYS,
+  type CompanyStatus,
+} from '../lib/lifecycle';
 
 /**
  * Every query the operator surface makes (PLAN_operator.md §5–6).
@@ -53,6 +60,19 @@ const SEATS_AND_OWNER_JOINS = `
 
 type Row = Record<string, any>;
 
+/**
+ * When the lifecycle job will clear a refused sign-up (src/jobs/lifecycle.ts):
+ * a denied company at its timer, a pending one whose owner hasn't confirmed
+ * their email PENDING_UNCONFIRMED_DAYS after sign-up. Null for every other.
+ */
+function clearsAt(row: Row): Date | null {
+  if (row.status === 'denied') return row.next_status_at ?? null;
+  if (row.status === 'pending' && !row.owner_email_verified_at) {
+    return new Date(new Date(row.created_at).getTime() + PENDING_UNCONFIRMED_DAYS * 86400000);
+  }
+  return null;
+}
+
 function shapeCompany(row: Row) {
   return {
     id: row.id,
@@ -61,6 +81,7 @@ function shapeCompany(row: Row) {
     status: row.status,
     status_changed_at: row.status_changed_at,
     next_status_at: row.next_status_at,
+    clears_at: clearsAt(row),
     status_reason: row.status_reason,
     plan: row.plan,
     trial_ends_at: row.trial_ends_at,
@@ -250,7 +271,7 @@ export async function overview() {
      ORDER BY c.next_status_at`
   );
   const { rows: recentlyDeleted } = await pool.query(
-    `SELECT company_id, name, slug, deleted_at, slug_reserved_until
+    `SELECT company_id, name, slug, deleted_at, slug_reserved_until, cleared
      FROM company_tombstones
      WHERE deleted_at > now() - interval '30 days'
      ORDER BY deleted_at DESC

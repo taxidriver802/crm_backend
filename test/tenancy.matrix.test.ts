@@ -187,6 +187,8 @@ const EXEMPT: Record<string, string> = {
     'the signed-in operator’s own second factor, not a company; company tokens refused (operator.timers tests)',
   'POST /operator/companies/:id/delete':
     'deletes one company the operator names, only after its deletion date; company tokens refused (operator.timers tests)',
+  'POST /operator/companies/:id/remove':
+    'clears one denied company the operator names; company tokens refused (operator.clearing tests)',
   'GET /operator/overview':
     'the operator’s view across companies, counts only; company tokens refused (operator.companies tests)',
   'GET /operator/companies':

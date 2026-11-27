@@ -29,7 +29,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Days each state lasts before its timer is due. Null: no timer. */
 export const STATE_DAYS: Record<CompanyStatus, number | null> = {
   pending: null,
-  denied: null,
+  // Cleared by the lifecycle job unless approved first (CLEARED_STATES).
+  denied: 45,
   trial: 30,
   active: null,
   past_due: 7,
@@ -74,6 +75,21 @@ export const REMINDER_DAYS: Partial<Record<CompanyStatus, readonly number[]>> = 
 
 /** How long a deleted company's slug stays reserved. */
 export const SLUG_RESERVED_DAYS = 180;
+
+/**
+ * Companies the lifecycle job clears by itself, with no operator step and no
+ * email: a refused sign-up never had an account worth keeping.
+ *
+ * - denied: when its timer (STATE_DAYS.denied) runs out.
+ * - pending, only while the owner hasn't confirmed their email:
+ *   PENDING_UNCONFIRMED_DAYS after sign-up. A confirmed sign-up is waiting
+ *   for the operator and stays. pending has no timer column for this, so
+ *   confirming needs no change to it.
+ */
+export const PENDING_UNCONFIRMED_DAYS = 14;
+
+/** How long a cleared company's slug stays reserved. 0: free at once. */
+export const CLEARED_SLUG_RESERVED_DAYS = 0;
 
 /**
  * The moves an operator may make. on_hold is entered from any live state
