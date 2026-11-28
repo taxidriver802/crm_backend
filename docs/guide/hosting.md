@@ -48,7 +48,9 @@ browser ──HTTPS──▶ TLS proxy (Caddy, nginx, …)  :443
 - **Data outside the code.** Uploads (job photos, documents, logos) live in
   `UPLOADS_DIR`, for example `/var/lib/joist/uploads`, not inside the
   checkout, so a redeploy can't touch them. The database and that directory
-  are the two things a backup must hold.
+  are the two things a backup must hold. Company exports are built into
+  `EXPORTS_DIR`, for example `/var/lib/joist/exports`, also outside the
+  checkout. They expire after 72 hours, so a backup can leave them out.
 
 ## What you need
 
@@ -77,7 +79,7 @@ When the database is on another machine, add `?sslmode=require` to
 
 ```bash
 # data directories, outside the checkout, readable only by the app user
-sudo install -d -o joist -g joist -m 700 /var/lib/joist/uploads /var/backups/joist
+sudo install -d -o joist -g joist -m 700 /var/lib/joist/uploads /var/lib/joist/exports /var/backups/joist
 
 cd crm_backend
 npm ci
@@ -99,6 +101,10 @@ Required in `.env`:
   `https://<your host>` address people use.
 - **`TRUST_PROXY`**: `loopback`.
 - **`UPLOADS_DIR`**: `/var/lib/joist/uploads`, owned by the `joist` user.
+- **`EXPORTS_DIR`**: `/var/lib/joist/exports`, owned by the `joist` user.
+  Without it, exports go to `crm_backend/exports` inside the checkout. That
+  folder isn't writable under the sandboxed unit below, so a company's
+  export fails to build.
 - **`BACKUP_DIR`** and **`BACKUP_REMOTE`**: see Backups below.
 
 Optional: **`LOGIN_EVENTS_KEEP_DAYS`**, how long the login history keeps
@@ -142,7 +148,15 @@ Environment=TZ=America/Chicago
 ExecStart=/usr/bin/node dist/server.js
 Restart=on-failure
 User=joist
+# Optional sandboxing: the filesystem is read-only to the app except the
+# folders listed here, so list every folder it writes.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/joist/uploads /var/lib/joist/exports
 ```
+
+With `ProtectSystem=strict`, each folder the backend writes must be listed in
+`ReadWritePaths` and owned by `joist`. If `db:backup` runs as the same user
+under a unit like this one, its unit needs `BACKUP_DIR` listed in the same way.
 
 ## 3. Frontend
 
